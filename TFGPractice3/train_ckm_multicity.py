@@ -24,6 +24,14 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Set to None to use all data, or a number like 2000 for quick testing
 SUBSET_SIZE = 32000
 
+# ==========================================
+# RESUME TRAINING CONFIG
+# ==========================================
+# If you want to resume, set the path to the .pth file here (e.g., "ckm_epoch_with_augmentation_2.pth")
+LOAD_MODEL_PATH = "ckm_epoch_with_augmentation_2.pth"
+# Set this to the epoch number you are resuming FROM (e.g., if you loaded epoch 2, set this to 2)
+START_FROM_EPOCH = 2
+
 # Data augmentation settings
 USE_AUGMENTATION = True
 AUG_HFLIP_PROB = 0.5      # Horizontal flip probability
@@ -237,6 +245,18 @@ def train():
         persistent_workers=True  # Keep workers alive between epochs
     )
     model = UNet(n_channels=1, n_classes=len(TARGET_COLS)).to(DEVICE)
+    
+    # Load checkpoint if specified
+    if LOAD_MODEL_PATH is not None:
+        if os.path.exists(LOAD_MODEL_PATH):
+            print(f"==================================================")
+            print(f" RESUMING TRAINING FROM: {LOAD_MODEL_PATH}")
+            print(f" STARTING AT EPOCH: {START_FROM_EPOCH}")
+            print(f"==================================================")
+            model.load_state_dict(torch.load(LOAD_MODEL_PATH))
+        else:
+            print(f"!!! WARNING !!! Checkpoint {LOAD_MODEL_PATH} not found. Starting from scratch.")
+
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     
     # Use reduction='none' to apply mask element-wise
@@ -244,7 +264,7 @@ def train():
 
     print(f"Starting Training on {DEVICE}...")
 
-    for epoch in range(NUM_EPOCHS):
+    for epoch in range(START_FROM_EPOCH, NUM_EPOCHS):
         model.train()
         epoch_loss = 0
         
