@@ -21,33 +21,48 @@ data:
 
 model:
   base_channels: 64
+  disc_base_channels: 64
   out_channels: 4
   use_scalar_channels: true
 
 training:
-  batch_size: 8
-  epochs: 30
-  learning_rate: 0.0001
-  weight_decay: 0.00001
+  batch_size: 4
+  epochs: 40
+  generator_lr: 0.0002
+  discriminator_lr: 0.0002
+  beta1: 0.5
+  beta2: 0.999
+  weight_decay: 0.0
   amp: true
   clip_grad_norm: 1.0
   save_every: 5
   subset_size: null
 
-augmentation: 
+loss:
+  lambda_gan: 1.0
+  lambda_recon: 100.0
+  mse_weight: 1.0
+  l1_weight: 0.2
+
+augmentation:
   enable: true
   hflip_prob: 0.5
   vflip_prob: 0.5
   rot90_prob: 0.4
 
-loss:
-  mse_weight: 1.0
-  l1_weight: 0.2
-
 runtime:
   device: auto
-  output_dir: outputs/baseline_run
+  output_dir: outputs/cgan_unet_run
   resume_checkpoint: null
+
+postprocess:
+  enable: true
+  regression_median_kernel: 3
+  augmented_los_median_kernel: 3
+  export_augmented_los_binary: false
+  augmented_los_threshold: 0.5
+  enforce_binary_los_consistency: false
+  binary_los_consistency_floor: 0.5
 
 target_columns:
   - delay_spread
@@ -66,15 +81,23 @@ target_metadata:
     scale: 1000.0
     offset: 0.0
     unit: ns
+    clip_min: 0.0
+    clip_max: 1000.0
   angular_spread:
     scale: 180.0
     offset: 0.0
     unit: deg
+    clip_min: 0.0
+    clip_max: 180.0
   channel_power:
     scale: 160.0
     offset: -120.0
     unit: dB
+    clip_min: -140.0
+    clip_max: 60.0
   augmented_los:
     scale: 1.0
     offset: 0.0
     unit: soft_los
+    clip_min: 0.0
+    clip_max: 1.0

@@ -7,6 +7,7 @@ Proposal-aligned prototype for CKM prediction in UAV-enabled FR3 scenarios.
 - **Angular spread**: `angular_spread`
 - **Channel power**: `channel_power`
 - **Augmented LoS**: `augmented_los` (binary map, trained with BCE by default)
+   - In practice this should be treated as a **soft wave-aware LoS field**, not a strictly binary map.
 
 The outputs are fully configurable in `configs/baseline.yaml` through:
 - `target_columns`
@@ -49,6 +50,7 @@ python -m pip install -r requirements.txt
 ```bash
 python train.py --config configs/baseline.yaml
 python train.py --config configs/proposal_regression_only.yaml
+python train_cgan.py --config configs/cgan_unet.yaml
 ```
 
 ## Evaluate
@@ -77,17 +79,26 @@ With LoS input channel enabled in config:
 python predict.py --config configs/baseline.yaml --checkpoint outputs/baseline_run/best.pt --input path/to/input.png --los-input path/to/los_input.png --scalar-values antenna_height=120
 ```
 
+For the cGAN + U-Net predictor:
+```bash
+python predict_cgan.py --config configs/cgan_unet.yaml --checkpoint outputs/cgan_unet_run/best_cgan.pt --input path/to/input.png --los-input path/to/los_input.png --scalar-values antenna_height=120,antenna_power=46,bandwidth=100
+```
+
 Prediction now saves:
 - preview PNGs for each output map
 - `predictions_raw.npy` with raw network outputs
 - `<target>_physical.npy` for regression targets with configured denormalization
 - `<target>_probabilities.npy` for BCE targets like `augmented_los`
 
+For the cGAN path, `augmented_los` is handled as a soft field and exported as `augmented_los_soft.npy` by default. A binary export is optional and disabled by default.
+
 If a target column is missing or empty in the manifest, the loader prints a warning and that target is masked out automatically.
 
 ## Cluster (UPC SLURM)
 - Train: `cluster/run_train.slurm`
 - Eval: `cluster/run_eval.slurm`
+
+See [CGAN_UNET_IMPLEMENTATION.md](CGAN_UNET_IMPLEMENTATION.md) for the cGAN-specific design and rationale.
 
 Submit with:
 ```bash
