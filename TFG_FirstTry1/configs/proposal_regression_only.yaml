@@ -1,0 +1,69 @@
+seed: 42
+
+data:
+  root_dir: CHANGE_ME_DATA_ROOT
+  train_manifest: CHANGE_ME_TRAIN_MANIFEST
+  val_manifest: CHANGE_ME_VAL_MANIFEST
+
+  # Optional input map (binary LoS). Set to null if you do not use it.
+  los_input_column: binary_los
+
+  # Scalar inputs that vary per-sample from manifest columns.
+  scalar_feature_columns:
+    - antenna_height
+
+  # Scalars hardcoded globally (easy to change).
+  constant_scalar_features:
+    frequency_ghz: 7.125
+    antenna_power: 46.0
+    bandwidth: 100.0
+
+  # Normalization divisors.
+  scalar_feature_norms:
+    antenna_height: 500.0
+    frequency_ghz: 10.0
+    antenna_power: 100.0
+    bandwidth: 1000.0
+
+  image_size: 128
+  num_workers: 4
+
+model:
+  base_channels: 64
+  out_channels: 3
+  use_scalar_channels: true
+
+training:
+  batch_size: 8
+  epochs: 30
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  amp: true
+  clip_grad_norm: 1.0
+  save_every: 5
+  subset_size: null
+
+augmentation:
+  enable: true
+  hflip_prob: 0.5
+  vflip_prob: 0.5
+  rot90_prob: 0.4
+
+loss:
+  mse_weight: 1.0
+  l1_weight: 0.2
+
+runtime:
+  device: auto
+  output_dir: outputs/proposal_regression_only
+  resume_checkpoint: null
+
+target_columns:
+  - delay_spread
+  - angular_spread
+  - channel_power
+
+target_losses:
+  delay_spread: mse
+  angular_spread: mse
+  channel_power: mse
