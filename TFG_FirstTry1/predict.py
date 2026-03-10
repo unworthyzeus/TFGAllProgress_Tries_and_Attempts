@@ -35,6 +35,12 @@ def parse_scalar_values(raw: str) -> Dict[str, float]:
     return result
 
 
+def denormalize_array(arr: np.ndarray, metadata: Dict[str, object]) -> np.ndarray:
+    scale = float(metadata.get('scale', 1.0))
+    offset = float(metadata.get('offset', 0.0))
+    return arr * scale + offset
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Run CKM inference on one image')
     parser.add_argument('--config', type=str, default='configs/baseline.yaml')
@@ -48,6 +54,7 @@ def main() -> None:
     device = resolve_device(cfg['runtime']['device'])
     image_size = int(cfg['data']['image_size'])
     target_columns = list(cfg['target_columns'])
+    target_metadata = dict(cfg.get('target_metadata', {}))
     if int(cfg['model']['out_channels']) != len(target_columns):
         raise ValueError("model.out_channels must match len(target_columns)")
 
@@ -106,10 +113,17 @@ def main() -> None:
     out_dir = Path(cfg['runtime']['output_dir']) / 'predict_outputs'
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    np.save(out_dir / 'predictions_raw.npy', pred)
+
     for i, name in enumerate(target_columns):
         arr = pred[i]
         if cfg.get('target_losses', {}).get(name, 'mse').lower() == 'bce':
             arr = 1.0 / (1.0 + np.exp(-arr))
+            np.save(out_dir / f'{name}_probabilities.npy', arr)
+        else:
+            metadata = target_metadata.get(name, {})
+            arr_physical = denormalize_array(arr, metadata) if metadata else arr
+            np.save(out_dir / f'{name}_physical.npy', arr_physical)
         img = Image.fromarray(to_uint8(arr), mode='L')
         img.save(out_dir / f'{name}.png')
 

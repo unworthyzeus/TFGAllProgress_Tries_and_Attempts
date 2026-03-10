@@ -45,6 +45,7 @@ class CKMDataset(Dataset):
         self.constant_scalar_features = constant_scalar_features or {}
         self.scalar_feature_norms_cfg = scalar_feature_norms or {}
         self.los_input_column = los_input_column
+        self.target_availability: Dict[str, Dict[str, int]] = {}
 
         self.scalar_norms: Dict[str, float] = {}
         for col in self.scalar_feature_columns:
@@ -62,6 +63,21 @@ class CKMDataset(Dataset):
                 self.scalar_norms[col] = max(float(self.scalar_feature_norms_cfg[col]), 1.0)
             else:
                 self.scalar_norms[col] = max(abs(float(value)), 1.0)
+
+        for col in self.target_columns:
+            if col not in self.df.columns:
+                self.target_availability[col] = {'present_rows': 0, 'total_rows': len(self.df)}
+                print(f"[WARNING] Target column '{col}' is missing from manifest {manifest_csv}.")
+                continue
+
+            present_rows = int(self.df[col].notna().sum())
+            self.target_availability[col] = {'present_rows': present_rows, 'total_rows': len(self.df)}
+            if present_rows == 0:
+                print(f"[WARNING] Target column '{col}' exists but has 0 labeled rows in {manifest_csv}.")
+            elif present_rows < len(self.df):
+                print(
+                    f"[INFO] Target column '{col}' available for {present_rows}/{len(self.df)} rows in {manifest_csv}."
+                )
 
     def __len__(self) -> int:
         return len(self.df)

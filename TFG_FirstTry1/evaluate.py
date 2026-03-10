@@ -16,12 +16,19 @@ from data_utils import CKMDataset
 from model_unet import CKMUNet
 
 
+def denormalize_channel(values: torch.Tensor, metadata: Dict[str, object]) -> torch.Tensor:
+    scale = float(metadata.get('scale', 1.0))
+    offset = float(metadata.get('offset', 0.0))
+    return values * scale + offset
+
+
 def aggregate_metrics(
     outputs: torch.Tensor,
     targets: torch.Tensor,
     masks: torch.Tensor,
     target_columns: List[str],
     target_losses: Dict[str, str],
+    target_metadata: Dict[str, Dict[str, object]],
 ) -> Dict[str, Dict[str, float]]:
     metrics: Dict[str, Dict[str, float]] = {}
 
@@ -40,6 +47,17 @@ def aggregate_metrics(
         mae = torch.mean(torch.abs(diff)).item()
 
         record = {'mse': mse, 'mae': mae}
+
+        metadata = target_metadata.get(name, {})
+        if metadata and target_losses.get(name, 'mse').lower() != 'bce':
+            pred_phys = denormalize_channel(pred, metadata)
+            tgt_phys = denormalize_channel(tgt, metadata)
+            diff_phys = (pred_phys - tgt_phys)[valid]
+            record['mse_physical'] = torch.mean(diff_phys ** 2).item()
+            record['mae_physical'] = torch.mean(torch.abs(diff_phys)).item()
+            unit = metadata.get('unit')
+            if unit:
+                record['unit'] = str(unit)
 
         if target_losses.get(name, 'mse').lower() == 'bce':
             probs = torch.sigmoid(pred)
@@ -63,6 +81,7 @@ def main() -> None:
 
     target_columns = list(cfg['target_columns'])
     target_losses = dict(cfg.get('target_losses', {}))
+    target_metadata = dict(cfg.get('target_metadata', {}))
     if int(cfg['model']['out_channels']) != len(target_columns):
         raise ValueError("model.out_channels must match len(target_columns)")
 
@@ -112,7 +131,7 @@ def main() -> None:
             with autocast(enabled=bool(cfg['training']['amp']) and device == 'cuda'):
                 outputs = model(inputs)
 
-            batch_metrics = aggregate_metrics(outputs, targets, masks, target_columns, target_losses)
+            batch_metrics = aggregate_metrics(outputs, targets, masks, target_columns, target_losses, target_metadata)
             for name in target_columns:
                 for k, v in batch_metrics[name].items():
                     if not np.isnan(v):

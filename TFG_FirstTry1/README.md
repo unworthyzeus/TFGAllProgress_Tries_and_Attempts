@@ -57,6 +57,15 @@ python evaluate.py --config configs/baseline.yaml --checkpoint outputs/baseline_
 python evaluate.py --config configs/proposal_regression_only.yaml --checkpoint outputs/proposal_regression_only/best.pt
 ```
 
+Evaluation now reports both:
+- normalized image-space metrics (`mse`, `mae`)
+- physical-unit metrics (`mse_physical`, `mae_physical`) when `target_metadata` is defined
+
+Default physical units currently assumed in config:
+- `delay_spread` -> `ns`
+- `angular_spread` -> `deg`
+- `channel_power` -> `dB`
+
 ## Predict one sample
 Without LoS input channel:
 ```bash
@@ -67,6 +76,14 @@ With LoS input channel enabled in config:
 ```bash
 python predict.py --config configs/baseline.yaml --checkpoint outputs/baseline_run/best.pt --input path/to/input.png --los-input path/to/los_input.png --scalar-values antenna_height=120
 ```
+
+Prediction now saves:
+- preview PNGs for each output map
+- `predictions_raw.npy` with raw network outputs
+- `<target>_physical.npy` for regression targets with configured denormalization
+- `<target>_probabilities.npy` for BCE targets like `augmented_los`
+
+If a target column is missing or empty in the manifest, the loader prints a warning and that target is masked out automatically.
 
 ## Cluster (UPC SLURM)
 - Train: `cluster/run_train.slurm`
