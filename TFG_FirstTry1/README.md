@@ -6,8 +6,8 @@ Proposal-aligned prototype for CKM prediction in UAV-enabled FR3 scenarios.
 - **Delay spread**: `delay_spread`
 - **Angular spread**: `angular_spread`
 - **Channel power**: `channel_power`
-- **Augmented LoS**: `augmented_los` (binary map, trained with BCE by default)
-   - In practice this should be treated as a **soft wave-aware LoS field**, not a strictly binary map.
+- **Augmented LoS**: `augmented_los` (soft wave-aware LoS field)
+   - This output should be modeled as a **continuous field**, not as a strictly binary map.
 
 The outputs are fully configurable in `configs/baseline.yaml` through:
 - `target_columns`
