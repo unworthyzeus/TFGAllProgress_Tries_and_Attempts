@@ -9,7 +9,7 @@ import torch
 from PIL import Image
 from torchvision.transforms import functional as TF
 
-from config_utils import load_config, resolve_device
+from config_utils import load_config, load_torch_checkpoint, resolve_device
 from model_unet import CKMUNet
 
 
@@ -70,7 +70,7 @@ def main() -> None:
         base_channels=int(cfg['model']['base_channels']),
     ).to(device)
 
-    state = torch.load(args.checkpoint, map_location=device)
+    state = load_torch_checkpoint(args.checkpoint, device)
     model.load_state_dict(state['model'] if 'model' in state else state)
     model.eval()
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 class DoubleConv(nn.Module):
@@ -24,9 +26,16 @@ class DoubleConv(nn.Module):
 
 
 class CKMUNet(nn.Module):
-    def __init__(self, in_channels: int = 3, out_channels: int = 5, base_channels: int = 64):
+    def __init__(
+        self,
+        in_channels: int = 3,
+        out_channels: int = 5,
+        base_channels: int = 64,
+        gradient_checkpointing: bool = False,
+    ):
         super().__init__()
         bc = base_channels
+        self.gradient_checkpointing = gradient_checkpointing
 
         self.inc = DoubleConv(in_channels, bc)
         self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(bc, bc * 2))
@@ -45,27 +54,56 @@ class CKMUNet(nn.Module):
 
         self.outc = nn.Conv2d(bc, out_channels, kernel_size=1)
 
+    def _run_block(self, block: nn.Module, x: torch.Tensor) -> torch.Tensor:
+        if self.gradient_checkpointing and self.training:
+            return checkpoint(block, x, use_reentrant=False)
+        return block(x)
+
+    @staticmethod
+    def _align_to_skip(x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
+        diff_y = skip.size(2) - x.size(2)
+        diff_x = skip.size(3) - x.size(3)
+
+        if diff_y == 0 and diff_x == 0:
+            return x
+
+        if diff_y >= 0 and diff_x >= 0:
+            return F.pad(
+                x,
+                [diff_x // 2, diff_x - diff_x // 2, diff_y // 2, diff_y - diff_y // 2],
+            )
+
+        start_y = max((-diff_y) // 2, 0)
+        end_y = start_y + skip.size(2)
+        start_x = max((-diff_x) // 2, 0)
+        end_x = start_x + skip.size(3)
+        return x[:, :, start_y:end_y, start_x:end_x]
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x1 = self.inc(x)
-        x2 = self.down1(x1)
-        x3 = self.down2(x2)
-        x4 = self.down3(x3)
-        x5 = self.down4(x4)
+        x1 = self._run_block(self.inc, x)
+        x2 = self._run_block(self.down1, x1)
+        x3 = self._run_block(self.down2, x2)
+        x4 = self._run_block(self.down3, x3)
+        x5 = self._run_block(self.down4, x4)
 
         x = self.up1(x5)
+        x = self._align_to_skip(x, x4)
         x = torch.cat([x4, x], dim=1)
-        x = self.conv1(x)
+        x = self._run_block(self.conv1, x)
 
         x = self.up2(x)
+        x = self._align_to_skip(x, x3)
         x = torch.cat([x3, x], dim=1)
-        x = self.conv2(x)
+        x = self._run_block(self.conv2, x)
 
         x = self.up3(x)
+        x = self._align_to_skip(x, x2)
         x = torch.cat([x2, x], dim=1)
-        x = self.conv3(x)
+        x = self._run_block(self.conv3, x)
 
         x = self.up4(x)
+        x = self._align_to_skip(x, x1)
         x = torch.cat([x1, x], dim=1)
-        x = self.conv4(x)
+        x = self._run_block(self.conv4, x)
 
         return self.outc(x)

@@ -7,12 +7,13 @@ from model_unet import CKMUNet
 
 
 class UNetGenerator(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, base_channels: int = 64):
+    def __init__(self, in_channels: int, out_channels: int, base_channels: int = 64, gradient_checkpointing: bool = False):
         super().__init__()
         self.generator = CKMUNet(
             in_channels=in_channels,
             out_channels=out_channels,
             base_channels=base_channels,
+            gradient_checkpointing=gradient_checkpointing,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

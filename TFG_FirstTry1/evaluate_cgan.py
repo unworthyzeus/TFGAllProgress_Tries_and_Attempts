@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from config_utils import is_cuda_device, load_config, load_torch_checkpoint, resolve_device
 from data_utils import build_dataset_splits_from_config, compute_input_channels
-from model_unet import CKMUNet
+from model_cgan import UNetGenerator
 
 
 def denormalize_channel(values: torch.Tensor, metadata: Dict[str, object]) -> torch.Tensor:
@@ -43,14 +43,24 @@ def aggregate_metrics(
             metrics[name] = {'mse': float('nan'), 'mae': float('nan')}
             continue
 
+        loss_name = target_losses.get(name, 'mse').lower()
+        if loss_name == 'bce':
+            probs = torch.sigmoid(pred)
+            diff = (probs - tgt)[valid]
+            mse = torch.mean(diff ** 2).item()
+            mae = torch.mean(torch.abs(diff)).item()
+            preds = (probs > 0.5).float()
+            acc = (preds[valid] == tgt[valid]).float().mean().item()
+            metrics[name] = {'mse': mse, 'mae': mae, 'accuracy': acc}
+            continue
+
         diff = (pred - tgt)[valid]
         mse = torch.mean(diff ** 2).item()
         mae = torch.mean(torch.abs(diff)).item()
-
-        record = {'mse': mse, 'mae': mae}
+        record: Dict[str, float] = {'mse': mse, 'mae': mae}
 
         metadata = target_metadata.get(name, {})
-        if metadata and target_losses.get(name, 'mse').lower() != 'bce':
+        if metadata:
             pred_phys = denormalize_channel(pred, metadata)
             tgt_phys = denormalize_channel(tgt, metadata)
             diff_phys = (pred_phys - tgt_phys)[valid]
@@ -59,12 +69,6 @@ def aggregate_metrics(
             unit = metadata.get('unit')
             if unit:
                 record['unit'] = str(unit)
-
-        if target_losses.get(name, 'mse').lower() == 'bce':
-            probs = torch.sigmoid(pred)
-            preds = (probs > 0.5).float()
-            acc = (preds[valid] == tgt[valid]).float().mean().item()
-            record['accuracy'] = acc
 
         metrics[name] = record
 
@@ -89,7 +93,7 @@ def build_loader_for_split(cfg: Dict, split_name: str, device: object) -> DataLo
 
 
 def summarize_loader(
-    model: CKMUNet,
+    generator: UNetGenerator,
     loader: DataLoader,
     device: object,
     target_columns: List[str],
@@ -100,24 +104,26 @@ def summarize_loader(
     running = {name: {'mse': [], 'mae': [], 'accuracy': [], 'mse_physical': [], 'mae_physical': []} for name in target_columns}
 
     with torch.no_grad():
-        for inputs, targets, masks in tqdm(loader, desc='eval', leave=False):
+        for inputs, targets, masks in tqdm(loader, desc='eval_cgan', leave=False):
             inputs, targets, masks = inputs.to(device), targets.to(device), masks.to(device)
             with amp.autocast(device_type='cuda', enabled=amp_enabled):
-                outputs = model(inputs)
+                outputs = generator(inputs)
 
             batch_metrics = aggregate_metrics(outputs, targets, masks, target_columns, target_losses, target_metadata)
             for name in target_columns:
-                for k, v in batch_metrics[name].items():
-                    if k == 'unit' or np.isnan(v):
+                for key, value in batch_metrics[name].items():
+                    if key == 'unit' or np.isnan(value):
                         continue
-                    running[name][k].append(v)
+                    if key not in running[name]:
+                        running[name][key] = []
+                    running[name][key].append(value)
 
     summary: Dict[str, Dict[str, float]] = {}
     for name in target_columns:
         summary[name] = {}
-        for k, values in running[name].items():
+        for key, values in running[name].items():
             if values:
-                summary[name][k] = float(np.mean(values))
+                summary[name][key] = float(np.mean(values))
         unit = target_metadata.get(name, {}).get('unit')
         if unit:
             summary[name]['unit'] = str(unit)
@@ -139,9 +145,9 @@ def compute_generalization_gap(
                 continue
             train_value = train_metrics[key]
             if isinstance(train_value, (int, float)) and isinstance(val_value, (int, float)):
-                gap[name][f'{key}_gap'] = float(val_value - train_value)
+                gap[f"{name}"] [f"{key}_gap"] = float(val_value - train_value)
                 if abs(float(train_value)) > 1e-12:
-                    gap[name][f'{key}_ratio'] = float(val_value / train_value)
+                    gap[f"{name}"] [f"{key}_ratio"] = float(val_value / train_value)
         unit = val_metrics.get('unit') or train_metrics.get('unit')
         if unit:
             gap[name]['unit'] = str(unit)
@@ -149,8 +155,8 @@ def compute_generalization_gap(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description='Evaluate CKM proposal prototype model')
-    parser.add_argument('--config', type=str, default='configs/baseline.yaml')
+    parser = argparse.ArgumentParser(description='Evaluate cGAN generator on validation data')
+    parser.add_argument('--config', type=str, default='configs/cgan_unet.yaml')
     parser.add_argument('--checkpoint', type=str, required=True)
     parser.add_argument('--split', choices=['train', 'val', 'test', 'both'], default='test')
     args = parser.parse_args()
@@ -162,24 +168,25 @@ def main() -> None:
     target_losses = dict(cfg.get('target_losses', {}))
     target_metadata = dict(cfg.get('target_metadata', {}))
     if int(cfg['model']['out_channels']) != len(target_columns):
-        raise ValueError("model.out_channels must match len(target_columns)")
+        raise ValueError('model.out_channels must match len(target_columns)')
 
-    in_channels = compute_input_channels(cfg)
-    model = CKMUNet(
-        in_channels=in_channels,
+    generator = UNetGenerator(
+        in_channels=compute_input_channels(cfg),
         out_channels=int(cfg['model']['out_channels']),
         base_channels=int(cfg['model']['base_channels']),
+        gradient_checkpointing=bool(cfg['model'].get('gradient_checkpointing', False)),
     ).to(device)
 
     state = load_torch_checkpoint(args.checkpoint, device)
-    model.load_state_dict(state['model'] if 'model' in state else state)
-    model.eval()
+    generator.load_state_dict(state['generator'] if 'generator' in state else state)
+    generator.eval()
+
     amp_enabled = bool(cfg['training']['amp']) and is_cuda_device(device)
     if args.split == 'both':
         train_loader = build_loader_for_split(cfg, 'train', device)
         val_loader = build_loader_for_split(cfg, 'val', device)
-        train_summary = summarize_loader(model, train_loader, device, target_columns, target_losses, target_metadata, amp_enabled)
-        val_summary = summarize_loader(model, val_loader, device, target_columns, target_losses, target_metadata, amp_enabled)
+        train_summary = summarize_loader(generator, train_loader, device, target_columns, target_losses, target_metadata, amp_enabled)
+        val_summary = summarize_loader(generator, val_loader, device, target_columns, target_losses, target_metadata, amp_enabled)
         summary: Dict[str, Dict[str, float]] = {
             'train': train_summary,
             'val': val_summary,
@@ -187,18 +194,22 @@ def main() -> None:
         }
         try:
             test_loader = build_loader_for_split(cfg, 'test', device)
-            summary['test'] = summarize_loader(model, test_loader, device, target_columns, target_losses, target_metadata, amp_enabled)
+            summary['test'] = summarize_loader(generator, test_loader, device, target_columns, target_losses, target_metadata, amp_enabled)
         except ValueError:
             pass
     else:
         loader = build_loader_for_split(cfg, args.split, device)
-        summary = summarize_loader(model, loader, device, target_columns, target_losses, target_metadata, amp_enabled)
+        summary = summarize_loader(generator, loader, device, target_columns, target_losses, target_metadata, amp_enabled)
 
+    if 'epoch' in state:
+        summary['_checkpoint'] = {'epoch': int(state['epoch'])}
+    if 'val_recon_loss' in state:
+        summary.setdefault('_checkpoint', {})['val_recon_loss'] = float(state['val_recon_loss'])
     summary.setdefault('_evaluation', {})['split'] = args.split
 
     print(json.dumps(summary, indent=2))
 
-    file_name = 'eval_metrics.json' if args.split != 'both' else 'eval_metrics_both.json'
+    file_name = 'eval_metrics_cgan.json' if args.split != 'both' else 'eval_metrics_cgan_both.json'
     out_path = Path(cfg['runtime']['output_dir']) / file_name
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(summary, indent=2), encoding='utf-8')

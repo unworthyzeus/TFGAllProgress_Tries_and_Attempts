@@ -1,0 +1,86 @@
+seed: 42
+
+data:
+  format: hdf5
+  hdf5_path: CKM_Dataset.h5
+  input_column: topology_map
+  input_metadata:
+    scale: 255.0
+    offset: 0.0
+  los_input_column: null
+  target_field_map: {}
+  val_ratio: 0.15
+  test_ratio: 0.15
+  split_seed: 42
+  scalar_feature_columns: []
+  constant_scalar_features: {}
+  scalar_feature_norms: {}
+  image_size: 513
+  num_workers: 4
+
+model:
+  base_channels: 64
+  out_channels: 4
+  use_scalar_channels: false
+
+training:
+  batch_size: 2
+  auto_batch_by_vram:
+    enabled: true
+    reference_vram_gb: 16.0
+    reference_batch_size: 2
+    min_batch_size: 1
+    max_batch_size: 8
+    safety_factor: 0.9
+  epochs: 30
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  amp: true
+  clip_grad_norm: 1.0
+  save_every: 5
+  subset_size: null
+
+augmentation:
+  enable: true
+  hflip_prob: 0.5
+  vflip_prob: 0.5
+  rot90_prob: 0.4
+
+loss:
+  mse_weight: 1.0
+  l1_weight: 0.2
+
+runtime:
+  device: auto
+  output_dir: outputs/baseline_hdf5_run
+  resume_checkpoint: null
+
+target_columns:
+  - delay_spread
+  - angular_spread
+  - path_loss
+  - los_mask
+
+target_losses:
+  delay_spread: mse
+  angular_spread: mse
+  path_loss: mse
+  los_mask: bce
+
+target_metadata:
+  delay_spread:
+    scale: 1000.0
+    offset: 0.0
+    unit: ns
+  angular_spread:
+    scale: 180.0
+    offset: 0.0
+    unit: deg
+  path_loss:
+    scale: 180.0
+    offset: 0.0
+    unit: dB
+  los_mask:
+    scale: 1.0
+    offset: 0.0
+    unit: binary_los

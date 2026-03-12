@@ -28,6 +28,21 @@ Optional:
 - If your model input includes binary LoS map, set `data.los_input_column: binary_los`.
 - If not, set `data.los_input_column: null`.
 
+### Direct HDF5 support
+- Direct training from `CKM_Dataset.h5` is supported through dedicated configs.
+- See [CKM_HDF5_DATASET.md](CKM_HDF5_DATASET.md) for the field mapping and run commands.
+- See [SCRIPTS_AND_SPLITS.md](SCRIPTS_AND_SPLITS.md) for the role of each script and the current `70/15/15` split policy.
+- HDF5 configs added in `configs/`:
+   - `baseline_hdf5.yaml`
+   - `proposal_regression_only_hdf5.yaml`
+   - `cgan_unet_hdf5.yaml`
+   - `baseline_hdf5_amd.yaml`
+   - `cgan_unet_hdf5_amd.yaml`
+ - Remote SLURM scripts added in `cluster/`:
+   - `run_train_hdf5.slurm`
+   - `run_train_cgan_hdf5.slurm`
+   - `run_eval_hdf5.slurm`
+
 For scalar inputs:
 - Put **varying** per-sample values in manifest columns listed in `data.scalar_feature_columns` (e.g., `antenna_height`).
 - Put **hardcoded** global values in `data.constant_scalar_features` (e.g., `frequency_ghz: 7.125`, fixed `antenna_power`, fixed `bandwidth`).
@@ -51,6 +66,8 @@ python -m pip install -r requirements.txt
 python train.py --config configs/baseline.yaml
 python train.py --config configs/proposal_regression_only.yaml
 python train_cgan.py --config configs/cgan_unet.yaml
+python cross_validate.py --config configs/baseline_hdf5.yaml --folds 5
+python cross_validate_cgan.py --config configs/cgan_unet_hdf5.yaml --folds 5
 ```
 
 ## Evaluate

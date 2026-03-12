@@ -9,11 +9,15 @@ import torch
 from PIL import Image
 from torchvision.transforms import functional as TF
 
-from config_utils import load_config, resolve_device
+from config_utils import load_config, load_torch_checkpoint, resolve_device
 from heuristics_cgan import (
     apply_augmented_los_heuristics,
+    apply_binary_mask_heuristics,
     apply_regression_heuristics,
     denormalize_array,
+    derive_channel_power_from_path_loss,
+    derive_link_availability,
+    derive_snr_maps,
 )
 from model_cgan import UNetGenerator
 
@@ -68,7 +72,7 @@ def main() -> None:
         base_channels=int(cfg['model']['base_channels']),
     ).to(device)
 
-    state = torch.load(args.checkpoint, map_location=device)
+    state = load_torch_checkpoint(args.checkpoint, device)
     generator.load_state_dict(state['generator'] if 'generator' in state else state)
     generator.eval()
 
@@ -106,6 +110,7 @@ def main() -> None:
     out_dir = Path(cfg['runtime']['output_dir']) / 'predict_cgan_outputs'
     out_dir.mkdir(parents=True, exist_ok=True)
     np.save(out_dir / 'predictions_raw.npy', pred)
+    physical_outputs: Dict[str, np.ndarray] = {}
 
     for i, name in enumerate(target_columns):
         arr = pred[i]
@@ -126,19 +131,73 @@ def main() -> None:
                     np.save(out_dir / f'{name}_binary.npy', los_outputs['binary'])
             np.save(out_dir / f'{name}_soft.npy', arr_physical)
             arr = arr_physical
+        elif name == 'los_mask':
+            if cfg.get('target_losses', {}).get(name, 'mse').lower() == 'bce':
+                arr_probs = 1.0 / (1.0 + np.exp(-arr))
+            else:
+                arr_probs = denormalize_array(arr, target_metadata.get(name, {}))
+
+            if bool(post_cfg.get('enable', True)):
+                los_mask_outputs = apply_binary_mask_heuristics(
+                    arr_probs,
+                    threshold=float(post_cfg.get('los_mask_threshold', 0.5)),
+                    export_binary=bool(post_cfg.get('export_los_mask_binary', False)),
+                )
+                arr_probs = los_mask_outputs['probabilities']
+                if 'binary' in los_mask_outputs:
+                    np.save(out_dir / f'{name}_binary.npy', los_mask_outputs['binary'])
+
+            np.save(out_dir / f'{name}_probabilities.npy', arr_probs)
+            arr = arr_probs
+            physical_outputs[name] = arr_probs
         elif cfg.get('target_losses', {}).get(name, 'mse').lower() == 'bce':
             arr = 1.0 / (1.0 + np.exp(-arr))
             np.save(out_dir / f'{name}_probabilities.npy', arr)
+            physical_outputs[name] = arr
         else:
             arr_physical = denormalize_array(arr, target_metadata.get(name, {}))
             if bool(post_cfg.get('enable', True)):
+                regression_kernel = int(post_cfg.get('regression_median_kernel', 3))
+                if name == 'path_loss':
+                    regression_kernel = int(post_cfg.get('path_loss_median_kernel', regression_kernel))
                 arr_physical = apply_regression_heuristics(
                     arr_physical,
                     target_metadata.get(name, {}),
-                    kernel_size=int(post_cfg.get('regression_median_kernel', 3)),
+                    kernel_size=regression_kernel,
                 )
             np.save(out_dir / f'{name}_physical.npy', arr_physical)
+            physical_outputs[name] = arr_physical
         Image.fromarray(to_uint8(arr), mode='L').save(out_dir / f'{name}.png')
+
+    link_budget_cfg = dict(post_cfg.get('link_budget', {}))
+    if bool(post_cfg.get('export_derived_link_budget_maps', False)) and 'path_loss' in physical_outputs:
+        channel_power_dbm = derive_channel_power_from_path_loss(
+            physical_outputs['path_loss'],
+            tx_power_dbm=float(link_budget_cfg.get('tx_power_dbm', 46.0)),
+            tx_gain_dbi=float(link_budget_cfg.get('tx_gain_dbi', 0.0)),
+            rx_gain_dbi=float(link_budget_cfg.get('rx_gain_dbi', 0.0)),
+            other_losses_db=float(link_budget_cfg.get('other_losses_db', 0.0)),
+        )
+        np.save(out_dir / 'channel_power_derived_dbm.npy', channel_power_dbm)
+        Image.fromarray(to_uint8(channel_power_dbm), mode='L').save(out_dir / 'channel_power_derived_dbm.png')
+
+        bandwidth_hz = link_budget_cfg.get('bandwidth_hz')
+        if bandwidth_hz is not None:
+            snr_outputs = derive_snr_maps(
+                channel_power_dbm,
+                bandwidth_hz=float(bandwidth_hz),
+                noise_figure_db=float(link_budget_cfg.get('noise_figure_db', 0.0)),
+            )
+            np.save(out_dir / 'noise_floor_derived_dbm.npy', snr_outputs['noise_floor_dbm'])
+            np.save(out_dir / 'snr_derived_db.npy', snr_outputs['snr_db'])
+            np.save(out_dir / 'snr_derived_linear.npy', snr_outputs['snr_linear'])
+            Image.fromarray(to_uint8(snr_outputs['snr_db']), mode='L').save(out_dir / 'snr_derived_db.png')
+
+        reception_threshold_dbm = link_budget_cfg.get('reception_threshold_dbm')
+        if reception_threshold_dbm is not None:
+            link_available = derive_link_availability(channel_power_dbm, float(reception_threshold_dbm))
+            np.save(out_dir / 'link_available_binary.npy', link_available)
+            Image.fromarray((link_available * 255.0).astype(np.uint8), mode='L').save(out_dir / 'link_available_binary.png')
 
     print(f'cGAN predictions saved to: {out_dir}')
 

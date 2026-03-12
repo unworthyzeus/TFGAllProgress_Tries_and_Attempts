@@ -9,12 +9,12 @@ from typing import Dict, List
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch import amp
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
-from config_utils import ensure_output_dir, load_config, resolve_device
-from data_utils import CKMDataset
+from config_utils import ensure_output_dir, is_cuda_device, load_config, load_torch_checkpoint, move_optimizer_state_to_device, resolve_device
+from data_utils import build_datasets_from_config, compute_input_channels
 from model_unet import CKMUNet
 
 
@@ -23,6 +23,28 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def resolve_resume_checkpoint(out_dir: Path, configured_resume: str | None) -> Path | None:
+    if configured_resume:
+        resume_path = Path(configured_resume)
+        return resume_path if resume_path.exists() else None
+
+    epoch_candidates = sorted(out_dir.glob('epoch_*.pt'))
+    if epoch_candidates:
+        def extract_epoch(path: Path) -> int:
+            stem = path.stem
+            try:
+                return int(stem.split('_')[1])
+            except Exception:
+                return -1
+
+        return max(epoch_candidates, key=extract_epoch)
+
+    best_path = out_dir / 'best.pt'
+    if best_path.exists():
+        return best_path
+    return None
 
 
 def build_loss_map(target_columns: List[str], target_losses: Dict[str, str]):
@@ -40,6 +62,38 @@ def build_loss_map(target_columns: List[str], target_losses: Dict[str, str]):
     return loss_map
 
 
+def build_optimizer(cfg: Dict, model: nn.Module, device: object) -> torch.optim.Optimizer:
+    optimizer_name = str(cfg['training'].get('optimizer', 'adamw')).lower()
+    learning_rate = float(cfg['training']['learning_rate'])
+    weight_decay = float(cfg['training']['weight_decay'])
+    momentum = float(cfg['training'].get('momentum', 0.0))
+
+    if optimizer_name == 'adamw':
+        return torch.optim.AdamW(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            foreach=is_cuda_device(device),
+        )
+    if optimizer_name == 'rmsprop':
+        return torch.optim.RMSprop(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            foreach=is_cuda_device(device),
+        )
+    if optimizer_name == 'sgd':
+        return torch.optim.SGD(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            foreach=is_cuda_device(device),
+        )
+    raise ValueError(f"Unsupported optimizer '{optimizer_name}'.")
+
+
 def compute_weighted_loss(
     outputs: torch.Tensor,
     targets: torch.Tensor,
@@ -48,6 +102,7 @@ def compute_weighted_loss(
     loss_map: Dict[str, nn.Module],
     mse_weight: float,
     l1_weight: float,
+    target_loss_weights: Dict[str, float],
 ) -> torch.Tensor:
     total = torch.tensor(0.0, device=outputs.device)
     valid_count = torch.tensor(0.0, device=outputs.device)
@@ -66,6 +121,7 @@ def compute_weighted_loss(
             channel_loss = l1_weight * channel_loss
         elif isinstance(loss_map[name], nn.MSELoss):
             channel_loss = mse_weight * channel_loss
+        channel_loss = float(target_loss_weights.get(name, 1.0)) * channel_loss
 
         total = total + channel_loss
         valid_count = valid_count + (msk_ch.sum() > 0).float()
@@ -77,13 +133,14 @@ def run_epoch(
     model: nn.Module,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
-    scaler: GradScaler,
+    scaler: amp.GradScaler,
     device: str,
     target_columns: List[str],
     loss_map: Dict[str, nn.Module],
     amp_enabled: bool,
     mse_weight: float,
     l1_weight: float,
+    target_loss_weights: Dict[str, float],
     clip_grad_norm: float,
 ) -> float:
     model.train()
@@ -93,7 +150,7 @@ def run_epoch(
         inputs, targets, masks = inputs.to(device), targets.to(device), masks.to(device)
 
         optimizer.zero_grad(set_to_none=True)
-        with autocast(enabled=amp_enabled):
+        with amp.autocast(device_type='cuda', enabled=amp_enabled):
             outputs = model(inputs)
             loss = compute_weighted_loss(
                 outputs,
@@ -103,6 +160,7 @@ def run_epoch(
                 loss_map,
                 mse_weight,
                 l1_weight,
+                target_loss_weights,
             )
 
         scaler.scale(loss).backward()
@@ -126,6 +184,7 @@ def eval_epoch(
     amp_enabled: bool,
     mse_weight: float,
     l1_weight: float,
+    target_loss_weights: Dict[str, float],
 ) -> float:
     model.eval()
     running = 0.0
@@ -133,7 +192,7 @@ def eval_epoch(
     with torch.no_grad():
         for inputs, targets, masks in tqdm(loader, desc='val', leave=False):
             inputs, targets, masks = inputs.to(device), targets.to(device), masks.to(device)
-            with autocast(enabled=amp_enabled):
+            with amp.autocast(device_type='cuda', enabled=amp_enabled):
                 outputs = model(inputs)
                 loss = compute_weighted_loss(
                     outputs,
@@ -143,6 +202,7 @@ def eval_epoch(
                     loss_map,
                     mse_weight,
                     l1_weight,
+                    target_loss_weights,
                 )
             running += loss.item()
 
@@ -165,46 +225,21 @@ def main() -> None:
     if int(cfg['model']['out_channels']) != len(target_columns):
         raise ValueError("model.out_channels must match len(target_columns)")
 
-    train_set = CKMDataset(
-        manifest_csv=cfg['data']['train_manifest'],
-        root_dir=cfg['data']['root_dir'],
-        target_columns=target_columns,
-        image_size=int(cfg['data']['image_size']),
-        augment=bool(cfg['augmentation']['enable']),
-        hflip_prob=float(cfg['augmentation']['hflip_prob']),
-        vflip_prob=float(cfg['augmentation']['vflip_prob']),
-        rot90_prob=float(cfg['augmentation']['rot90_prob']),
-        add_scalar_channels=bool(cfg['model']['use_scalar_channels']),
-        scalar_feature_columns=list(cfg['data'].get('scalar_feature_columns', [])),
-        constant_scalar_features=dict(cfg['data'].get('constant_scalar_features', {})),
-        scalar_feature_norms=dict(cfg['data'].get('scalar_feature_norms', {})),
-        los_input_column=cfg['data'].get('los_input_column'),
-    )
-
-    val_set = CKMDataset(
-        manifest_csv=cfg['data']['val_manifest'],
-        root_dir=cfg['data']['root_dir'],
-        target_columns=target_columns,
-        image_size=int(cfg['data']['image_size']),
-        augment=False,
-        add_scalar_channels=bool(cfg['model']['use_scalar_channels']),
-        scalar_feature_columns=list(cfg['data'].get('scalar_feature_columns', [])),
-        constant_scalar_features=dict(cfg['data'].get('constant_scalar_features', {})),
-        scalar_feature_norms=dict(cfg['data'].get('scalar_feature_norms', {})),
-        los_input_column=cfg['data'].get('los_input_column'),
-    )
+    train_set, val_set = build_datasets_from_config(cfg)
 
     subset_size = cfg['training'].get('subset_size')
     if subset_size:
         subset_size = min(int(subset_size), len(train_set))
         train_set = Subset(train_set, range(subset_size))
 
+    pin_memory = is_cuda_device(device)
+
     train_loader = DataLoader(
         train_set,
         batch_size=int(cfg['training']['batch_size']),
         shuffle=True,
         num_workers=int(cfg['data']['num_workers']),
-        pin_memory=True,
+        pin_memory=pin_memory,
         persistent_workers=int(cfg['data']['num_workers']) > 0,
     )
 
@@ -213,40 +248,48 @@ def main() -> None:
         batch_size=int(cfg['training']['batch_size']),
         shuffle=False,
         num_workers=max(1, int(cfg['data']['num_workers']) // 2),
-        pin_memory=True,
+        pin_memory=pin_memory,
         persistent_workers=max(1, int(cfg['data']['num_workers']) // 2) > 0,
     )
 
-    in_channels = 1
-    if cfg['data'].get('los_input_column'):
-        in_channels += 1
-    if bool(cfg['model']['use_scalar_channels']):
-        in_channels += len(list(cfg['data'].get('scalar_feature_columns', [])))
-        in_channels += len(dict(cfg['data'].get('constant_scalar_features', {})))
+    in_channels = compute_input_channels(cfg)
     model = CKMUNet(
         in_channels=in_channels,
         out_channels=int(cfg['model']['out_channels']),
         base_channels=int(cfg['model']['base_channels']),
+        gradient_checkpointing=bool(cfg['model'].get('gradient_checkpointing', False)),
     ).to(device)
 
-    resume = cfg['runtime'].get('resume_checkpoint')
-    if resume:
-        state = torch.load(resume, map_location=device)
-        model.load_state_dict(state['model'] if 'model' in state else state)
+    optimizer = build_optimizer(cfg, model, device)
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=float(cfg['training']['learning_rate']),
-        weight_decay=float(cfg['training']['weight_decay']),
-    )
-
-    scaler = GradScaler(enabled=bool(cfg['training']['amp']) and device == 'cuda')
+    amp_enabled = bool(cfg['training']['amp']) and is_cuda_device(device)
+    scaler = amp.GradScaler('cuda', enabled=amp_enabled)
     loss_map = build_loss_map(target_columns, target_losses)
+    target_loss_weights = {str(k): float(v) for k, v in dict(cfg['loss'].get('target_loss_weights', {})).items()}
 
     best_val = float('inf')
     history = []
+    start_epoch = 1
 
-    for epoch in range(1, int(cfg['training']['epochs']) + 1):
+    resume_path = resolve_resume_checkpoint(out_dir, cfg['runtime'].get('resume_checkpoint'))
+    if resume_path is not None:
+        state = load_torch_checkpoint(resume_path, device)
+        model.load_state_dict(state['model'] if 'model' in state else state)
+        if 'optimizer' in state:
+            optimizer.load_state_dict(state['optimizer'])
+            move_optimizer_state_to_device(optimizer, device)
+        if 'scaler' in state:
+            scaler.load_state_dict(state['scaler'])
+        if 'best_val_loss' in state:
+            best_val = float(state['best_val_loss'])
+        elif 'val_loss' in state:
+            best_val = float(state['val_loss'])
+        if 'history' in state and isinstance(state['history'], list):
+            history = list(state['history'])
+        start_epoch = int(state.get('epoch', 0)) + 1
+        print(f"Resuming from {resume_path} at epoch {start_epoch}")
+
+    for epoch in range(start_epoch, int(cfg['training']['epochs']) + 1):
         train_loss = run_epoch(
             model,
             train_loader,
@@ -255,9 +298,10 @@ def main() -> None:
             device,
             target_columns,
             loss_map,
-            bool(cfg['training']['amp']) and device == 'cuda',
+            amp_enabled,
             float(cfg['loss']['mse_weight']),
             float(cfg['loss']['l1_weight']),
+            target_loss_weights,
             float(cfg['training']['clip_grad_norm']),
         )
 
@@ -267,9 +311,10 @@ def main() -> None:
             device,
             target_columns,
             loss_map,
-            bool(cfg['training']['amp']) and device == 'cuda',
+            amp_enabled,
             float(cfg['loss']['mse_weight']),
             float(cfg['loss']['l1_weight']),
+            target_loss_weights,
         )
 
         row = {'epoch': epoch, 'train_loss': train_loss, 'val_loss': val_loss}
@@ -278,10 +323,32 @@ def main() -> None:
 
         if val_loss < best_val:
             best_val = val_loss
-            torch.save({'model': model.state_dict(), 'epoch': epoch, 'val_loss': val_loss}, out_dir / 'best.pt')
+            torch.save(
+                {
+                    'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'scaler': scaler.state_dict(),
+                    'epoch': epoch,
+                    'val_loss': val_loss,
+                    'best_val_loss': best_val,
+                    'history': history,
+                },
+                out_dir / 'best.pt',
+            )
 
         if epoch % int(cfg['training']['save_every']) == 0:
-            torch.save({'model': model.state_dict(), 'epoch': epoch, 'val_loss': val_loss}, out_dir / f'epoch_{epoch}.pt')
+            torch.save(
+                {
+                    'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'scaler': scaler.state_dict(),
+                    'epoch': epoch,
+                    'val_loss': val_loss,
+                    'best_val_loss': best_val,
+                    'history': history,
+                },
+                out_dir / f'epoch_{epoch}.pt',
+            )
 
     with (out_dir / 'history.json').open('w', encoding='utf-8') as handle:
         json.dump(history, handle, indent=2)

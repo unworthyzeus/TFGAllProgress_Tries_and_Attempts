@@ -23,11 +23,80 @@ def ensure_output_dir(path: str) -> Path:
     return out
 
 
-def resolve_device(device_cfg: str) -> str:
-    if device_cfg == 'auto':
+def is_cuda_device(device: Any) -> bool:
+    if isinstance(device, str):
+        return device == 'cuda'
+    try:
+        return getattr(device, 'type', None) == 'cuda'
+    except Exception:
+        return False
+
+
+def resolve_device(device_cfg: str) -> Any:
+    device_name = str(device_cfg).lower()
+
+    try:
+        import torch
+    except Exception:
+        return 'cpu'
+
+    if device_name == 'auto':
+        if torch.cuda.is_available():
+            return 'cuda'
         try:
-            import torch
-            return 'cuda' if torch.cuda.is_available() else 'cpu'
+            import torch_directml
+            return torch_directml.device()
         except Exception:
             return 'cpu'
+
+    if device_name in {'cuda', 'cpu'}:
+        return device_name
+
+    if device_name in {'directml', 'dml', 'amd'}:
+        try:
+            import torch_directml
+            return torch_directml.device()
+        except Exception as exc:
+            raise RuntimeError(
+                "DirectML device requested but torch-directml is not installed. Install it and retry."
+            ) from exc
+
     return device_cfg
+
+
+def resolve_checkpoint_map_location(device: Any) -> Any:
+    if is_cuda_device(device):
+        return device
+    return 'cpu'
+
+
+def load_torch_checkpoint(path: str | Path, device: Any) -> Any:
+    import torch
+
+    map_location = resolve_checkpoint_map_location(device)
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def _move_state_value_to_device(value: Any, device: Any) -> Any:
+    try:
+        import torch
+    except Exception:
+        return value
+
+    if torch.is_tensor(value):
+        return value.to(device)
+    if isinstance(value, dict):
+        return {key: _move_state_value_to_device(item, device) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_move_state_value_to_device(item, device) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_move_state_value_to_device(item, device) for item in value)
+    return value
+
+
+def move_optimizer_state_to_device(optimizer: Any, device: Any) -> None:
+    for state_id, state_value in list(optimizer.state.items()):
+        optimizer.state[state_id] = _move_state_value_to_device(state_value, device)

@@ -68,3 +68,57 @@ def apply_augmented_los_heuristics(
     if export_binary:
         outputs['binary'] = (probs >= threshold).astype(np.float32)
     return outputs
+
+
+def apply_binary_mask_heuristics(
+    mask_map: np.ndarray,
+    threshold: float = 0.5,
+    export_binary: bool = False,
+) -> Dict[str, np.ndarray]:
+    probs = np.clip(mask_map, 0.0, 1.0)
+
+    outputs = {
+        'probabilities': probs,
+    }
+    if export_binary:
+        outputs['binary'] = (probs >= threshold).astype(np.float32)
+    return outputs
+
+
+def derive_channel_power_from_path_loss(
+    path_loss_db: np.ndarray,
+    tx_power_dbm: float,
+    tx_gain_dbi: float = 0.0,
+    rx_gain_dbi: float = 0.0,
+    other_losses_db: float = 0.0,
+) -> np.ndarray:
+    return (
+        float(tx_power_dbm)
+        + float(tx_gain_dbi)
+        + float(rx_gain_dbi)
+        - float(other_losses_db)
+        - np.asarray(path_loss_db, dtype=np.float32)
+    ).astype(np.float32)
+
+
+def derive_snr_maps(
+    rx_power_dbm: np.ndarray,
+    bandwidth_hz: float,
+    noise_figure_db: float = 0.0,
+) -> Dict[str, np.ndarray]:
+    bandwidth_hz = max(float(bandwidth_hz), 1.0)
+    noise_floor_dbm = -174.0 + 10.0 * np.log10(bandwidth_hz) + float(noise_figure_db)
+    snr_db = np.asarray(rx_power_dbm, dtype=np.float32) - noise_floor_dbm
+    snr_linear = np.power(10.0, snr_db / 10.0, dtype=np.float32)
+    return {
+        'noise_floor_dbm': np.full_like(snr_db, noise_floor_dbm, dtype=np.float32),
+        'snr_db': snr_db.astype(np.float32),
+        'snr_linear': snr_linear.astype(np.float32),
+    }
+
+
+def derive_link_availability(
+    rx_power_dbm: np.ndarray,
+    reception_threshold_dbm: float,
+) -> np.ndarray:
+    return (np.asarray(rx_power_dbm, dtype=np.float32) >= float(reception_threshold_dbm)).astype(np.float32)
