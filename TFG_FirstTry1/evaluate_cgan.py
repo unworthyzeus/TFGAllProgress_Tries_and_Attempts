@@ -83,6 +83,95 @@ def denormalize_channel(values: torch.Tensor, metadata: Dict[str, object]) -> to
     return values * scale + offset
 
 
+def init_metric_totals(target_columns: List[str]) -> Dict[str, Dict[str, float]]:
+    return {
+        name: {
+            'count': 0.0,
+            'sum_squared_error': 0.0,
+            'sum_absolute_error': 0.0,
+            'sum_correct': 0.0,
+            'sum_squared_error_physical': 0.0,
+            'sum_absolute_error_physical': 0.0,
+        }
+        for name in target_columns
+    }
+
+
+def update_metric_totals(
+    totals: Dict[str, Dict[str, float]],
+    outputs: torch.Tensor,
+    targets: torch.Tensor,
+    masks: torch.Tensor,
+    target_columns: List[str],
+    target_losses: Dict[str, str],
+    target_metadata: Dict[str, Dict[str, object]],
+) -> None:
+    for i, name in enumerate(target_columns):
+        pred = outputs[:, i : i + 1]
+        tgt = targets[:, i : i + 1]
+        msk = masks[:, i : i + 1]
+
+        valid = msk > 0
+        valid_count = float(valid.sum().item())
+        if valid_count == 0.0:
+            continue
+
+        loss_name = target_losses.get(name, 'mse').lower()
+        if loss_name == 'bce':
+            probs = torch.sigmoid(pred)
+            diff = (probs - tgt)[valid]
+            preds = (probs > 0.5).float()
+            totals[name]['sum_correct'] += float((preds[valid] == tgt[valid]).float().sum().item())
+        else:
+            diff = (pred - tgt)[valid]
+
+        totals[name]['count'] += valid_count
+        totals[name]['sum_squared_error'] += float(torch.sum(diff ** 2).item())
+        totals[name]['sum_absolute_error'] += float(torch.sum(torch.abs(diff)).item())
+
+        metadata = target_metadata.get(name, {})
+        if metadata and loss_name != 'bce':
+            pred_phys = denormalize_channel(pred, metadata)
+            tgt_phys = denormalize_channel(tgt, metadata)
+            diff_phys = (pred_phys - tgt_phys)[valid]
+            totals[name]['sum_squared_error_physical'] += float(torch.sum(diff_phys ** 2).item())
+            totals[name]['sum_absolute_error_physical'] += float(torch.sum(torch.abs(diff_phys)).item())
+
+
+def finalize_metric_totals(
+    totals: Dict[str, Dict[str, float]],
+    target_columns: List[str],
+    target_losses: Dict[str, str],
+    target_metadata: Dict[str, Dict[str, object]],
+) -> Dict[str, Dict[str, float]]:
+    summary: Dict[str, Dict[str, float]] = {}
+
+    for name in target_columns:
+        summary[name] = {}
+        count = totals[name]['count']
+        if count > 0.0:
+            mse = totals[name]['sum_squared_error'] / count
+            summary[name]['mse'] = float(mse)
+            summary[name]['rmse'] = float(np.sqrt(mse))
+            summary[name]['mae'] = float(totals[name]['sum_absolute_error'] / count)
+
+            if target_losses.get(name, 'mse').lower() == 'bce':
+                summary[name]['accuracy'] = float(totals[name]['sum_correct'] / count)
+
+            metadata = target_metadata.get(name, {})
+            if metadata:
+                mse_physical = totals[name]['sum_squared_error_physical'] / count
+                summary[name]['mse_physical'] = float(mse_physical)
+                summary[name]['rmse_physical'] = float(np.sqrt(mse_physical))
+                summary[name]['mae_physical'] = float(totals[name]['sum_absolute_error_physical'] / count)
+
+        unit = target_metadata.get(name, {}).get('unit')
+        if unit:
+            summary[name]['unit'] = str(unit)
+
+    return summary
+
+
 def aggregate_metrics(
     outputs: torch.Tensor,
     targets: torch.Tensor,
@@ -167,7 +256,7 @@ def summarize_loader(
     fixed_path_loss_kernel: int | None = None,
     path_loss_kernel_candidates: List[int] | None = None,
 ) -> Dict[str, Dict[str, float]]:
-    running = {name: {'mse': [], 'rmse': [], 'mae': [], 'accuracy': [], 'mse_physical': [], 'rmse_physical': [], 'mae_physical': []} for name in target_columns}
+    totals = init_metric_totals(target_columns)
     path_loss_preds: List[np.ndarray] = []
     path_loss_targets: List[np.ndarray] = []
 
@@ -188,24 +277,9 @@ def summarize_loader(
                     path_loss_preds.append(np.asarray(pred_phys[batch_idx, 0], dtype=np.float32))
                     path_loss_targets.append(np.asarray(tgt_phys[batch_idx, 0], dtype=np.float32))
 
-            batch_metrics = aggregate_metrics(outputs, targets, masks, target_columns, target_losses, target_metadata)
-            for name in target_columns:
-                for key, value in batch_metrics[name].items():
-                    if key == 'unit' or np.isnan(value):
-                        continue
-                    if key not in running[name]:
-                        running[name][key] = []
-                    running[name][key].append(value)
+            update_metric_totals(totals, outputs, targets, masks, target_columns, target_losses, target_metadata)
 
-    summary: Dict[str, Dict[str, float]] = {}
-    for name in target_columns:
-        summary[name] = {}
-        for key, values in running[name].items():
-            if values:
-                summary[name][key] = float(np.mean(values))
-        unit = target_metadata.get(name, {}).get('unit')
-        if unit:
-            summary[name]['unit'] = str(unit)
+    summary = finalize_metric_totals(totals, target_columns, target_losses, target_metadata)
 
     if path_loss_preds and path_loss_targets:
         path_loss_metadata = target_metadata.get('path_loss', {})

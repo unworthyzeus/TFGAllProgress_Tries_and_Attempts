@@ -15,7 +15,14 @@ from tqdm import tqdm
 
 from config_utils import ensure_output_dir, is_cuda_device, load_config, load_torch_checkpoint, move_optimizer_state_to_device, resolve_device
 from data_utils import build_datasets_from_config, compute_input_channels
-from evaluate_cgan import aggregate_metrics, build_loader_for_split, load_saved_heuristic_calibration, summarize_loader
+from evaluate_cgan import (
+    build_loader_for_split,
+    finalize_metric_totals,
+    init_metric_totals,
+    load_saved_heuristic_calibration,
+    summarize_loader,
+    update_metric_totals,
+)
 from model_cgan import PatchDiscriminator, UNetGenerator
 
 
@@ -189,7 +196,7 @@ def validate_generator(
 ) -> Tuple[float, Dict[str, Dict[str, float]]]:
     generator.eval()
     total = 0.0
-    running = {name: {'mse': [], 'mae': [], 'accuracy': [], 'mse_physical': [], 'mae_physical': []} for name in target_columns}
+    totals = init_metric_totals(target_columns)
     with torch.no_grad():
         for x, y, m in tqdm(loader, desc='val', leave=False):
             x, y, m = x.to(device), y.to(device), m.to(device)
@@ -197,24 +204,9 @@ def validate_generator(
                 pred = generator(x)
                 recon = compute_reconstruction_loss(pred, y, m, target_columns, loss_map, mse_weight, l1_weight, target_loss_weights)
             total += recon.item()
-            batch_metrics = aggregate_metrics(pred, y, m, target_columns, target_losses, target_metadata)
-            for name in target_columns:
-                for key, value in batch_metrics[name].items():
-                    if key == 'unit' or np.isnan(value):
-                        continue
-                    if key not in running[name]:
-                        running[name][key] = []
-                    running[name][key].append(value)
+            update_metric_totals(totals, pred, y, m, target_columns, target_losses, target_metadata)
 
-    summary: Dict[str, Dict[str, float]] = {}
-    for name in target_columns:
-        summary[name] = {}
-        for key, values in running[name].items():
-            if values:
-                summary[name][key] = float(np.mean(values))
-        unit = target_metadata.get(name, {}).get('unit')
-        if unit:
-            summary[name]['unit'] = str(unit)
+    summary = finalize_metric_totals(totals, target_columns, target_losses, target_metadata)
 
     return total / max(len(loader), 1), summary
 
