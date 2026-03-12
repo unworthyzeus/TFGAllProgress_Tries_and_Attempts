@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Dict
 
@@ -15,11 +16,22 @@ from heuristics_cgan import (
     apply_binary_mask_heuristics,
     apply_regression_heuristics,
     denormalize_array,
+    derive_augmented_los_heuristic,
     derive_channel_power_from_path_loss,
     derive_link_availability,
     derive_snr_maps,
 )
 from model_cgan import UNetGenerator
+
+
+def load_saved_heuristic_calibration(output_dir: Path) -> Dict[str, object] | None:
+    calibration_path = output_dir / 'heuristic_calibration.json'
+    if not calibration_path.exists():
+        legacy_path = output_dir / 'los_mask_calibration.json'
+        if not legacy_path.exists():
+            return None
+        calibration_path = legacy_path
+    return json.loads(calibration_path.read_text(encoding='utf-8'))
 
 
 def to_uint8(arr: np.ndarray) -> np.ndarray:
@@ -58,6 +70,11 @@ def main() -> None:
     target_columns = list(cfg['target_columns'])
     target_metadata = dict(cfg.get('target_metadata', {}))
     post_cfg = dict(cfg.get('postprocess', {}))
+    if bool(post_cfg.get('use_saved_heuristic_calibration', True)):
+        saved_calibration = load_saved_heuristic_calibration(Path(cfg['runtime']['output_dir']))
+        if saved_calibration is not None:
+            if 'path_loss' in saved_calibration:
+                post_cfg['path_loss_median_kernel'] = int(saved_calibration['path_loss'].get('best_median_kernel', post_cfg.get('path_loss_median_kernel', 5)))
 
     in_channels = 1
     if cfg['data'].get('los_input_column'):
@@ -168,6 +185,24 @@ def main() -> None:
             np.save(out_dir / f'{name}_physical.npy', arr_physical)
             physical_outputs[name] = arr_physical
         Image.fromarray(to_uint8(arr), mode='L').save(out_dir / f'{name}.png')
+
+    if bool(post_cfg.get('export_augmented_los_heuristic', False)) and 'los_mask' in physical_outputs:
+        augmented_outputs = derive_augmented_los_heuristic(
+            physical_outputs['los_mask'],
+            path_loss_db=physical_outputs.get('path_loss'),
+            delay_spread_ns=physical_outputs.get('delay_spread'),
+            angular_spread_deg=physical_outputs.get('angular_spread'),
+            binary_los_input=binary_los_np,
+            kernel_size=int(post_cfg.get('augmented_los_heuristic_median_kernel', 3)),
+            threshold=float(post_cfg.get('augmented_los_heuristic_threshold', 0.5)),
+            export_binary=bool(post_cfg.get('export_augmented_los_heuristic_binary', True)),
+            weights=dict(post_cfg.get('augmented_los_heuristic_weights', {})),
+        )
+        np.save(out_dir / 'augmented_los_heuristic.npy', augmented_outputs['probabilities'])
+        Image.fromarray(to_uint8(augmented_outputs['probabilities']), mode='L').save(out_dir / 'augmented_los_heuristic.png')
+        if 'binary' in augmented_outputs:
+            np.save(out_dir / 'augmented_los_heuristic_binary.npy', augmented_outputs['binary'])
+            Image.fromarray((augmented_outputs['binary'] * 255.0).astype(np.uint8), mode='L').save(out_dir / 'augmented_los_heuristic_binary.png')
 
     link_budget_cfg = dict(post_cfg.get('link_budget', {}))
     if bool(post_cfg.get('export_derived_link_budget_maps', False)) and 'path_loss' in physical_outputs:

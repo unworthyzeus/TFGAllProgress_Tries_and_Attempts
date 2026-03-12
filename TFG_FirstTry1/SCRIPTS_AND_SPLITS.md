@@ -45,6 +45,9 @@ Because the old HDF5 configs used `90/10` without a separate `test`, older check
   - Trains the cGAN version: generator + discriminator.
   - Uses `train` for optimization and `val` for checkpoint selection.
   - Saves checkpoints like `best_cgan.pt` and `epoch_*_cgan.pt`.
+  - Saves a lightweight validation JSON after each epoch and can run one final test pass at the end.
+  - It no longer runs the heavy heuristic calibration inside training.
+  - The expensive calibration step was moved out of the training loop to keep epoch transitions faster.
 
 - `cross_validate.py`
   - Runs **k-fold cross-validation** for the standard U-Net.
@@ -67,8 +70,9 @@ Because the old HDF5 configs used `90/10` without a separate `test`, older check
 
 - `evaluate_cgan.py`
   - Evaluates the cGAN generator on **test by default**.
-  - This is the cGAN equivalent of final held-out evaluation.
+  - This is the cGAN equivalent of final held-out evaluation when used without overriding `--split`.
   - Supports `--split train`, `--split val`, `--split test`, and `--split both`.
+  - It is the shared evaluation engine used by both final evaluation and validation wrappers.
 
 ### Validation
 
@@ -79,8 +83,27 @@ Because the old HDF5 configs used `90/10` without a separate `test`, older check
 
 - `validate_cgan.py`
   - Wrapper around `evaluate_cgan.py`.
-  - Runs the same evaluation logic but on **validation** by default.
+  - Runs the same evaluation logic but on **validation** by default by forcing `--split val`.
   - Intended for development-time comparison, not final reporting.
+  - Also saves heuristic calibration for later test-time reuse.
+  - This is where the heavy heuristic calibration belongs now.
+
+## Why `validate_cgan.py` calls `evaluate_cgan.py`
+
+This is intentional.
+
+- `evaluate_cgan.py` is not a test-only script internally.
+- It is a generic evaluation backend that can run on `train`, `val`, `test`, or `both` depending on `--split`.
+- `validate_cgan.py` exists only to provide the validation-specific default behavior:
+  - force `--split val`
+  - save heuristic calibration JSON
+
+So the naming is:
+
+- `evaluate_cgan.py`: generic evaluator, defaulting to `test`
+- `validate_cgan.py`: validation wrapper over that same evaluator
+
+This means the split logic is still correct even though one script calls the other.
 
 ### Inference
 
@@ -207,6 +230,32 @@ Interpretation:
 - large gap means stronger overfitting risk
 - final model reporting should still use `test`
 
+## Heuristic calibration policy
+
+For the cGAN HDF5 route, heuristic hyperparameters should be chosen on `validation`, not on `test`.
+
+Current calibrated items:
+
+- `path_loss` median-filter kernel
+
+Workflow:
+
+- `train_cgan.py` trains with lightweight validation only for checkpoint selection and per-epoch summaries
+- `validate_cgan.py` evaluates on validation and saves the chosen heuristic parameters in `outputs/.../heuristic_calibration.json`
+- `evaluate_cgan.py` evaluates on test and automatically loads that saved calibration
+- `predict_cgan.py` also reuses the saved calibration by default when it exists
+
+Important implementation detail:
+
+- the heavy validation work is the heuristic calibration, especially `path_loss` median-kernel selection
+- that heavy step is no longer executed inside `train_cgan.py`
+- it is now reserved for the separate `validate_cgan.py` run
+
+Important limitation:
+
+- `augmented_los` does not exist as a ground-truth target in the HDF5 dataset
+- so an `augmented_los` heuristic can only be derived if you have a separate LoS-related signal available at inference time, and it cannot be calibrated directly against a true HDF5 target the way `path_loss` can
+
 ## Recommended workflow
 
 ### Standard U-Net
@@ -237,17 +286,46 @@ Train:
 python train_cgan.py --config configs/cgan_unet_hdf5_amd_midvram.yaml
 ```
 
+Development-time validation and heuristic calibration:
+
+```bash
+python validate_cgan.py --config configs/cgan_unet_hdf5_amd_midvram.yaml --checkpoint outputs/.../best_cgan.pt
+```
+
+Final held-out test evaluation:
+
+```bash
+python evaluate_cgan.py --config configs/cgan_unet_hdf5_amd_midvram.yaml --checkpoint outputs/.../best_cgan.pt
+```
+
+Recommended sequence for cGAN HDF5 runs:
+
+- train with `train_cgan.py`
+- when you want proper validation metrics and updated heuristic calibration, run `validate_cgan.py`
+- when you want final held-out numbers, run `evaluate_cgan.py`
+
+With the current mid-VRAM config, this also:
+
+- writes `validate_metrics_cgan_latest.json` after each epoch
+- writes `validate_metrics_epoch_<N>_cgan.json` for each epoch
+- updates `validate_metrics_cgan_best.json` and `heuristic_calibration.json` whenever a new best checkpoint appears
+- runs one final `test` evaluation at the end using the best checkpoint and the saved calibration
+
 Validation during development:
 
 ```bash
 python validate_cgan.py --config configs/cgan_unet_hdf5_amd_midvram.yaml --checkpoint outputs/cgan_unet_hdf5_amd_midvram/best_cgan.pt
 ```
 
+This validation step also saves heuristic calibration for later reuse in test and prediction.
+
 Final test evaluation:
 
 ```bash
 python evaluate_cgan.py --config configs/cgan_unet_hdf5_amd_midvram.yaml --checkpoint outputs/cgan_unet_hdf5_amd_midvram/best_cgan.pt
 ```
+
+By default, test evaluation reuses the heuristic calibration saved from validation.
 
 Cross-validation over `train + val`, keeping `test` fixed:
 

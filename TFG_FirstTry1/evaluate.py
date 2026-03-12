@@ -40,14 +40,15 @@ def aggregate_metrics(
 
         valid = msk > 0
         if valid.sum().item() == 0:
-            metrics[name] = {'mse': float('nan'), 'mae': float('nan')}
+            metrics[name] = {'mse': float('nan'), 'rmse': float('nan'), 'mae': float('nan')}
             continue
 
         diff = (pred - tgt)[valid]
         mse = torch.mean(diff ** 2).item()
+        rmse = float(np.sqrt(mse))
         mae = torch.mean(torch.abs(diff)).item()
 
-        record = {'mse': mse, 'mae': mae}
+        record = {'mse': mse, 'rmse': rmse, 'mae': mae}
 
         metadata = target_metadata.get(name, {})
         if metadata and target_losses.get(name, 'mse').lower() != 'bce':
@@ -55,6 +56,7 @@ def aggregate_metrics(
             tgt_phys = denormalize_channel(tgt, metadata)
             diff_phys = (pred_phys - tgt_phys)[valid]
             record['mse_physical'] = torch.mean(diff_phys ** 2).item()
+            record['rmse_physical'] = float(np.sqrt(record['mse_physical']))
             record['mae_physical'] = torch.mean(torch.abs(diff_phys)).item()
             unit = metadata.get('unit')
             if unit:
@@ -97,7 +99,7 @@ def summarize_loader(
     target_metadata: Dict[str, Dict[str, object]],
     amp_enabled: bool,
 ) -> Dict[str, Dict[str, float]]:
-    running = {name: {'mse': [], 'mae': [], 'accuracy': [], 'mse_physical': [], 'mae_physical': []} for name in target_columns}
+    running = {name: {'mse': [], 'rmse': [], 'mae': [], 'accuracy': [], 'mse_physical': [], 'rmse_physical': [], 'mae_physical': []} for name in target_columns}
 
     with torch.no_grad():
         for inputs, targets, masks in tqdm(loader, desc='eval', leave=False):

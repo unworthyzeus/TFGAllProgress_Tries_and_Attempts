@@ -56,7 +56,7 @@ There are no HDF5 attributes carrying antenna height, antenna power, bandwidth, 
 - There is no bandwidth field in the HDF5.
 - `path_loss` is present, which is consistent with using power or path loss later for SNR-related calculations.
 - `delay_spread` is present without any stored bandwidth parameter.
-- `los_mask` is present and can be trained directly as a binary LoS target.
+- `los_mask` is present and can be consumed as a trusted binary LoS input channel.
 
 ## Antenna reference frame
 
@@ -77,15 +77,15 @@ The training code now supports two dataset formats:
 
 For HDF5 training, the model uses:
 
-- Input: `topology_map`
-- Targets: `delay_spread`, `angular_spread`, `path_loss`, `los_mask`
+- Inputs: `topology_map`, `los_mask`
+- Targets: `delay_spread`, `angular_spread`, `path_loss`
 
 This is intentionally different from the original proposal configs, which expected:
 
 - `channel_power`
 - `augmented_los`
 
-Those two targets are not stored in the HDF5. Training on `path_loss` and `los_mask` is the most direct adaptation.
+Those two targets are not stored in the HDF5. The current adaptation therefore uses the stored binary `los_mask` as an input prior and keeps the supervised outputs focused on the three regression maps.
 
 The loader resizes tensors to `data.image_size`, and the HDF5 configs now set `image_size: 513`, so training runs at the native dataset resolution rather than the earlier reduced `128 x 128` setup.
 
@@ -105,14 +105,11 @@ New configs were added for direct HDF5 training:
 
 ### `baseline_hdf5.yaml`
 
-Use this for the plain U-Net with four outputs:
+Use this for the plain U-Net with trusted LoS input and three outputs:
 
 - `delay_spread`
 - `angular_spread`
 - `path_loss`
-- `los_mask`
-
-`los_mask` uses `bce` loss.
 
 ### `proposal_regression_only_hdf5.yaml`
 
@@ -124,7 +121,7 @@ Use this if you only want the three regression targets:
 
 ### `cgan_unet_hdf5.yaml`
 
-Use this for the cGAN + U-Net setup with the same four HDF5-native targets as `baseline_hdf5.yaml`.
+Use this for the cGAN + U-Net setup with the same trusted LoS input and the same three regression targets as `baseline_hdf5.yaml`.
 
 ### `baseline_hdf5_amd.yaml`
 
@@ -208,6 +205,32 @@ python train_cgan.py --config configs/cgan_unet_hdf5.yaml
 ```bash
 python train_cgan.py --config configs/cgan_unet_hdf5_cuda_max.yaml
 ```
+
+## Quick visualization
+
+If you just want to inspect one HDF5 sample visually, run:
+
+```bash
+python visualize_hdf5_sample.py --hdf5 CKM_Dataset.h5 --index 0
+```
+
+That writes a contact sheet PNG with the five maps:
+
+- `topology_map`
+- `path_loss`
+- `delay_spread`
+- `angular_spread`
+- `los_mask`
+
+Useful variants:
+
+```bash
+python visualize_hdf5_sample.py --list-cities
+python visualize_hdf5_sample.py --list-samples Abidjan --limit 20
+python visualize_hdf5_sample.py --city Abidjan --sample sample_00001
+```
+
+By default, the PNG is written under `outputs/dataset_preview/`.
 
 ## Remote cluster option
 
@@ -304,13 +327,11 @@ Notes:
 
 - These AMD configs force `runtime.device: directml`.
 - AMP is disabled because the current training code only enables mixed precision on CUDA.
-- The AMD configs use `mse` for `los_mask` to avoid `BCEWithLogitsLoss` operators that fall back to CPU on DirectML.
 - The AMD cGAN configs also use `loss.adversarial_loss: mse` so the discriminator path avoids the same BCE fallback.
 - If `loss.adversarial_loss` is omitted, cGAN now defaults to `bce` on CUDA and `mse` on non-CUDA backends such as DirectML.
 - The training code also disables Adam and AdamW `foreach` optimizer kernels on non-CUDA backends, which avoids DirectML fallbacks like `aten::lerp.Scalar_out`.
 - The AMD configs can enable `gradient_checkpointing` in the U-Net to reduce activation memory at the cost of extra compute time.
 - If you are on Linux with ROCm instead of Windows DirectML, standard PyTorch ROCm usually appears as `cuda` inside PyTorch, so the non-AMD configs may already work.
-- In the cGAN HDF5 configs, inference now exports both `los_mask_probabilities.npy` and `los_mask_binary.npy`, using `postprocess.los_mask_threshold` to threshold the binary export.
 - In the cGAN HDF5 configs, inference also derives `channel_power_derived_dbm.npy` from predicted `path_loss` using a fixed link-budget assumption. By default the configs assume `tx_power_dbm: 46.0` with zero extra gains/losses, and optional SNR or link-availability maps can be enabled by setting `postprocess.link_budget.bandwidth_hz` or `postprocess.link_budget.reception_threshold_dbm`.
 
 ## Evaluation

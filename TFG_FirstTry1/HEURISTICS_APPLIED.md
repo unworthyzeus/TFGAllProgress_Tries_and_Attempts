@@ -392,8 +392,8 @@ That is the right tradeoff for the current U-Net + GAN path: enough cleanup to r
 Given what is now known about `CKM_Dataset.h5`, the heuristic set is mostly acceptable, but it should be interpreted more narrowly for the HDF5 route.
 
 Known facts from the dataset:
-- targets are `delay_spread`, `angular_spread`, `path_loss`, and `los_mask`
-- `los_mask` is a true binary target stored in `[0, 1]`, not a soft proxy such as `augmented_los`
+- supervised targets are `delay_spread`, `angular_spread`, and `path_loss`
+- `los_mask` is a true binary map stored in `[0, 1]` and is now used as an input prior for the HDF5 route
 - the antenna is always centered at `(0, 0)`
 - all maps are already aligned to the same fixed `[-256, 256]` spatial frame
 - there are no per-sample antenna, bandwidth, or frequency fields inside the HDF5
@@ -408,18 +408,15 @@ It matches the observed target semantics and prevents impossible outputs for `de
 2. A small `3x3` median filter on regression maps is reasonable.
 It is a mild cleanup step and does not inject a strong physical prior.
 
-3. Leaving `los_mask` as a probability map at inference is defensible.
-Because it preserves uncertainty, it is safer than forcing a hard mask too early.
-
 ### What should be revised conceptually
 
 These ideas should not be treated as equally appropriate for the HDF5 dataset:
 
-1. `augmented_los`-style heuristics are not relevant to the HDF5 route.
-The HDF5 dataset does not contain `augmented_los`; it contains a true binary `los_mask`. Any discussion of soft-wave LoS refinement belongs to the original manifest route, not to direct HDF5 training.
+1. `augmented_los`-style heuristics are not native targets in the HDF5 route.
+The HDF5 dataset does not contain `augmented_los`, and the current HDF5 setup does not predict `los_mask` either. Any soft-wave LoS refinement therefore belongs to separate downstream experimentation, not to the supervised HDF5 outputs.
 
-2. Binary-LoS consistency rules should not be copied into the HDF5 route.
-In the original route, those rules made sense because `binary_los` could be used as an input prior while predicting a softer `augmented_los` field. In HDF5 mode, `los_mask` is itself the target and there is no separate trusted LoS input channel by default.
+2. Binary-LoS consistency rules should be interpreted as input-side priors, not output cleanup.
+In the original route, those rules made sense because `binary_los` could be used as an input prior while predicting a softer `augmented_los` field. In the current HDF5 mode, `los_mask` is already the trusted input, so those rules should not be described as post-processing for a predicted LoS output.
 
 3. Radial priors from the centered antenna are tempting, but still not justified as post-processing.
 Yes, the antenna is centered, but adding a hand-designed distance rule would risk hiding model mistakes behind an assumed propagation law that the dataset may not follow uniformly across cities.
@@ -430,12 +427,10 @@ If the heuristics are revised further, the safest dataset-aware change would be 
 
 1. Keep the current regression clipping.
 2. Keep the current `3x3` regression median filter.
-3. Add only an optional export-time thresholded `los_mask_binary.npy` for HDF5 inference, while still saving `los_mask_probabilities.npy`.
 
 That would be a modest improvement because:
-- the target is genuinely binary
-- many downstream uses may want a hard mask
-- saving both soft and hard outputs avoids throwing away uncertainty
+- it keeps the learned outputs focused on the regression quantities that actually matter here
+- it avoids mixing trusted input priors with predicted outputs
 
 ### What should still wait
 
@@ -452,8 +447,6 @@ For the HDF5 dataset, the current heuristics are acceptable only as a conservati
 
 My recommendation was:
 - keep the regression heuristics as they are
-- keep `los_mask` probabilistic by default
-- if you revise anything next, add optional hard-mask export for `los_mask`
 - do not add stronger geometry-driven or morphology-driven rules until you inspect prediction failures on real samples
 
 But for the thesis intent, the more important next step is different:
@@ -464,14 +457,12 @@ But for the thesis intent, the more important next step is different:
 4. Keep LoS heuristics aligned with whether the target is true binary `los_mask` or soft `augmented_los`.
 
 This has now been implemented in the cGAN inference path for the HDF5-oriented configs:
-- `predict_cgan.py` exports `los_mask_probabilities.npy` for `los_mask`
-- the HDF5 cGAN configs enable `export_los_mask_binary: true`
-- the binary export uses `postprocess.los_mask_threshold`, currently `0.5`
+- `predict_cgan.py` uses the provided LoS map as input when the config requires it
+- the HDF5 cGAN configs keep the outputs focused on `delay_spread`, `angular_spread`, and `path_loss`
 
 What this implementation does:
-- clips the `los_mask` export to `[0, 1]`
-- preserves the soft probability map
-- optionally exports a thresholded binary map for downstream use
+- preserves the trusted LoS prior as an input-side signal
+- applies post-processing only to the regression outputs that are actually predicted
 
 What it still does not do:
 - morphology

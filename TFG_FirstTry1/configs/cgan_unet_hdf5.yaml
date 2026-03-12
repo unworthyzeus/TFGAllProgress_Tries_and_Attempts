@@ -7,7 +7,7 @@ data:
   input_metadata:
     scale: 255.0
     offset: 0.0
-  los_input_column: null
+  los_input_column: los_mask
   target_field_map: {}
   val_ratio: 0.15
   test_ratio: 0.15
@@ -21,7 +21,7 @@ data:
 model:
   base_channels: 64
   disc_base_channels: 64
-  out_channels: 4
+  out_channels: 3
   use_scalar_channels: false
 
 training:
@@ -43,6 +43,8 @@ training:
   clip_grad_norm: 1.0
   save_every: 5
   subset_size: null
+  save_validation_json_each_epoch: true
+  run_final_test_after_training: true
 
 loss:
   lambda_gan: 1.0
@@ -53,7 +55,6 @@ loss:
     delay_spread: 1.0
     angular_spread: 1.0
     path_loss: 3.0
-    los_mask: 0.5
 
 augmentation:
   enable: true
@@ -70,8 +71,6 @@ postprocess:
   enable: true
   regression_median_kernel: 3
   path_loss_median_kernel: 5
-  export_los_mask_binary: true
-  los_mask_threshold: 0.5
   export_derived_link_budget_maps: true
   link_budget:
     tx_power_dbm: 46.0
@@ -86,13 +85,11 @@ target_columns:
   - delay_spread
   - angular_spread
   - path_loss
-  - los_mask
 
 target_losses:
   delay_spread: mse
   angular_spread: mse
   path_loss: mse
-  los_mask: bce
 
 target_metadata:
   delay_spread:
@@ -113,9 +110,3 @@ target_metadata:
     unit: dB
     clip_min: 0.0
     clip_max: 180.0
-  los_mask:
-    scale: 1.0
-    offset: 0.0
-    unit: binary_los
-    clip_min: 0.0
-    clip_max: 1.0

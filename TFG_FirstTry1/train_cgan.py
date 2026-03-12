@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from config_utils import ensure_output_dir, is_cuda_device, load_config, load_torch_checkpoint, move_optimizer_state_to_device, resolve_device
 from data_utils import build_datasets_from_config, compute_input_channels
+from evaluate_cgan import aggregate_metrics, build_loader_for_split, load_saved_heuristic_calibration, summarize_loader
 from model_cgan import PatchDiscriminator, UNetGenerator
 
 
@@ -183,9 +184,12 @@ def validate_generator(
     mse_weight: float,
     l1_weight: float,
     target_loss_weights: Dict[str, float],
-) -> float:
+    target_losses: Dict[str, str],
+    target_metadata: Dict[str, Dict[str, object]],
+) -> Tuple[float, Dict[str, Dict[str, float]]]:
     generator.eval()
     total = 0.0
+    running = {name: {'mse': [], 'mae': [], 'accuracy': [], 'mse_physical': [], 'mae_physical': []} for name in target_columns}
     with torch.no_grad():
         for x, y, m in tqdm(loader, desc='val', leave=False):
             x, y, m = x.to(device), y.to(device), m.to(device)
@@ -193,7 +197,92 @@ def validate_generator(
                 pred = generator(x)
                 recon = compute_reconstruction_loss(pred, y, m, target_columns, loss_map, mse_weight, l1_weight, target_loss_weights)
             total += recon.item()
-    return total / max(len(loader), 1)
+            batch_metrics = aggregate_metrics(pred, y, m, target_columns, target_losses, target_metadata)
+            for name in target_columns:
+                for key, value in batch_metrics[name].items():
+                    if key == 'unit' or np.isnan(value):
+                        continue
+                    if key not in running[name]:
+                        running[name][key] = []
+                    running[name][key].append(value)
+
+    summary: Dict[str, Dict[str, float]] = {}
+    for name in target_columns:
+        summary[name] = {}
+        for key, values in running[name].items():
+            if values:
+                summary[name][key] = float(np.mean(values))
+        unit = target_metadata.get(name, {}).get('unit')
+        if unit:
+            summary[name]['unit'] = str(unit)
+
+    return total / max(len(loader), 1), summary
+
+
+def save_validation_summary(
+    cfg: Dict,
+    summary: Dict[str, Dict[str, float]],
+    epoch: int,
+    out_dir: Path,
+    is_best: bool,
+) -> None:
+    summary['_checkpoint'] = {'epoch': int(epoch)}
+    summary['_evaluation'] = {'split': 'val', 'source': 'train_cgan.py'}
+
+    latest_path = out_dir / 'validate_metrics_cgan_latest.json'
+    latest_path.write_text(json.dumps(summary, indent=2), encoding='utf-8')
+    epoch_path = out_dir / f'validate_metrics_epoch_{epoch}_cgan.json'
+    epoch_path.write_text(json.dumps(summary, indent=2), encoding='utf-8')
+
+    if is_best:
+        best_metrics_path = out_dir / 'validate_metrics_cgan_best.json'
+        best_metrics_path.write_text(json.dumps(summary, indent=2), encoding='utf-8')
+
+
+def save_final_test_summary(
+    cfg: Dict,
+    generator: nn.Module,
+    device: object,
+    target_columns: List[str],
+    target_losses: Dict[str, str],
+    target_metadata: Dict[str, Dict[str, object]],
+    amp_enabled: bool,
+    out_dir: Path,
+) -> bool:
+    try:
+        test_loader = build_loader_for_split(cfg, 'test', device)
+    except ValueError:
+        print("Skipping final test evaluation because this config has no 'test' split.")
+        return False
+
+    saved_calibration = load_saved_heuristic_calibration(cfg)
+    if saved_calibration is None:
+        print("Skipping final test evaluation because no validation calibration file was found. Run validate_cgan.py first.")
+        return False
+
+    fixed_path_loss_kernel = None
+    if 'path_loss' in saved_calibration:
+        fixed_path_loss_kernel = int(saved_calibration['path_loss'].get('best_median_kernel', cfg.get('postprocess', {}).get('path_loss_median_kernel', 5)))
+
+    summary = summarize_loader(
+        generator,
+        test_loader,
+        device,
+        target_columns,
+        target_losses,
+        target_metadata,
+        amp_enabled,
+        fixed_path_loss_kernel=fixed_path_loss_kernel,
+    )
+    summary['_evaluation'] = {
+        'split': 'test',
+        'source': 'train_cgan.py',
+        'used_saved_heuristic_calibration': bool(saved_calibration is not None),
+    }
+    if fixed_path_loss_kernel is not None:
+        summary['_evaluation']['loaded_path_loss_median_kernel'] = int(fixed_path_loss_kernel)
+    (out_dir / 'eval_metrics_cgan.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+    return True
 
 
 def main() -> None:
@@ -262,9 +351,12 @@ def main() -> None:
     l1_weight = float(cfg['loss']['l1_weight'])
     target_loss_weights = {str(k): float(v) for k, v in dict(cfg['loss'].get('target_loss_weights', {})).items()}
     clip_grad = float(cfg['training']['clip_grad_norm'])
+    save_validation_json_each_epoch = bool(cfg['training'].get('save_validation_json_each_epoch', True))
+    run_final_test_after_training = bool(cfg['training'].get('run_final_test_after_training', True))
     best_val = float('inf')
     history = []
     start_epoch = 1
+    target_metadata = dict(cfg.get('target_metadata', {}))
 
     resume_path = resolve_resume_checkpoint(out_dir, cfg['runtime'].get('resume_checkpoint'))
     if resume_path is not None:
@@ -335,7 +427,19 @@ def main() -> None:
             g_running += g_loss.item()
             d_running += d_loss.item()
 
-        val_recon = validate_generator(generator, val_loader, device, target_columns, loss_map, amp_enabled, mse_weight, l1_weight, target_loss_weights)
+        val_recon, val_summary = validate_generator(
+            generator,
+            val_loader,
+            device,
+            target_columns,
+            loss_map,
+            amp_enabled,
+            mse_weight,
+            l1_weight,
+            target_loss_weights,
+            target_losses,
+            target_metadata,
+        )
         row = {
             'epoch': epoch,
             'adversarial_loss': adversarial_loss_name,
@@ -359,6 +463,7 @@ def main() -> None:
             'history': history,
             'config': cfg,
         }
+        is_best = val_recon < best_val
         if val_recon < best_val:
             best_val = val_recon
             state['best_val_recon_loss'] = best_val
@@ -366,8 +471,34 @@ def main() -> None:
         if epoch % int(cfg['training']['save_every']) == 0:
             torch.save(state, out_dir / f'epoch_{epoch}_cgan.pt')
 
+        if save_validation_json_each_epoch:
+            save_validation_summary(
+                cfg,
+                val_summary,
+                epoch,
+                out_dir,
+                is_best=is_best,
+            )
+
     with (out_dir / 'history_cgan.json').open('w', encoding='utf-8') as handle:
         json.dump(history, handle, indent=2)
+
+    if run_final_test_after_training:
+        best_path = out_dir / 'best_cgan.pt'
+        if best_path.exists():
+            best_state = load_torch_checkpoint(best_path, device)
+            if 'generator' in best_state:
+                generator.load_state_dict(best_state['generator'])
+            save_final_test_summary(
+                cfg,
+                generator,
+                device,
+                target_columns,
+                target_losses,
+                target_metadata,
+                amp_enabled,
+                out_dir,
+            )
 
 
 if __name__ == '__main__':

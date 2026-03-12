@@ -7,7 +7,7 @@ data:
   input_metadata:
     scale: 255.0
     offset: 0.0
-  los_input_column: null
+  los_input_column: los_mask
   target_field_map: {}
   val_ratio: 0.15
   test_ratio: 0.15
@@ -20,7 +20,7 @@ data:
 
 model:
   base_channels: 64
-  out_channels: 4
+  out_channels: 3
   use_scalar_channels: false
 
 training:
@@ -59,13 +59,11 @@ target_columns:
   - delay_spread
   - angular_spread
   - path_loss
-  - los_mask
 
 target_losses:
   delay_spread: mse
   angular_spread: mse
   path_loss: mse
-  los_mask: bce
 
 target_metadata:
   delay_spread:
@@ -80,7 +78,3 @@ target_metadata:
     scale: 180.0
     offset: 0.0
     unit: dB
-  los_mask:
-    scale: 1.0
-    offset: 0.0
-    unit: binary_los

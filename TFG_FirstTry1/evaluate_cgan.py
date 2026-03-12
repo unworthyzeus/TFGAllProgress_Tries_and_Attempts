@@ -14,7 +14,67 @@ from tqdm import tqdm
 
 from config_utils import is_cuda_device, load_config, load_torch_checkpoint, resolve_device
 from data_utils import build_dataset_splits_from_config, compute_input_channels
+from heuristics_cgan import apply_regression_heuristics
 from model_cgan import UNetGenerator
+
+
+def calibration_file_path(cfg: Dict) -> Path:
+    return Path(cfg['runtime']['output_dir']) / 'heuristic_calibration.json'
+
+
+def load_saved_heuristic_calibration(cfg: Dict) -> Dict[str, object] | None:
+    path = calibration_file_path(cfg)
+    if not path.exists():
+        legacy_path = Path(cfg['runtime']['output_dir']) / 'los_mask_calibration.json'
+        if not legacy_path.exists():
+            return None
+        path = legacy_path
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
+def compute_path_loss_kernel_metrics(
+    pred_maps: List[np.ndarray],
+    target_maps: List[np.ndarray],
+    metadata: Dict[str, object],
+    kernel_size: int,
+) -> Dict[str, float]:
+    mse_values: List[float] = []
+    mae_values: List[float] = []
+    for pred_map, target_map in zip(pred_maps, target_maps):
+        processed = apply_regression_heuristics(pred_map, metadata, kernel_size=kernel_size)
+        diff = processed - target_map
+        mse_values.append(float(np.mean(diff ** 2)))
+        mae_values.append(float(np.mean(np.abs(diff))))
+    return {
+        'kernel_size': float(kernel_size),
+        'mse_physical': float(np.mean(mse_values)) if mse_values else float('nan'),
+        'rmse_physical': float(np.sqrt(np.mean(mse_values))) if mse_values else float('nan'),
+        'mae_physical': float(np.mean(mae_values)) if mae_values else float('nan'),
+    }
+
+
+def find_best_path_loss_kernel(
+    pred_maps: List[np.ndarray],
+    target_maps: List[np.ndarray],
+    metadata: Dict[str, object],
+    candidate_kernels: List[int],
+) -> Dict[str, float]:
+    best: Dict[str, float] | None = None
+    for kernel in candidate_kernels:
+        metrics = compute_path_loss_kernel_metrics(pred_maps, target_maps, metadata, int(kernel))
+        if best is None or metrics['mse_physical'] < best['best_kernel_mse_physical']:
+            best = {
+                'best_median_kernel': int(kernel),
+                'best_kernel_mse_physical': float(metrics['mse_physical']),
+                'best_kernel_rmse_physical': float(metrics['rmse_physical']),
+                'best_kernel_mae_physical': float(metrics['mae_physical']),
+            }
+    return best or {
+        'best_median_kernel': 1,
+        'best_kernel_mse_physical': float('nan'),
+        'best_kernel_rmse_physical': float('nan'),
+        'best_kernel_mae_physical': float('nan'),
+    }
 
 
 def denormalize_channel(values: torch.Tensor, metadata: Dict[str, object]) -> torch.Tensor:
@@ -40,7 +100,7 @@ def aggregate_metrics(
 
         valid = msk > 0
         if valid.sum().item() == 0:
-            metrics[name] = {'mse': float('nan'), 'mae': float('nan')}
+            metrics[name] = {'mse': float('nan'), 'rmse': float('nan'), 'mae': float('nan')}
             continue
 
         loss_name = target_losses.get(name, 'mse').lower()
@@ -48,16 +108,18 @@ def aggregate_metrics(
             probs = torch.sigmoid(pred)
             diff = (probs - tgt)[valid]
             mse = torch.mean(diff ** 2).item()
+            rmse = float(np.sqrt(mse))
             mae = torch.mean(torch.abs(diff)).item()
             preds = (probs > 0.5).float()
             acc = (preds[valid] == tgt[valid]).float().mean().item()
-            metrics[name] = {'mse': mse, 'mae': mae, 'accuracy': acc}
+            metrics[name] = {'mse': mse, 'rmse': rmse, 'mae': mae, 'accuracy': acc}
             continue
 
         diff = (pred - tgt)[valid]
         mse = torch.mean(diff ** 2).item()
+        rmse = float(np.sqrt(mse))
         mae = torch.mean(torch.abs(diff)).item()
-        record: Dict[str, float] = {'mse': mse, 'mae': mae}
+        record: Dict[str, float] = {'mse': mse, 'rmse': rmse, 'mae': mae}
 
         metadata = target_metadata.get(name, {})
         if metadata:
@@ -65,6 +127,7 @@ def aggregate_metrics(
             tgt_phys = denormalize_channel(tgt, metadata)
             diff_phys = (pred_phys - tgt_phys)[valid]
             record['mse_physical'] = torch.mean(diff_phys ** 2).item()
+            record['rmse_physical'] = float(np.sqrt(record['mse_physical']))
             record['mae_physical'] = torch.mean(torch.abs(diff_phys)).item()
             unit = metadata.get('unit')
             if unit:
@@ -100,14 +163,30 @@ def summarize_loader(
     target_losses: Dict[str, str],
     target_metadata: Dict[str, Dict[str, object]],
     amp_enabled: bool,
+    tune_path_loss_kernel: bool = False,
+    fixed_path_loss_kernel: int | None = None,
+    path_loss_kernel_candidates: List[int] | None = None,
 ) -> Dict[str, Dict[str, float]]:
-    running = {name: {'mse': [], 'mae': [], 'accuracy': [], 'mse_physical': [], 'mae_physical': []} for name in target_columns}
+    running = {name: {'mse': [], 'rmse': [], 'mae': [], 'accuracy': [], 'mse_physical': [], 'rmse_physical': [], 'mae_physical': []} for name in target_columns}
+    path_loss_preds: List[np.ndarray] = []
+    path_loss_targets: List[np.ndarray] = []
 
     with torch.no_grad():
         for inputs, targets, masks in tqdm(loader, desc='eval_cgan', leave=False):
             inputs, targets, masks = inputs.to(device), targets.to(device), masks.to(device)
             with amp.autocast(device_type='cuda', enabled=amp_enabled):
                 outputs = generator(inputs)
+
+            if 'path_loss' in target_columns:
+                path_loss_index = target_columns.index('path_loss')
+                pred = outputs[:, path_loss_index : path_loss_index + 1]
+                tgt = targets[:, path_loss_index : path_loss_index + 1]
+                metadata = target_metadata.get('path_loss', {})
+                pred_phys = denormalize_channel(pred, metadata).detach().cpu().numpy()
+                tgt_phys = denormalize_channel(tgt, metadata).detach().cpu().numpy()
+                for batch_idx in range(pred_phys.shape[0]):
+                    path_loss_preds.append(np.asarray(pred_phys[batch_idx, 0], dtype=np.float32))
+                    path_loss_targets.append(np.asarray(tgt_phys[batch_idx, 0], dtype=np.float32))
 
             batch_metrics = aggregate_metrics(outputs, targets, masks, target_columns, target_losses, target_metadata)
             for name in target_columns:
@@ -127,6 +206,21 @@ def summarize_loader(
         unit = target_metadata.get(name, {}).get('unit')
         if unit:
             summary[name]['unit'] = str(unit)
+
+    if path_loss_preds and path_loss_targets:
+        path_loss_metadata = target_metadata.get('path_loss', {})
+        if tune_path_loss_kernel:
+            candidate_kernels = path_loss_kernel_candidates or [1, 3, 5, 7]
+            kernel_metrics = find_best_path_loss_kernel(path_loss_preds, path_loss_targets, path_loss_metadata, candidate_kernels)
+            summary.setdefault('path_loss', {}).update(kernel_metrics)
+        if fixed_path_loss_kernel is not None:
+            calibrated_metrics = compute_path_loss_kernel_metrics(path_loss_preds, path_loss_targets, path_loss_metadata, int(fixed_path_loss_kernel))
+            summary.setdefault('path_loss', {}).update({
+                'calibrated_median_kernel': int(fixed_path_loss_kernel),
+                'calibrated_mse_physical': float(calibrated_metrics['mse_physical']),
+                'calibrated_rmse_physical': float(calibrated_metrics['rmse_physical']),
+                'calibrated_mae_physical': float(calibrated_metrics['mae_physical']),
+            })
     return summary
 
 
@@ -159,6 +253,10 @@ def main() -> None:
     parser.add_argument('--config', type=str, default='configs/cgan_unet.yaml')
     parser.add_argument('--checkpoint', type=str, required=True)
     parser.add_argument('--split', choices=['train', 'val', 'test', 'both'], default='test')
+    parser.add_argument('--save-heuristic-calibration', action='store_true')
+    parser.add_argument('--use-saved-heuristic-calibration', action='store_true')
+    parser.add_argument('--save-los-calibration', action='store_true')
+    parser.add_argument('--use-saved-los-calibration', action='store_true')
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -182,11 +280,48 @@ def main() -> None:
     generator.eval()
 
     amp_enabled = bool(cfg['training']['amp']) and is_cuda_device(device)
+    los_calibration_path = calibration_file_path(cfg)
+    fixed_path_loss_kernel = None
+    saved_calibration = None
+    should_use_saved_calibration = (
+        args.use_saved_heuristic_calibration
+        or args.use_saved_los_calibration
+        or args.split == 'test'
+    )
+    if should_use_saved_calibration:
+        saved_calibration = load_saved_heuristic_calibration(cfg)
+        if saved_calibration is not None:
+            if 'path_loss' in saved_calibration:
+                fixed_path_loss_kernel = int(saved_calibration['path_loss']['best_median_kernel'])
+
+    path_loss_kernel_candidates = list(cfg.get('postprocess', {}).get('path_loss_median_kernel_candidates', [1, 3, 5, 7]))
+
     if args.split == 'both':
         train_loader = build_loader_for_split(cfg, 'train', device)
         val_loader = build_loader_for_split(cfg, 'val', device)
-        train_summary = summarize_loader(generator, train_loader, device, target_columns, target_losses, target_metadata, amp_enabled)
-        val_summary = summarize_loader(generator, val_loader, device, target_columns, target_losses, target_metadata, amp_enabled)
+        train_summary = summarize_loader(
+            generator,
+            train_loader,
+            device,
+            target_columns,
+            target_losses,
+            target_metadata,
+            amp_enabled,
+            fixed_path_loss_kernel=fixed_path_loss_kernel,
+            path_loss_kernel_candidates=path_loss_kernel_candidates,
+        )
+        val_summary = summarize_loader(
+            generator,
+            val_loader,
+            device,
+            target_columns,
+            target_losses,
+            target_metadata,
+            amp_enabled,
+            tune_path_loss_kernel=True,
+            fixed_path_loss_kernel=fixed_path_loss_kernel,
+            path_loss_kernel_candidates=path_loss_kernel_candidates,
+        )
         summary: Dict[str, Dict[str, float]] = {
             'train': train_summary,
             'val': val_summary,
@@ -199,13 +334,54 @@ def main() -> None:
             pass
     else:
         loader = build_loader_for_split(cfg, args.split, device)
-        summary = summarize_loader(generator, loader, device, target_columns, target_losses, target_metadata, amp_enabled)
+        summary = summarize_loader(
+            generator,
+            loader,
+            device,
+            target_columns,
+            target_losses,
+            target_metadata,
+            amp_enabled,
+            tune_path_loss_kernel=args.split == 'val',
+            fixed_path_loss_kernel=fixed_path_loss_kernel,
+            path_loss_kernel_candidates=path_loss_kernel_candidates,
+        )
+
+    should_save_calibration = args.save_heuristic_calibration or args.save_los_calibration
+    if should_save_calibration:
+        calibration_source = None
+        if args.split == 'val':
+            calibration_source = {
+                'path_loss': summary.get('path_loss', {}),
+            }
+        elif args.split == 'both':
+            calibration_source = {
+                'path_loss': summary.get('val', {}).get('path_loss', {}),
+            }
+        if calibration_source and 'best_median_kernel' in calibration_source.get('path_loss', {}):
+            calibration_payload = {
+                'path_loss': {
+                    'best_median_kernel': int(calibration_source['path_loss'].get('best_median_kernel', cfg.get('postprocess', {}).get('path_loss_median_kernel', 5))),
+                    'best_kernel_mse_physical': float(calibration_source['path_loss'].get('best_kernel_mse_physical', 0.0)),
+                    'best_kernel_rmse_physical': float(calibration_source['path_loss'].get('best_kernel_rmse_physical', 0.0)),
+                    'best_kernel_mae_physical': float(calibration_source['path_loss'].get('best_kernel_mae_physical', 0.0)),
+                },
+                'source_split': 'val',
+                'checkpoint': args.checkpoint,
+            }
+            los_calibration_path.parent.mkdir(parents=True, exist_ok=True)
+            los_calibration_path.write_text(json.dumps(calibration_payload, indent=2), encoding='utf-8')
 
     if 'epoch' in state:
         summary['_checkpoint'] = {'epoch': int(state['epoch'])}
     if 'val_recon_loss' in state:
         summary.setdefault('_checkpoint', {})['val_recon_loss'] = float(state['val_recon_loss'])
     summary.setdefault('_evaluation', {})['split'] = args.split
+    if fixed_path_loss_kernel is not None:
+        summary['_evaluation']['loaded_path_loss_median_kernel'] = int(fixed_path_loss_kernel)
+    summary['_evaluation']['used_saved_heuristic_calibration'] = bool(should_use_saved_calibration and saved_calibration is not None)
+    if should_save_calibration:
+        summary['_evaluation']['saved_heuristic_calibration'] = str(los_calibration_path)
 
     print(json.dumps(summary, indent=2))
 

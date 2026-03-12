@@ -32,6 +32,7 @@ Optional:
 - Direct training from `CKM_Dataset.h5` is supported through dedicated configs.
 - See [CKM_HDF5_DATASET.md](CKM_HDF5_DATASET.md) for the field mapping and run commands.
 - See [SCRIPTS_AND_SPLITS.md](SCRIPTS_AND_SPLITS.md) for the role of each script and the current `70/15/15` split policy.
+- In the HDF5 route, `los_mask` is treated as a trusted input channel, not as an output target.
 - HDF5 configs added in `configs/`:
    - `baseline_hdf5.yaml`
    - `proposal_regression_only_hdf5.yaml`

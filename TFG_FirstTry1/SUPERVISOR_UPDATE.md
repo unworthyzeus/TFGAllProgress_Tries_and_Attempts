@@ -27,8 +27,8 @@ The codebase now supports two training modes:
 - direct HDF5 mode
 
 For HDF5 mode, the pipeline now uses:
-- input: `topology_map`
-- targets: `delay_spread`, `angular_spread`, `path_loss`, `los_mask`
+- inputs: `topology_map`, `los_mask`
+- targets: `delay_spread`, `angular_spread`, `path_loss`
 
 This support is integrated into:
 - `train.py`
@@ -87,9 +87,9 @@ If `path_loss` is predicted poorly, any derived `channel_power` map will also be
 
 ### LoS semantics
 
-The HDF5 route predicts `los_mask`, which should be treated as a binary LoS target or a LoS probability map.
+The HDF5 route now uses ground-truth `los_mask` as a trusted binary LoS input channel.
 
-This is not exactly the same as the earlier conceptual `augmented_los` soft field from the original proposal path.
+This means the model no longer predicts LoS in HDF5 mode. Instead, it uses LoS as prior information while predicting the three regression maps.
 
 ## Heuristics currently implemented
 
@@ -100,7 +100,6 @@ At inference time, the current pipeline applies two levels of heuristics.
 These include:
 - physical clipping for regression targets
 - median filtering for regression maps
-- probability export and optional binary export for `los_mask`
 
 ### 2. Physics-aware derived heuristics
 
@@ -124,7 +123,6 @@ Current validation metrics in physical units are:
 - `delay_spread`: MSE `2376.08 ns^2`, which implies RMSE about `48.7 ns`
 - `angular_spread`: MSE `183.65 deg^2`, which implies RMSE about `13.6 deg`
 - `path_loss`: MSE `1128.73 dB^2`, which implies RMSE about `33.6 dB`
-- `los_mask`: MAE `0.272`
 
 ## Interpretation of the current result
 
@@ -145,7 +143,6 @@ This is the main bottleneck because the dB-domain interpretation of the system d
 To prioritize the dB-domain target, I changed the training and inference pipeline so that:
 
 - `path_loss` now receives a higher target loss weight during training
-- `los_mask` has slightly reduced weight in the HDF5 cGAN configs
 - `path_loss` now has a dedicated median-filter setting at inference time
 
 This means the training objective is now more aligned with the thesis requirement that the dB-domain quantity should be modeled accurately.
