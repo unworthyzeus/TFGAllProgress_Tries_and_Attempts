@@ -7,6 +7,7 @@ import gc
 import io
 import os
 import re
+import sys
 import hashlib
 import shutil
 from pathlib import Path
@@ -64,6 +65,27 @@ def to_image_bytes(img_name: str, img_data):
 def build_artifacts(device: str):
     model_dtype = torch.float16 if device == "cuda" else torch.float32
     return create_model_dict(device=device, dtype=model_dtype, attention_implementation="sdpa")
+
+
+def print_runtime_diagnostics():
+    torch_cuda = torch.version.cuda or "None"
+    cuda_available = torch.cuda.is_available()
+
+    print(f"Python: {sys.executable}")
+    print(f"PyTorch: {torch.__version__}")
+    print(f"PyTorch CUDA runtime: {torch_cuda}")
+    print(f"CUDA disponible en PyTorch: {cuda_available}")
+
+    if not cuda_available and torch.version.cuda is None:
+        print(
+            "Pista: este intérprete tiene una build CPU-only de PyTorch. "
+            "Instala una wheel CUDA o ejecuta el script con un Python que ya tenga torch+cu*."
+        )
+    elif not cuda_available:
+        print(
+            "Pista: PyTorch incluye runtime CUDA, pero no puede inicializar la GPU en este intérprete. "
+            "Revisa driver, variables de entorno y conflictos entre entornos Python."
+        )
 
 
 def cleanup_cuda():
@@ -295,6 +317,7 @@ def convert_pdf_in_cuda_chunks(converter_artifacts: dict, pdf_path: Path, initia
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("--- INICIANDO CONVERSIÓN ---")
+    print_runtime_diagnostics()
     print(f"Hardware: {torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'}")
     if device == "cuda":
         print(f"VRAM Total: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
