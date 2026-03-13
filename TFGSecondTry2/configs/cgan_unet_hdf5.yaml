@@ -16,35 +16,37 @@ data:
   constant_scalar_features: {}
   scalar_feature_norms: {}
   image_size: 513
-  num_workers: 0
+  num_workers: 4
 
 model:
-  base_channels: 48
-  disc_base_channels: 32
-  gradient_checkpointing: true
+  base_channels: 64
+  disc_base_channels: 64
   out_channels: 3
   use_scalar_channels: false
 
 training:
   batch_size: 2
-  epochs: 60
-  save_validation_json_each_epoch: true
-  run_final_test_after_training: true
-  generator_optimizer: rmsprop
-  discriminator_optimizer: rmsprop
-  momentum: 0.0
+  auto_batch_by_vram:
+    enabled: true
+    reference_vram_gb: 16.0
+    reference_batch_size: 2
+    min_batch_size: 1
+    max_batch_size: 4
+    safety_factor: 0.9
+  epochs: 40
   generator_lr: 0.0002
   discriminator_lr: 0.0002
   beta1: 0.5
   beta2: 0.999
   weight_decay: 0.0
-  amp: false
+  amp: true
   clip_grad_norm: 1.0
   save_every: 5
   subset_size: null
+  save_validation_json_each_epoch: true
+  run_final_test_after_training: true
 
 loss:
-  adversarial_loss: mse
   lambda_gan: 1.0
   lambda_recon: 100.0
   mse_weight: 1.0
@@ -61,26 +63,14 @@ augmentation:
   rot90_prob: 0.4
 
 runtime:
-  device: directml
-  output_dir: outputs/cgan_unet_hdf5_amd_midvram
+  device: auto
+  output_dir: outputs/cgan_unet_hdf5_run
   resume_checkpoint: null
 
 postprocess:
   enable: true
-  use_saved_heuristic_calibration: true
   regression_median_kernel: 3
   path_loss_median_kernel: 5
-  path_loss_median_kernel_candidates: [1, 3, 5, 7]
-  export_augmented_los_heuristic: false
-  export_augmented_los_heuristic_binary: false
-  augmented_los_heuristic_threshold: 0.5
-  augmented_los_heuristic_median_kernel: 3
-  augmented_los_heuristic_weights:
-    los_mask: 0.55
-    path_loss: 0.25
-    delay_spread: 0.10
-    angular_spread: 0.10
-    binary_los_floor: 0.75
   export_derived_link_budget_maps: true
   link_budget:
     tx_power_dbm: 46.0
