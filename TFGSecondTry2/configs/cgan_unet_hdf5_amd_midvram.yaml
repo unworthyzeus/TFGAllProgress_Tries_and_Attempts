@@ -30,6 +30,10 @@ model:
 training:
   batch_size: 2
   epochs: 60
+  selection_metrics:
+    path_loss.rmse_physical: 1.0
+    delay_spread.rmse_physical: 0.15
+    angular_spread.rmse_physical: 0.15
   save_validation_json_each_epoch: true
   run_final_test_after_training: true
   generator_optimizer: rmsprop
@@ -47,7 +51,7 @@ training:
 
 loss:
   adversarial_loss: mse
-  lambda_gan: 1.0
+  lambda_gan: 0.1
   lambda_recon: 100.0
   mse_weight: 1.0
   l1_weight: 0.2

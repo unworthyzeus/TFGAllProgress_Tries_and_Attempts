@@ -28,6 +28,10 @@ model:
 training:
   batch_size: 1
   epochs: 40
+  selection_metrics:
+    path_loss.rmse_physical: 1.0
+    delay_spread.rmse_physical: 0.15
+    angular_spread.rmse_physical: 0.15
   generator_optimizer: rmsprop
   discriminator_optimizer: rmsprop
   momentum: 0.0

@@ -55,6 +55,77 @@ def resolve_resume_checkpoint(out_dir: Path, configured_resume: str | None) -> P
     return None
 
 
+def resolve_selection_metric(cfg: Dict, target_columns: List[str]) -> str:
+    configured = str(cfg.get('training', {}).get('selection_metric', '')).strip()
+    if configured:
+        return configured
+    if 'path_loss' in target_columns:
+        return 'path_loss.rmse_physical'
+    return 'val_recon_loss'
+
+
+def parse_selection_metrics(cfg: Dict) -> Dict[str, float]:
+    configured = cfg.get('training', {}).get('selection_metrics', {})
+    if not isinstance(configured, dict):
+        return {}
+    parsed: Dict[str, float] = {}
+    for metric_name, weight in configured.items():
+        weight_value = float(weight)
+        if abs(weight_value) < 1e-12:
+            continue
+        parsed[str(metric_name)] = weight_value
+    return parsed
+
+
+def extract_summary_metric(summary: Dict[str, Dict[str, float]], metric_name: str) -> float | None:
+    current: object = summary
+    for part in metric_name.split('.'):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    if isinstance(current, (int, float)):
+        value = float(current)
+        if np.isfinite(value):
+            return value
+    return None
+
+
+def resolve_selection_value(
+    selection_metric: str,
+    selection_metrics: Dict[str, float],
+    selection_metric_baselines: Dict[str, float],
+    val_recon: float,
+    val_summary: Dict[str, Dict[str, float]],
+) -> Tuple[float, str, Dict[str, float], Dict[str, float], Dict[str, float]]:
+    if selection_metrics:
+        raw_values: Dict[str, float] = {}
+        normalized_values: Dict[str, float] = {}
+        weighted_values: Dict[str, float] = {}
+        total_weight = 0.0
+        for metric_name, weight in selection_metrics.items():
+            metric_value = extract_summary_metric(val_summary, metric_name)
+            if metric_value is None:
+                continue
+            raw_values[metric_name] = float(metric_value)
+            baseline = float(selection_metric_baselines.get(metric_name, metric_value))
+            if (not np.isfinite(baseline)) or abs(baseline) < 1e-12:
+                baseline = 1.0
+            normalized_value = float(metric_value) / baseline
+            normalized_values[metric_name] = normalized_value
+            weighted_values[metric_name] = float(weight) * normalized_value
+            total_weight += abs(float(weight))
+        if raw_values and total_weight > 0.0:
+            combined_value = float(sum(weighted_values.values()) / total_weight)
+            return combined_value, 'weighted_selection_metrics', raw_values, normalized_values, weighted_values
+    if selection_metric == 'val_recon_loss':
+        return float(val_recon), selection_metric, {'val_recon_loss': float(val_recon)}, {}, {'val_recon_loss': 1.0}
+    metric_value = extract_summary_metric(val_summary, selection_metric)
+    if metric_value is None:
+        return float(val_recon), 'val_recon_loss', {'val_recon_loss': float(val_recon)}, {}, {'val_recon_loss': 1.0}
+    metric_value = float(metric_value)
+    return metric_value, selection_metric, {selection_metric: metric_value}, {}, {selection_metric: 1.0}
+
+
 def build_loss_map(target_columns: List[str], target_losses: Dict[str, str]):
     loss_map = {}
     for name in target_columns:
@@ -217,9 +288,25 @@ def save_validation_summary(
     epoch: int,
     out_dir: Path,
     is_best: bool,
+    selection_metric: str,
+    selection_metric_value: float,
+    selection_raw_values: Dict[str, float],
+    selection_normalized_values: Dict[str, float],
+    selection_weighted_values: Dict[str, float],
 ) -> None:
     summary['_checkpoint'] = {'epoch': int(epoch)}
     summary['_evaluation'] = {'split': 'val', 'source': 'train_cgan.py'}
+    summary['_selection'] = {
+        'metric': str(selection_metric),
+        'value': float(selection_metric_value),
+        'is_best_checkpoint': bool(is_best),
+    }
+    if selection_raw_values:
+        summary['_selection']['raw_values'] = dict(selection_raw_values)
+    if selection_normalized_values:
+        summary['_selection']['normalized_values'] = dict(selection_normalized_values)
+    if selection_weighted_values:
+        summary['_selection']['weighted_values'] = dict(selection_weighted_values)
 
     latest_path = out_dir / 'validate_metrics_cgan_latest.json'
     latest_path.write_text(json.dumps(summary, indent=2), encoding='utf-8')
@@ -345,7 +432,11 @@ def main() -> None:
     clip_grad = float(cfg['training']['clip_grad_norm'])
     save_validation_json_each_epoch = bool(cfg['training'].get('save_validation_json_each_epoch', True))
     run_final_test_after_training = bool(cfg['training'].get('run_final_test_after_training', True))
-    best_val = float('inf')
+    selection_metric = resolve_selection_metric(cfg, target_columns)
+    selection_metrics = parse_selection_metrics(cfg)
+    selection_metric_baselines: Dict[str, float] = {}
+    best_selection_value = float('inf')
+    best_val_recon = float('inf')
     history = []
     start_epoch = 1
     target_metadata = dict(cfg.get('target_metadata', {}))
@@ -367,10 +458,23 @@ def main() -> None:
             scaler_g.load_state_dict(state['scaler_g'])
         if 'scaler_d' in state:
             scaler_d.load_state_dict(state['scaler_d'])
+        if 'best_selection_metric_value' in state:
+            best_selection_value = float(state['best_selection_metric_value'])
+        elif 'best_val_recon_loss' in state and selection_metric == 'val_recon_loss':
+            best_selection_value = float(state['best_val_recon_loss'])
+        elif 'selection_metric_value' in state:
+            best_selection_value = float(state['selection_metric_value'])
+        saved_selection_metric_baselines = state.get('selection_metric_baselines')
+        if isinstance(saved_selection_metric_baselines, dict):
+            selection_metric_baselines = {
+                str(name): float(value)
+                for name, value in saved_selection_metric_baselines.items()
+                if isinstance(value, (int, float))
+            }
         if 'best_val_recon_loss' in state:
-            best_val = float(state['best_val_recon_loss'])
+            best_val_recon = float(state['best_val_recon_loss'])
         elif 'val_recon_loss' in state:
-            best_val = float(state['val_recon_loss'])
+            best_val_recon = float(state['val_recon_loss'])
         if 'history' in state and isinstance(state['history'], list):
             history = list(state['history'])
         start_epoch = int(state.get('epoch', 0)) + 1
@@ -439,8 +543,31 @@ def main() -> None:
             'discriminator_loss': d_running / max(len(train_loader), 1),
             'val_recon_loss': val_recon,
         }
+        path_loss_summary = val_summary.get('path_loss', {})
+        if 'rmse_physical' in path_loss_summary:
+            row['path_loss_rmse_physical'] = float(path_loss_summary['rmse_physical'])
+        selection_value, selection_metric_used, selection_raw_values, selection_normalized_values, selection_weighted_values = resolve_selection_value(
+            selection_metric,
+            selection_metrics,
+            selection_metric_baselines,
+            val_recon,
+            val_summary,
+        )
+        for metric_name, metric_value in selection_raw_values.items():
+            if metric_name not in selection_metric_baselines:
+                baseline = float(metric_value)
+                if (not np.isfinite(baseline)) or abs(baseline) < 1e-12:
+                    baseline = 1.0
+                selection_metric_baselines[metric_name] = baseline
+        row['selection_metric'] = selection_metric_used
+        row['selection_metric_value'] = float(selection_value)
+        if selection_metric_used == 'weighted_selection_metrics':
+            row['selection_metric_components'] = dict(selection_raw_values)
+            row['selection_metric_normalized_components'] = dict(selection_normalized_values)
         history.append(row)
         print(json.dumps(row))
+
+        best_val_recon = min(best_val_recon, float(val_recon))
 
         state = {
             'generator': generator.state_dict(),
@@ -451,14 +578,18 @@ def main() -> None:
             'scaler_d': scaler_d.state_dict(),
             'epoch': epoch,
             'val_recon_loss': val_recon,
-            'best_val_recon_loss': best_val,
+            'best_val_recon_loss': best_val_recon,
+            'selection_metric': selection_metric_used,
+            'selection_metric_value': float(selection_value),
+            'selection_metric_baselines': dict(selection_metric_baselines),
+            'best_selection_metric_value': best_selection_value,
             'history': history,
             'config': cfg,
         }
-        is_best = val_recon < best_val
-        if val_recon < best_val:
-            best_val = val_recon
-            state['best_val_recon_loss'] = best_val
+        is_best = selection_value < best_selection_value
+        if selection_value < best_selection_value:
+            best_selection_value = float(selection_value)
+            state['best_selection_metric_value'] = best_selection_value
             torch.save(state, out_dir / 'best_cgan.pt')
         if epoch % int(cfg['training']['save_every']) == 0:
             torch.save(state, out_dir / f'epoch_{epoch}_cgan.pt')
@@ -470,6 +601,11 @@ def main() -> None:
                 epoch,
                 out_dir,
                 is_best=is_best,
+                selection_metric=selection_metric_used,
+                selection_metric_value=float(selection_value),
+                selection_raw_values=selection_raw_values,
+                selection_normalized_values=selection_normalized_values,
+                selection_weighted_values=selection_weighted_values,
             )
 
     with (out_dir / 'history_cgan.json').open('w', encoding='utf-8') as handle:

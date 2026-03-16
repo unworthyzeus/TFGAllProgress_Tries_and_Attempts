@@ -32,6 +32,10 @@ model:
 
 training:
   batch_size: 2
+  selection_metrics:
+    path_loss.rmse_physical: 1.0
+    delay_spread.rmse_physical: 0.15
+    angular_spread.rmse_physical: 0.15
   auto_batch_by_vram:
     enabled: true
     reference_vram_gb: 24.0
@@ -53,7 +57,7 @@ training:
   run_final_test_after_training: true
 
 loss:
-  lambda_gan: 1.0
+  lambda_gan: 0.1
   lambda_recon: 100.0
   mse_weight: 1.0
   l1_weight: 0.2
