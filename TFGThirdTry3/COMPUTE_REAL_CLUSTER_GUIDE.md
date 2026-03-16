@@ -414,6 +414,42 @@ For this cluster and account, the reliable default is:
 - use **6 GPUs max**, not 8
 - validate the environment on a GPU node, not on the login node
 
+## Practical Scheduling Workaround
+
+In practice, asking for all `6` GPUs can still remain stuck in `PENDING (Resources)` if SLURM keeps a residual GPU allocation after a previous job.
+
+Observed behavior:
+
+- the node can appear `IDLE`
+- `nvidia-smi` can show all GPUs effectively free
+- but `scontrol show node` may still report:
+  - `AllocTRES=gres/gpu=1`
+
+When that happens, the practical workaround is:
+
+- resubmit with `5` GPUs instead of `6`
+
+Working resubmission shape:
+
+```bash
+cd /scratch/nas/3/gmoreno/TFGpractice/TFGThirdTry3
+sbatch -A gpu -p gpu --qos=big_gpu --gres=gpu:rtx2080:5 --cpus-per-task=20 --mem=80G --time=04:00:00 \
+  --export=ALL,CONFIG_PATH=configs/cgan_unet_hdf5_pathloss_hybrid_cuda_max256_blend.yaml,VENV_PATH=/scratch/nas/3/gmoreno/tf_env/bin/activate,HOME=/scratch/nas/3/gmoreno/home,TMPDIR=/scratch/nas/3/gmoreno/tmp,PIP_CACHE_DIR=/scratch/nas/3/gmoreno/pip_cache \
+  cluster/run_multi_gpu_hdf5.slurm
+```
+
+Confirmed fallback job:
+
+- `10007363`
+
+At submission time it entered queue as:
+
+```text
+PD (Priority)
+```
+
+That is a much healthier state than `PD (Resources)` in the broken 6-GPU case.
+
 ## Secret Handling
 
 This file intentionally does **not** repeat the password.
