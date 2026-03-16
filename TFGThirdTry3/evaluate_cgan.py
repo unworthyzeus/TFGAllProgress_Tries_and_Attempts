@@ -42,7 +42,12 @@ def compute_path_loss_kernel_metrics(
     mae_values: List[float] = []
     for pred_map, target_map in zip(pred_maps, target_maps):
         processed = apply_regression_heuristics(pred_map, metadata, kernel_size=kernel_size)
-        diff = processed - target_map
+        pred_arr = np.asarray(processed, dtype=np.float32)
+        tgt_arr = np.asarray(target_map, dtype=np.float32)
+        finite_mask = np.isfinite(pred_arr) & np.isfinite(tgt_arr)
+        if not np.any(finite_mask):
+            continue
+        diff = pred_arr[finite_mask] - tgt_arr[finite_mask]
         mse_values.append(float(np.mean(diff ** 2)))
         mae_values.append(float(np.mean(np.abs(diff))))
     return {
@@ -105,19 +110,58 @@ def overwrite_hybrid_path_loss_summary(
 ) -> None:
     if not pred_maps or not target_maps:
         return
-    mse_values = [float(np.mean((pred - tgt) ** 2)) for pred, tgt in zip(pred_maps, target_maps)]
-    mae_values = [float(np.mean(np.abs(pred - tgt))) for pred, tgt in zip(pred_maps, target_maps)]
+
+    mse_values: List[float] = []
+    mae_values: List[float] = []
+    mse_linear_values: List[float] = []
+    mae_linear_values: List[float] = []
+    invalid_pixel_count = 0
+    invalid_map_count = 0
+    skipped_map_count = 0
+
+    for pred_map, target_map in zip(pred_maps, target_maps):
+        pred_arr = np.asarray(pred_map, dtype=np.float32)
+        tgt_arr = np.asarray(target_map, dtype=np.float32)
+        finite_mask = np.isfinite(pred_arr) & np.isfinite(tgt_arr)
+        invalid_pixels = int(finite_mask.size - int(np.count_nonzero(finite_mask)))
+        if invalid_pixels > 0:
+            invalid_map_count += 1
+            invalid_pixel_count += invalid_pixels
+        if not np.any(finite_mask):
+            skipped_map_count += 1
+            continue
+
+        diff = pred_arr[finite_mask] - tgt_arr[finite_mask]
+        mse_values.append(float(np.mean(diff ** 2)))
+        mae_values.append(float(np.mean(np.abs(diff))))
+
+        pred_linear = np.clip(np.power(10.0, -pred_arr[finite_mask] / 10.0), 1e-18, 1.0)
+        target_linear = np.clip(np.power(10.0, -tgt_arr[finite_mask] / 10.0), 1e-18, 1.0)
+        linear_diff = pred_linear - target_linear
+        mse_linear_values.append(float(np.mean(linear_diff ** 2)))
+        mae_linear_values.append(float(np.mean(np.abs(linear_diff))))
+
     summary.setdefault('path_loss', {})
-    summary['path_loss']['mse_physical'] = float(np.mean(mse_values))
-    summary['path_loss']['rmse_physical'] = float(np.sqrt(summary['path_loss']['mse_physical']))
-    summary['path_loss']['mae_physical'] = float(np.mean(mae_values))
-    pred_linear = [np.clip(np.power(10.0, -pred / 10.0), 1e-18, 1.0) for pred in pred_maps]
-    target_linear = [np.clip(np.power(10.0, -tgt / 10.0), 1e-18, 1.0) for tgt in target_maps]
-    mse_linear = [float(np.mean((pred - tgt) ** 2)) for pred, tgt in zip(pred_linear, target_linear)]
-    mae_linear = [float(np.mean(np.abs(pred - tgt))) for pred, tgt in zip(pred_linear, target_linear)]
-    summary['path_loss']['mse_linear'] = float(np.mean(mse_linear))
-    summary['path_loss']['rmse_linear'] = float(np.sqrt(summary['path_loss']['mse_linear']))
-    summary['path_loss']['mae_linear'] = float(np.mean(mae_linear))
+    summary.setdefault('_hybrid', {})
+    summary['_hybrid']['invalid_path_loss_pixel_count'] = int(invalid_pixel_count)
+    summary['_hybrid']['invalid_path_loss_map_count'] = int(invalid_map_count)
+    summary['_hybrid']['skipped_path_loss_map_count'] = int(skipped_map_count)
+    if mse_values:
+        summary['path_loss']['mse_physical'] = float(np.mean(mse_values))
+        summary['path_loss']['rmse_physical'] = float(np.sqrt(summary['path_loss']['mse_physical']))
+        summary['path_loss']['mae_physical'] = float(np.mean(mae_values))
+    else:
+        summary['path_loss']['mse_physical'] = float('nan')
+        summary['path_loss']['rmse_physical'] = float('nan')
+        summary['path_loss']['mae_physical'] = float('nan')
+    if mse_linear_values:
+        summary['path_loss']['mse_linear'] = float(np.mean(mse_linear_values))
+        summary['path_loss']['rmse_linear'] = float(np.sqrt(summary['path_loss']['mse_linear']))
+        summary['path_loss']['mae_linear'] = float(np.mean(mae_linear_values))
+    else:
+        summary['path_loss']['mse_linear'] = float('nan')
+        summary['path_loss']['rmse_linear'] = float('nan')
+        summary['path_loss']['mae_linear'] = float('nan')
     summary['path_loss']['linear_quantity'] = 'received_to_transmitted_power_ratio'
     summary['path_loss']['unit_linear'] = 'unitless'
     summary['path_loss']['hybrid_fused_metrics'] = True
