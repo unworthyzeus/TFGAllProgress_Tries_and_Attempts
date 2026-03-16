@@ -214,6 +214,31 @@ Even though the filename still says `8gpu`, it now targets the real maximum avai
 
 The historical filename was kept to avoid breaking existing references.
 
+## Real DDP Launcher
+
+For one actual multi-GPU training run, use:
+
+```bash
+cluster/run_train_cgan_hdf5_ddp.slurm
+```
+
+This is different from `cluster/run_multi_gpu_hdf5.slurm`:
+
+- `run_multi_gpu_hdf5.slurm` launches one independent single-GPU training process per GPU
+- `run_train_cgan_hdf5_ddp.slurm` launches one `torchrun` job and uses `DistributedDataParallel`
+- in DDP mode, the YAML `training.batch_size` is per rank, so the effective global batch is multiplied by the number of GPUs
+- validation, selection metric, checkpointing, and final test stay on `rank 0`
+
+Working 5-GPU DDP submission shape:
+
+```bash
+cd /scratch/nas/3/gmoreno/TFGpractice/TFGThirdTry3
+sbatch --export=ALL,CONFIG_PATH=configs/cgan_unet_hdf5_pathloss_hybrid_cuda_max256_blend.yaml,VENV_PATH=/scratch/nas/3/gmoreno/tf_env/bin/activate,HOME=/scratch/nas/3/gmoreno/home,TMPDIR=/scratch/nas/3/gmoreno/tmp,PIP_CACHE_DIR=/scratch/nas/3/gmoreno/pip_cache \
+  cluster/run_train_cgan_hdf5_ddp.slurm
+```
+
+The DDP launcher defaults to `5` GPUs because that was the most reliable combined-training request after the scheduler left one phantom GPU allocated in the `6`-GPU case.
+
 ## How Files Were Uploaded
 
 ### Recommended target
@@ -380,6 +405,14 @@ ls logs_multigpu_10007343_*.err
 sed -n '1,120p' logs_multigpu_10007343_0.out
 ```
 
+DDP launcher logs:
+
+```bash
+ls logs_train_cgan_hdf5_ddp_*.out
+ls logs_train_cgan_hdf5_ddp_*.err
+sed -n '1,160p' logs_train_cgan_hdf5_ddp_<jobid>.out
+```
+
 Main SLURM stdout/stderr:
 
 ```bash
@@ -436,6 +469,15 @@ cd /scratch/nas/3/gmoreno/TFGpractice/TFGThirdTry3
 sbatch -A gpu -p gpu --qos=big_gpu --gres=gpu:rtx2080:5 --cpus-per-task=20 --mem=80G --time=04:00:00 \
   --export=ALL,CONFIG_PATH=configs/cgan_unet_hdf5_pathloss_hybrid_cuda_max256_blend.yaml,VENV_PATH=/scratch/nas/3/gmoreno/tf_env/bin/activate,HOME=/scratch/nas/3/gmoreno/home,TMPDIR=/scratch/nas/3/gmoreno/tmp,PIP_CACHE_DIR=/scratch/nas/3/gmoreno/pip_cache \
   cluster/run_multi_gpu_hdf5.slurm
+```
+
+Equivalent DDP resubmission:
+
+```bash
+cd /scratch/nas/3/gmoreno/TFGpractice/TFGThirdTry3
+sbatch -A gpu -p gpu --qos=big_gpu --gres=gpu:rtx2080:5 --cpus-per-task=20 --mem=80G --time=04:00:00 \
+  --export=ALL,CONFIG_PATH=configs/cgan_unet_hdf5_pathloss_hybrid_cuda_max256_blend.yaml,VENV_PATH=/scratch/nas/3/gmoreno/tf_env/bin/activate,HOME=/scratch/nas/3/gmoreno/home,TMPDIR=/scratch/nas/3/gmoreno/tmp,PIP_CACHE_DIR=/scratch/nas/3/gmoreno/pip_cache \
+  cluster/run_train_cgan_hdf5_ddp.slurm
 ```
 
 Confirmed fallback job:

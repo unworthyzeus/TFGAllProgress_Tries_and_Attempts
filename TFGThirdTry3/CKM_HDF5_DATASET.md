@@ -240,6 +240,7 @@ New SLURM scripts were added for remote execution:
 - `cluster/run_train_cgan_hdf5.slurm`
 - `cluster/run_eval_hdf5.slurm`
 - `cluster/run_multi_gpu_hdf5.slurm`
+- `cluster/run_train_cgan_hdf5_ddp.slurm`
 
 Default usage:
 
@@ -253,6 +254,12 @@ To request more than one GPU with the current codebase, use the multi-GPU launch
 
 ```bash
 sbatch cluster/run_multi_gpu_hdf5.slurm
+```
+
+To launch one real multi-GPU training job with `DistributedDataParallel`, use:
+
+```bash
+sbatch cluster/run_train_cgan_hdf5_ddp.slurm
 ```
 
 These SLURM scripts now generate a temporary runtime config and adjust `training.batch_size` using the GPU VRAM detected at launch time.
@@ -281,7 +288,11 @@ sbatch --export=ALL,CONFIG_PATH=configs/baseline_hdf5_cuda_max.yaml cluster/run_
 sbatch --export=ALL,CONFIG_PATH=configs/cgan_unet_hdf5_cuda_max.yaml cluster/run_train_cgan_hdf5.slurm
 ```
 
-Important: the current training code is still single-GPU per process. The new multi-GPU launcher uses several GPUs in the same SLURM allocation by starting one independent training process per visible GPU, each with its own output directory suffix and seed offset. It is useful for parallel sweeps or repeated runs, but it is not `DistributedDataParallel`.
+Important:
+
+- `cluster/run_multi_gpu_hdf5.slurm` still launches several independent single-GPU runs, one per visible GPU
+- `cluster/run_train_cgan_hdf5_ddp.slurm` launches one real `DistributedDataParallel` training job across all allocated GPUs
+- in DDP mode, `training.batch_size` is per rank, so the effective global batch is `batch_size * world_size`
 
 Examples:
 
@@ -292,6 +303,12 @@ sbatch --gres=gpu:4 -p medium_gpu --export=ALL,CONFIG_PATH=configs/baseline_hdf5
 ```
 
 Each worker writes to a different output directory derived from the base config, for example `outputs/cgan_unet_hdf5_cuda_max_gpu0`, `outputs/cgan_unet_hdf5_cuda_max_gpu1`, and so on.
+
+Example DDP submission:
+
+```bash
+sbatch --export=ALL,CONFIG_PATH=configs/cgan_unet_hdf5_pathloss_hybrid_cuda_max256_blend.yaml cluster/run_train_cgan_hdf5_ddp.slurm
+```
 
 If the cluster uses a different Python executable or virtual environment path, override:
 

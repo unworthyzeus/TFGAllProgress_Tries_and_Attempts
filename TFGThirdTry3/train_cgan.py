@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch import amp
-from torch.utils.data import DataLoader, Subset
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data import DataLoader, DistributedSampler, Subset
 from tqdm import tqdm
 
 from config_utils import ensure_output_dir, is_cuda_device, load_config, load_torch_checkpoint, move_optimizer_state_to_device, resolve_device
@@ -33,6 +36,66 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def init_distributed_context(device_cfg: str, cli_local_rank: int | None = None) -> Dict[str, Any]:
+    world_size = int(os.environ.get('WORLD_SIZE', '1'))
+    if world_size <= 1:
+        device = resolve_device(device_cfg)
+        return {
+            'distributed': False,
+            'rank': 0,
+            'local_rank': 0,
+            'world_size': 1,
+            'device': device,
+            'is_main_process': True,
+        }
+
+    if not torch.cuda.is_available():
+        raise RuntimeError('DistributedDataParallel requires CUDA GPUs, but torch.cuda.is_available() is false.')
+
+    local_rank = int(os.environ.get('LOCAL_RANK', cli_local_rank if cli_local_rank is not None else 0))
+    rank = int(os.environ.get('RANK', '0'))
+    torch.cuda.set_device(local_rank)
+    if not dist.is_initialized():
+        dist.init_process_group(backend='nccl', init_method='env://')
+    device = torch.device('cuda', local_rank)
+    return {
+        'distributed': True,
+        'rank': rank,
+        'local_rank': local_rank,
+        'world_size': world_size,
+        'device': device,
+        'is_main_process': rank == 0,
+    }
+
+
+def cleanup_distributed() -> None:
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def unwrap_model(model: nn.Module) -> nn.Module:
+    if isinstance(model, DistributedDataParallel):
+        return model.module
+    return model
+
+
+def reduce_training_losses(
+    g_running: float,
+    d_running: float,
+    batch_count: int,
+    device: Any,
+    distributed: bool,
+) -> Tuple[float, float]:
+    if not distributed:
+        denom = max(batch_count, 1)
+        return g_running / denom, d_running / denom
+
+    stats = torch.tensor([g_running, d_running, float(batch_count)], device=device, dtype=torch.float64)
+    dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+    denom = max(float(stats[2].item()), 1.0)
+    return float(stats[0].item() / denom), float(stats[1].item() / denom)
 
 
 def resolve_resume_checkpoint(out_dir: Path, configured_resume: str | None) -> Path | None:
@@ -327,30 +390,47 @@ def compute_reconstruction_loss(
     return total / valid_count.clamp_min(1.0)
 
 
-def build_dataloaders(cfg: Dict, pin_memory: bool) -> Tuple[DataLoader, DataLoader, int]:
+def build_dataloaders(
+    cfg: Dict,
+    pin_memory: bool,
+    distributed: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
+    is_main_process: bool = True,
+) -> Tuple[DataLoader, Optional[DataLoader], int, Optional[DistributedSampler]]:
     train_set, val_set = build_datasets_from_config(cfg)
     subset_size = cfg['training'].get('subset_size')
     if subset_size:
         subset_size = min(int(subset_size), len(train_set))
         train_set = Subset(train_set, range(subset_size))
+    train_num_workers = int(cfg['data']['num_workers'])
+    if distributed and world_size > 1:
+        train_num_workers = max(1, train_num_workers // world_size)
+    val_num_workers = max(1, train_num_workers // 2) if train_num_workers > 0 else 0
+    train_sampler: Optional[DistributedSampler] = None
+    if distributed:
+        train_sampler = DistributedSampler(train_set, num_replicas=world_size, rank=rank, shuffle=True)
     train_loader = DataLoader(
         train_set,
         batch_size=int(cfg['training']['batch_size']),
-        shuffle=True,
-        num_workers=int(cfg['data']['num_workers']),
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
+        num_workers=train_num_workers,
         pin_memory=pin_memory,
-        persistent_workers=int(cfg['data']['num_workers']) > 0,
+        persistent_workers=train_num_workers > 0,
     )
-    val_loader = DataLoader(
-        val_set,
-        batch_size=int(cfg['training']['batch_size']),
-        shuffle=False,
-        num_workers=max(1, int(cfg['data']['num_workers']) // 2),
-        pin_memory=pin_memory,
-        persistent_workers=max(1, int(cfg['data']['num_workers']) // 2) > 0,
-    )
+    val_loader: Optional[DataLoader] = None
+    if is_main_process:
+        val_loader = DataLoader(
+            val_set,
+            batch_size=int(cfg['training']['batch_size']),
+            shuffle=False,
+            num_workers=val_num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=val_num_workers > 0,
+        )
     in_channels = compute_input_channels(cfg)
-    return train_loader, val_loader, in_channels
+    return train_loader, val_loader, in_channels, train_sampler
 
 
 def validate_generator(
@@ -517,12 +597,19 @@ def save_final_test_summary(
 def main() -> None:
     parser = argparse.ArgumentParser(description='Train cGAN + U-Net CKM predictor')
     parser.add_argument('--config', type=str, default='configs/cgan_unet.yaml')
+    parser.add_argument('--local-rank', '--local_rank', type=int, default=None)
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    set_seed(int(cfg['seed']))
-    device = resolve_device(cfg['runtime']['device'])
-    out_dir = ensure_output_dir(cfg['runtime']['output_dir'])
+    ddp_context = init_distributed_context(str(cfg['runtime']['device']), args.local_rank)
+    device = ddp_context['device']
+    if ddp_context['is_main_process']:
+        out_dir = ensure_output_dir(cfg['runtime']['output_dir'])
+    else:
+        out_dir = Path(cfg['runtime']['output_dir'])
+    if ddp_context['distributed']:
+        dist.barrier()
+    set_seed(int(cfg['seed']) + int(ddp_context['rank']))
 
     target_columns = list(cfg['target_columns'])
     target_losses = dict(cfg.get('target_losses', {}))
@@ -530,7 +617,14 @@ def main() -> None:
     if int(cfg['model']['out_channels']) != expected_out_channels:
         raise ValueError(f"model.out_channels must match expected output channels ({expected_out_channels})")
 
-    train_loader, val_loader, in_channels = build_dataloaders(cfg, pin_memory=is_cuda_device(device))
+    train_loader, val_loader, in_channels, train_sampler = build_dataloaders(
+        cfg,
+        pin_memory=is_cuda_device(device),
+        distributed=bool(ddp_context['distributed']),
+        rank=int(ddp_context['rank']),
+        world_size=int(ddp_context['world_size']),
+        is_main_process=bool(ddp_context['is_main_process']),
+    )
 
     generator = UNetGenerator(
         in_channels=in_channels,
@@ -544,6 +638,8 @@ def main() -> None:
         target_channels=len(target_columns),
         base_channels=int(cfg['model']['disc_base_channels']),
     ).to(device)
+    generator_model: nn.Module = generator
+    discriminator_model: nn.Module = discriminator
 
     generator_optimizer_name = str(cfg['training'].get('generator_optimizer', 'adam'))
     discriminator_optimizer_name = str(cfg['training'].get('discriminator_optimizer', 'adam'))
@@ -631,23 +727,47 @@ def main() -> None:
         if 'history' in state and isinstance(state['history'], list):
             history = list(state['history'])
         start_epoch = int(state.get('epoch', 0)) + 1
-        print(f"Resuming from {resume_path} at epoch {start_epoch}")
+        if ddp_context['is_main_process']:
+            print(f"Resuming from {resume_path} at epoch {start_epoch}")
+
+    if ddp_context['distributed']:
+        ddp_find_unused = bool(cfg['training'].get('ddp_find_unused_parameters', False))
+        generator_model = DistributedDataParallel(
+            generator,
+            device_ids=[int(ddp_context['local_rank'])],
+            output_device=int(ddp_context['local_rank']),
+            find_unused_parameters=ddp_find_unused,
+        )
+        discriminator_model = DistributedDataParallel(
+            discriminator,
+            device_ids=[int(ddp_context['local_rank'])],
+            output_device=int(ddp_context['local_rank']),
+            find_unused_parameters=ddp_find_unused,
+        )
 
     for epoch in range(start_epoch, int(cfg['training']['epochs']) + 1):
-        generator.train()
-        discriminator.train()
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+        generator_model.train()
+        discriminator_model.train()
         g_running = 0.0
         d_running = 0.0
+        batch_count = 0
 
-        for x, y, m in tqdm(train_loader, desc=f'epoch {epoch}', leave=False):
+        for x, y, m in tqdm(
+            train_loader,
+            desc=f'epoch {epoch}',
+            leave=False,
+            disable=not ddp_context['is_main_process'],
+        ):
             x, y, m = x.to(device), y.to(device), m.to(device)
 
             if gan_enabled:
                 with amp.autocast(device_type='cuda', enabled=amp_enabled):
-                    fake = generator(x)
+                    fake = generator_model(x)
                     fake_primary = extract_primary_outputs(fake, target_columns)
-                    real_logits = discriminator(x, y)
-                    fake_logits = discriminator(x, fake_primary.detach())
+                    real_logits = discriminator_model(x, y)
+                    fake_logits = discriminator_model(x, fake_primary.detach())
                     real_labels = torch.ones_like(real_logits)
                     fake_labels = torch.zeros_like(fake_logits)
                     d_loss = 0.5 * (adv_criterion(real_logits, real_labels) + adv_criterion(fake_logits, fake_labels))
@@ -663,10 +783,10 @@ def main() -> None:
                 d_loss = torch.tensor(0.0, device=device)
 
             with amp.autocast(device_type='cuda', enabled=amp_enabled):
-                fake = generator(x)
+                fake = generator_model(x)
                 fake_primary = extract_primary_outputs(fake, target_columns)
                 if gan_enabled:
-                    fake_logits_for_g = discriminator(x, fake_primary)
+                    fake_logits_for_g = discriminator_model(x, fake_primary)
                     gan_loss = adv_criterion(fake_logits_for_g, torch.ones_like(fake_logits_for_g))
                 else:
                     gan_loss = torch.tensor(0.0, device=device)
@@ -684,97 +804,118 @@ def main() -> None:
 
             g_running += g_loss.item()
             d_running += d_loss.item()
+            batch_count += 1
 
-        val_recon, val_summary = validate_generator(
-            generator,
-            val_loader,
+        train_g_loss, train_d_loss = reduce_training_losses(
+            g_running,
+            d_running,
+            batch_count,
             device,
-            cfg,
-            target_columns,
-            loss_map,
-            amp_enabled,
-            mse_weight,
-            l1_weight,
-            target_loss_weights,
-            target_losses,
-            target_metadata,
+            bool(ddp_context['distributed']),
         )
-        row = {
-            'epoch': epoch,
-            'adversarial_loss': adversarial_loss_name,
-            'generator_loss': g_running / max(len(train_loader), 1),
-            'discriminator_loss': d_running / max(len(train_loader), 1),
-            'val_recon_loss': val_recon,
-        }
-        path_loss_summary = val_summary.get('path_loss', {})
-        if 'rmse_physical' in path_loss_summary:
-            row['path_loss_rmse_physical'] = float(path_loss_summary['rmse_physical'])
-        selection_value, selection_metric_used, selection_raw_values, selection_normalized_values, selection_weighted_values = resolve_selection_value(
-            selection_metric,
-            selection_metrics,
-            selection_metric_baselines,
-            val_recon,
-            val_summary,
-        )
-        for metric_name, metric_value in selection_raw_values.items():
-            if metric_name not in selection_metric_baselines:
-                baseline = float(metric_value)
-                if (not np.isfinite(baseline)) or abs(baseline) < 1e-12:
-                    baseline = 1.0
-                selection_metric_baselines[metric_name] = baseline
-        row['selection_metric'] = selection_metric_used
-        row['selection_metric_value'] = float(selection_value)
-        if selection_metric_used == 'weighted_selection_metrics':
-            row['selection_metric_components'] = dict(selection_raw_values)
-            row['selection_metric_normalized_components'] = dict(selection_normalized_values)
-        history.append(row)
-        print(json.dumps(row))
+        if ddp_context['distributed']:
+            dist.barrier()
 
-        best_val_recon = min(best_val_recon, float(val_recon))
-
-        state = {
-            'generator': generator.state_dict(),
-            'discriminator': discriminator.state_dict(),
-            'optimizer_g': opt_g.state_dict(),
-            'optimizer_d': opt_d.state_dict(),
-            'scaler_g': scaler_g.state_dict(),
-            'scaler_d': scaler_d.state_dict(),
-            'epoch': epoch,
-            'val_recon_loss': val_recon,
-            'best_val_recon_loss': best_val_recon,
-            'selection_metric': selection_metric_used,
-            'selection_metric_value': float(selection_value),
-            'selection_metric_baselines': dict(selection_metric_baselines),
-            'best_selection_metric_value': best_selection_value,
-            'history': history,
-            'config': cfg,
-        }
-        is_best = selection_value < best_selection_value
-        if selection_value < best_selection_value:
-            best_selection_value = float(selection_value)
-            state['best_selection_metric_value'] = best_selection_value
-            torch.save(state, out_dir / 'best_cgan.pt')
-        if epoch % int(cfg['training']['save_every']) == 0:
-            torch.save(state, out_dir / f'epoch_{epoch}_cgan.pt')
-
-        if save_validation_json_each_epoch:
-            save_validation_summary(
+        if ddp_context['is_main_process']:
+            if val_loader is None:
+                raise RuntimeError('Validation loader is required on rank 0.')
+            val_recon, val_summary = validate_generator(
+                generator,
+                val_loader,
+                device,
                 cfg,
-                val_summary,
-                epoch,
-                out_dir,
-                is_best=is_best,
-                selection_metric=selection_metric_used,
-                selection_metric_value=float(selection_value),
-                selection_raw_values=selection_raw_values,
-                selection_normalized_values=selection_normalized_values,
-                selection_weighted_values=selection_weighted_values,
+                target_columns,
+                loss_map,
+                amp_enabled,
+                mse_weight,
+                l1_weight,
+                target_loss_weights,
+                target_losses,
+                target_metadata,
             )
+            row = {
+                'epoch': epoch,
+                'adversarial_loss': adversarial_loss_name,
+                'generator_loss': train_g_loss,
+                'discriminator_loss': train_d_loss,
+                'val_recon_loss': val_recon,
+                'world_size': int(ddp_context['world_size']),
+            }
+            path_loss_summary = val_summary.get('path_loss', {})
+            if 'rmse_physical' in path_loss_summary:
+                row['path_loss_rmse_physical'] = float(path_loss_summary['rmse_physical'])
+            selection_value, selection_metric_used, selection_raw_values, selection_normalized_values, selection_weighted_values = resolve_selection_value(
+                selection_metric,
+                selection_metrics,
+                selection_metric_baselines,
+                val_recon,
+                val_summary,
+            )
+            for metric_name, metric_value in selection_raw_values.items():
+                if metric_name not in selection_metric_baselines:
+                    baseline = float(metric_value)
+                    if (not np.isfinite(baseline)) or abs(baseline) < 1e-12:
+                        baseline = 1.0
+                    selection_metric_baselines[metric_name] = baseline
+            row['selection_metric'] = selection_metric_used
+            row['selection_metric_value'] = float(selection_value)
+            if selection_metric_used == 'weighted_selection_metrics':
+                row['selection_metric_components'] = dict(selection_raw_values)
+                row['selection_metric_normalized_components'] = dict(selection_normalized_values)
+            history.append(row)
+            print(json.dumps(row))
 
-    with (out_dir / 'history_cgan.json').open('w', encoding='utf-8') as handle:
-        json.dump(history, handle, indent=2)
+            best_val_recon = min(best_val_recon, float(val_recon))
 
-    if run_final_test_after_training:
+            state = {
+                'generator': unwrap_model(generator_model).state_dict(),
+                'discriminator': unwrap_model(discriminator_model).state_dict(),
+                'optimizer_g': opt_g.state_dict(),
+                'optimizer_d': opt_d.state_dict(),
+                'scaler_g': scaler_g.state_dict(),
+                'scaler_d': scaler_d.state_dict(),
+                'epoch': epoch,
+                'val_recon_loss': val_recon,
+                'best_val_recon_loss': best_val_recon,
+                'selection_metric': selection_metric_used,
+                'selection_metric_value': float(selection_value),
+                'selection_metric_baselines': dict(selection_metric_baselines),
+                'best_selection_metric_value': best_selection_value,
+                'history': history,
+                'config': cfg,
+                'world_size': int(ddp_context['world_size']),
+            }
+            is_best = selection_value < best_selection_value
+            if selection_value < best_selection_value:
+                best_selection_value = float(selection_value)
+                state['best_selection_metric_value'] = best_selection_value
+                torch.save(state, out_dir / 'best_cgan.pt')
+            if epoch % int(cfg['training']['save_every']) == 0:
+                torch.save(state, out_dir / f'epoch_{epoch}_cgan.pt')
+
+            if save_validation_json_each_epoch:
+                save_validation_summary(
+                    cfg,
+                    val_summary,
+                    epoch,
+                    out_dir,
+                    is_best=is_best,
+                    selection_metric=selection_metric_used,
+                    selection_metric_value=float(selection_value),
+                    selection_raw_values=selection_raw_values,
+                    selection_normalized_values=selection_normalized_values,
+                    selection_weighted_values=selection_weighted_values,
+                )
+        if ddp_context['distributed']:
+            dist.barrier()
+
+    if ddp_context['is_main_process']:
+        with (out_dir / 'history_cgan.json').open('w', encoding='utf-8') as handle:
+            json.dump(history, handle, indent=2)
+
+    if ddp_context['distributed']:
+        dist.barrier()
+    if run_final_test_after_training and ddp_context['is_main_process']:
         best_path = out_dir / 'best_cgan.pt'
         if best_path.exists():
             best_state = load_torch_checkpoint(best_path, device)
@@ -790,6 +931,9 @@ def main() -> None:
                 amp_enabled,
                 out_dir,
             )
+    if ddp_context['distributed']:
+        dist.barrier()
+    cleanup_distributed()
 
 
 if __name__ == '__main__':

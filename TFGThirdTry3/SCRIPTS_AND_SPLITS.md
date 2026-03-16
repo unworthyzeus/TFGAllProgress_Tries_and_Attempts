@@ -361,6 +361,10 @@ The main HDF5 cluster scripts are:
 - `cluster/run_multi_gpu_hdf5.slurm`
   - launches multiple independent training processes, one per GPU
 
+- `cluster/run_train_cgan_hdf5_ddp.slurm`
+  - launches one real cGAN `DistributedDataParallel` training run across all allocated GPUs
+  - keeps validation, metric selection, checkpointing, and final test on `rank 0`
+
 - `cluster/prepare_runtime_config.py`
   - generates a runtime config before launch
   - used to adapt settings such as batch size or output directory at submission time
