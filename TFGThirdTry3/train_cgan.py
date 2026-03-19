@@ -81,6 +81,11 @@ def unwrap_model(model: nn.Module) -> nn.Module:
     return model
 
 
+def set_requires_grad(module: nn.Module, enabled: bool) -> None:
+    for param in module.parameters():
+        param.requires_grad_(enabled)
+
+
 def reduce_training_losses(
     g_running: float,
     d_running: float,
@@ -372,6 +377,7 @@ def build_optimizer(
     beta2: float,
     momentum: float,
     device: object,
+    foreach_enabled: bool = False,
 ) -> torch.optim.Optimizer:
     name = optimizer_name.lower()
     if name == 'adam':
@@ -380,7 +386,7 @@ def build_optimizer(
             lr=learning_rate,
             betas=(beta1, beta2),
             weight_decay=weight_decay,
-            foreach=is_cuda_device(device),
+            foreach=bool(foreach_enabled),
         )
     if name == 'rmsprop':
         return torch.optim.RMSprop(
@@ -388,7 +394,7 @@ def build_optimizer(
             lr=learning_rate,
             weight_decay=weight_decay,
             momentum=momentum,
-            foreach=is_cuda_device(device),
+            foreach=bool(foreach_enabled),
         )
     if name == 'sgd':
         return torch.optim.SGD(
@@ -396,7 +402,7 @@ def build_optimizer(
             lr=learning_rate,
             weight_decay=weight_decay,
             momentum=momentum,
-            foreach=is_cuda_device(device),
+            foreach=bool(foreach_enabled),
         )
     raise ValueError(f"Unsupported optimizer '{optimizer_name}'.")
 
@@ -429,6 +435,17 @@ def compute_reconstruction_loss(
         total = total + loss
         valid_count = valid_count + (msk.sum() > 0).float()
     return total / valid_count.clamp_min(1.0)
+
+
+def _prune_old_checkpoints(out_dir: Path, keep_epoch: int) -> None:
+    """Remove epoch_*_cgan.pt except keep_epoch. Always keep best_cgan.pt."""
+    for p in out_dir.glob('epoch_*_cgan.pt'):
+        try:
+            suffix = p.stem.replace('epoch_', '').replace('_cgan', '')
+            if suffix.isdigit() and int(suffix) != keep_epoch:
+                p.unlink()
+        except (OSError, ValueError):
+            pass
 
 
 def build_dataloaders(
@@ -673,17 +690,23 @@ def main() -> None:
         base_channels=int(cfg['model']['base_channels']),
         gradient_checkpointing=bool(cfg['model'].get('gradient_checkpointing', False)),
         path_loss_hybrid=is_path_loss_hybrid_enabled(cfg),
+        norm_type=str(cfg['model'].get('norm_type', 'batch')),
     ).to(device)
     discriminator = PatchDiscriminator(
         in_channels=in_channels,
         target_channels=len(target_columns),
         base_channels=int(cfg['model']['disc_base_channels']),
+        norm_type=str(cfg['model'].get('disc_norm_type', cfg['model'].get('norm_type', 'batch'))),
+        input_downsample_factor=int(cfg['model'].get('disc_input_downsample_factor', 1)),
     ).to(device)
     generator_model: nn.Module = generator
     discriminator_model: nn.Module = discriminator
 
     generator_optimizer_name = str(cfg['training'].get('generator_optimizer', 'adam'))
     discriminator_optimizer_name = str(cfg['training'].get('discriminator_optimizer', 'adam'))
+    optimizer_foreach_default = bool(cfg['training'].get('optimizer_foreach', False))
+    generator_optimizer_foreach = bool(cfg['training'].get('generator_optimizer_foreach', optimizer_foreach_default))
+    discriminator_optimizer_foreach = bool(cfg['training'].get('discriminator_optimizer_foreach', optimizer_foreach_default))
     momentum = float(cfg['training'].get('momentum', 0.0))
 
     opt_g = build_optimizer(
@@ -695,6 +718,7 @@ def main() -> None:
         float(cfg['training']['beta2']),
         momentum,
         device,
+        generator_optimizer_foreach,
     )
     opt_d = build_optimizer(
         discriminator_optimizer_name,
@@ -705,6 +729,7 @@ def main() -> None:
         float(cfg['training']['beta2']),
         momentum,
         device,
+        discriminator_optimizer_foreach,
     )
 
     adversarial_loss_name = resolve_adversarial_loss_name(cfg, device)
@@ -804,17 +829,29 @@ def main() -> None:
             x, y, m = x.to(device), y.to(device), m.to(device)
 
             if gan_enabled:
-                with amp.autocast(device_type='cuda', enabled=amp_enabled):
-                    fake = generator_model(x)
-                    fake_primary = extract_primary_outputs(fake, target_columns)
-                    real_logits = discriminator_model(x, y)
-                    fake_logits = discriminator_model(x, fake_primary.detach())
-                    real_labels = torch.ones_like(real_logits)
-                    fake_labels = torch.zeros_like(fake_logits)
-                    d_loss = 0.5 * (adv_criterion(real_logits, real_labels) + adv_criterion(fake_logits, fake_labels))
+                discriminator_model.train()
+                set_requires_grad(discriminator, True)
+                # The discriminator step does not backpropagate through the generator,
+                # so avoid building a generator graph here to reduce peak VRAM.
+                with torch.no_grad():
+                    with amp.autocast(device_type='cuda', enabled=amp_enabled):
+                        fake = generator_model(x)
+                        fake_primary = extract_primary_outputs(fake, target_columns)
 
                 opt_d.zero_grad(set_to_none=True)
-                scaler_d.scale(d_loss).backward()
+                with amp.autocast(device_type='cuda', enabled=amp_enabled):
+                    real_logits = discriminator_model(x, y)
+                    real_labels = torch.ones_like(real_logits)
+                    d_loss_real = 0.5 * adv_criterion(real_logits, real_labels)
+                scaler_d.scale(d_loss_real).backward()
+
+                with amp.autocast(device_type='cuda', enabled=amp_enabled):
+                    fake_logits = discriminator_model(x, fake_primary.detach())
+                    fake_labels = torch.zeros_like(fake_logits)
+                    d_loss_fake = 0.5 * adv_criterion(fake_logits, fake_labels)
+                scaler_d.scale(d_loss_fake).backward()
+
+                d_loss = d_loss_real.detach() + d_loss_fake.detach()
                 if clip_grad > 0:
                     scaler_d.unscale_(opt_d)
                     torch.nn.utils.clip_grad_norm_(discriminator.parameters(), clip_grad)
@@ -823,6 +860,11 @@ def main() -> None:
             else:
                 d_loss = torch.tensor(0.0, device=device)
 
+            if gan_enabled:
+                # The generator loss needs gradients through the discriminator output
+                # but not through discriminator parameters themselves.
+                set_requires_grad(discriminator, False)
+                discriminator_model.eval()
             with amp.autocast(device_type='cuda', enabled=amp_enabled):
                 fake = generator_model(x)
                 fake_primary = extract_primary_outputs(fake, target_columns)
@@ -933,6 +975,7 @@ def main() -> None:
                 torch.save(state, out_dir / 'best_cgan.pt')
             if epoch % int(cfg['training']['save_every']) == 0:
                 torch.save(state, out_dir / f'epoch_{epoch}_cgan.pt')
+                _prune_old_checkpoints(out_dir, keep_epoch=epoch)
 
             if save_validation_json_each_epoch:
                 save_validation_summary(
