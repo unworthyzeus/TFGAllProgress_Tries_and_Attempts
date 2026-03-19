@@ -43,3 +43,14 @@
   - RMSE drops from ~21.6 dB to **~19.9 dB** around epoch 10 on the new dataset.
   - Occasional validation “spikes” (e.g., epoch 11), but the true best epoch stays around ~19.9 dB.
 
+---
+
+## Latest cluster results (best checkpoint RMSE in physical dB)
+
+From the most recent `validate_metrics_cgan_best.json` downloaded into `c:\TFG\TFGpractice\cluster_outputs`:
+
+- **ThirdTry3**: path loss `RMSE_physical = 19.790 dB` (hybrid_fused_metrics = `true`)
+- **FourthTry4**: path loss `RMSE_physical = 23.115 dB` (hybrid_fused_metrics = `true`)
+- **FifthTry5**: path loss `RMSE_physical = 19.747 dB` (hybrid_fused_metrics = `true`)
+- **SixthTry6**: path loss `RMSE_physical = 19.676 dB` (hybrid_fused_metrics = `true`)
+

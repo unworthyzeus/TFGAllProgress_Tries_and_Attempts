@@ -6,7 +6,7 @@ Downloads (by default) from:
   /scratch/nas/3/gmoreno/TFGpractice/<TRY>/outputs/<RUN>/
 
 Into local:
-  c:\\TFG\\TFGpractice\\outputs\\cluster\\<TRY>\\<RUN>\\
+  c:\\TFG\\TFGpractice\\cluster_outputs\\<TRY>\\<RUN>\\
 
 Default behavior:
   - Download EVERYTHING under outputs/ (mirrors the remote tree).
@@ -36,7 +36,7 @@ except ImportError:
 
 
 DEFAULT_REMOTE_ROOT = "/scratch/nas/3/gmoreno/TFGpractice"
-DEFAULT_LOCAL_ROOT = r"c:\TFG\TFGpractice\outputs\cluster"
+DEFAULT_LOCAL_ROOT = r"c:\TFG\TFGpractice\cluster_outputs"
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,8 +53,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--filter",
         default="all",
-        choices=["all", "json_and_pt"],
-        help="Download mode. 'all' mirrors outputs/ entirely (default). 'json_and_pt' downloads only *.json and *.pt.",
+        choices=["all", "json_and_pt", "json_only"],
+        help="Download mode. 'all' mirrors outputs/ entirely (default). 'json_and_pt' downloads only *.json and *.pt. 'json_only' downloads only *.json (excludes models/checkpoints).",
     )
     return p.parse_args()
 
@@ -80,7 +80,11 @@ def should_download(rel_path: str, mode: str) -> bool:
     if mode == "all":
         return True
     name = os.path.basename(rel_path)
-    return name.endswith(".json") or name.endswith(".pt")
+    if mode == "json_and_pt":
+        return name.endswith(".json") or name.endswith(".pt")
+    if mode == "json_only":
+        return name.endswith(".json")
+    return True
 
 
 def mkdir_p(path: Path) -> None:
