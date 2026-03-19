@@ -1,0 +1,110 @@
+seed: 42
+
+data:
+  format: hdf5
+  hdf5_path: CKM_Dataset.h5
+  input_column: topology_map
+  input_metadata:
+    scale: 255.0
+    offset: 0.0
+  los_input_column: los_mask
+  distance_map_channel: false
+  path_loss_saturation_db: 175
+  target_field_map: {}
+  val_ratio: 0.15
+  test_ratio: 0.15
+  split_seed: 42
+  scalar_feature_columns: []
+  constant_scalar_features: {}
+  scalar_feature_norms: {}
+  image_size: 513
+  num_workers: 0
+
+model:
+  base_channels: 48
+  disc_base_channels: 32
+  gradient_checkpointing: true
+  out_channels: 2
+  use_scalar_channels: false
+
+training:
+  batch_size: 2
+  epochs: 60
+  selection_metrics:
+    path_loss.rmse_physical: 1.0
+  save_validation_json_each_epoch: true
+  run_final_test_after_training: true
+  generator_optimizer: rmsprop
+  discriminator_optimizer: rmsprop
+  momentum: 0.0
+  generator_lr: 0.0002
+  discriminator_lr: 0.0002
+  beta1: 0.5
+  beta2: 0.999
+  weight_decay: 0.0
+  amp: false
+  clip_grad_norm: 1.0
+  save_every: 5
+  subset_size: null
+
+loss:
+  adversarial_loss: mse
+  lambda_gan: 0.0
+  lambda_recon: 100.0
+  mse_weight: 1.0
+  l1_weight: 0.2
+  target_loss_weights:
+    path_loss: 1.0
+
+augmentation:
+  enable: true
+  hflip_prob: 0.5
+  vflip_prob: 0.5
+  rot90_prob: 0.4
+
+runtime:
+  device: directml
+  output_dir: outputs/cgan_unet_hdf5_pathloss_hybrid_amd_midvram_blend
+  resume_checkpoint: null
+
+postprocess:
+  enable: true
+  use_saved_heuristic_calibration: true
+  regression_median_kernel: 3
+  path_loss_median_kernel: 5
+  path_loss_median_kernel_candidates: [1, 3, 5, 7]
+  path_loss_los_correction: true
+  path_loss_los_blend_weight: 0.3
+  path_loss_los_frequency_ghz: 7.125
+  export_derived_link_budget_maps: true
+  link_budget:
+    tx_power_dbm: 46.0
+    tx_gain_dbi: 0.0
+    rx_gain_dbi: 0.0
+    other_losses_db: 0.0
+    bandwidth_hz: null
+    noise_figure_db: 0.0
+    reception_threshold_dbm: null
+
+target_columns:
+  - path_loss
+
+target_losses:
+  path_loss: mse
+
+target_metadata:
+  path_loss:
+    scale: 180.0
+    offset: 0.0
+    unit: dB
+    clip_min: 0.0
+    clip_max: 180.0
+    predict_linear: true
+
+
+path_loss_hybrid:
+  enabled: true
+  confidence_loss_weight: 0.3
+  confidence_error_threshold_db: 8.0
+  fallback_threshold: 0.5
+  fallback_mode: blend
