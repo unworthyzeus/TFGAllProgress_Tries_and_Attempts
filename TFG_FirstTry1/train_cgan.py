@@ -13,7 +13,7 @@ from torch import amp
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
-from config_utils import ensure_output_dir, is_cuda_device, load_config, load_torch_checkpoint, move_optimizer_state_to_device, resolve_device
+from config_utils import ensure_output_dir, is_cuda_device, anchor_data_paths_to_config_file, load_config, load_torch_checkpoint, move_optimizer_state_to_device, resolve_device
 from data_utils import build_datasets_from_config, compute_input_channels
 from evaluate_cgan import (
     build_loader_for_split,
@@ -370,6 +370,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    anchor_data_paths_to_config_file(cfg, args.config)
     set_seed(int(cfg['seed']))
     device = resolve_device(cfg['runtime']['device'])
     out_dir = ensure_output_dir(cfg['runtime']['output_dir'])

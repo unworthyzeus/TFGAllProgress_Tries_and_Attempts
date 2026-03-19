@@ -10,7 +10,7 @@ import torch
 from PIL import Image
 from torchvision.transforms import functional as TF
 
-from config_utils import load_config, load_torch_checkpoint, resolve_device
+from config_utils import anchor_data_paths_to_config_file, load_config, load_torch_checkpoint, resolve_device
 from heuristics_cgan import (
     apply_augmented_los_heuristics,
     apply_binary_mask_heuristics,
@@ -65,6 +65,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    anchor_data_paths_to_config_file(cfg, args.config)
     device = resolve_device(cfg['runtime']['device'])
     image_size = int(cfg['data']['image_size'])
     target_columns = list(cfg['target_columns'])

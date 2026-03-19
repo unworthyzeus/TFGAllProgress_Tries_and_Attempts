@@ -6,6 +6,32 @@ from typing import Any, Dict
 import yaml
 
 
+def anchor_data_paths_to_config_file(cfg: Dict[str, Any], config_path: str) -> None:
+    """
+    Resolve relative data.hdf5_path and data.scalar_table_csv against the try-folder root
+    (parent of configs/), so training works no matter the process cwd.
+    """
+    cfg_p = Path(config_path).resolve()
+    if cfg_p.parent.name == "configs":
+        root = cfg_p.parent.parent
+    else:
+        root = cfg_p.parent
+    data = cfg.get("data")
+    if not isinstance(data, dict):
+        return
+    for key in ("hdf5_path", "scalar_table_csv"):
+        val = data.get(key)
+        if not val or not isinstance(val, str):
+            continue
+        p = Path(val)
+        if p.is_absolute():
+            continue
+        resolved = (root / p).resolve()
+        data[key] = str(resolved)
+
+
+
+
 def load_config(path: str) -> Dict[str, Any]:
     cfg_path = Path(path)
     if not cfg_path.exists():

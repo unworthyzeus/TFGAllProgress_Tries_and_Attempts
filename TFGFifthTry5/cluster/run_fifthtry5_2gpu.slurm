@@ -34,7 +34,7 @@ DDP_GPU_COUNT_OVERRIDE=2
 GPU_COUNT=2
 
 # Shared dataset - do not copy, reference TFGThirdTry3
-HDF5_PATH=${HDF5_PATH:-/scratch/nas/3/gmoreno/TFGpractice/TFGThirdTry3/CKM_Dataset.h5}
+HDF5_PATH=${HDF5_PATH:-/scratch/nas/3/gmoreno/TFGpractice/Datasets/CKM_Dataset_old_and_small.h5}
 
 prepare_args=(
     --input-config "$CONFIG_PATH"

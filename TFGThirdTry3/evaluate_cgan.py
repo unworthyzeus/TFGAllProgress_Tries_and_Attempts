@@ -12,7 +12,7 @@ from torch import amp
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from config_utils import is_cuda_device, load_config, load_torch_checkpoint, resolve_device
+from config_utils import is_cuda_device, anchor_data_paths_to_config_file, load_config, load_torch_checkpoint, resolve_device
 from data_utils import build_dataset_splits_from_config, compute_input_channels, path_loss_linear_normalized_to_db
 from heuristics_cgan import apply_path_loss_confidence_fallback, apply_regression_heuristics
 from model_cgan import UNetGenerator
@@ -499,6 +499,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    anchor_data_paths_to_config_file(cfg, args.config)
     device = resolve_device(cfg['runtime']['device'])
 
     target_columns = list(cfg['target_columns'])

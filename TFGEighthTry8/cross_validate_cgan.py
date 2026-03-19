@@ -11,7 +11,7 @@ import torch
 from torch import amp
 from torch.utils.data import DataLoader, Subset
 
-from config_utils import ensure_output_dir, is_cuda_device, load_config, resolve_device
+from config_utils import ensure_output_dir, is_cuda_device, anchor_data_paths_to_config_file, load_config, resolve_device
 from data_utils import build_cross_validation_datasets_from_config, compute_input_channels
 from evaluate_cgan import summarize_loader
 from model_cgan import PatchDiscriminator, UNetGenerator
@@ -68,6 +68,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    anchor_data_paths_to_config_file(cfg, args.config)
     cv_seed = int(args.seed if args.seed is not None else cfg['data'].get('split_seed', cfg.get('seed', 42)))
     set_seed(int(cfg['seed']))
     device = resolve_device(cfg['runtime']['device'])

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Upload TFGFifthTry5 to cluster (excluding dataset, outputs) and submit sbatch via Paramiko.
-Dataset on cluster: /scratch/nas/3/gmoreno/TFGpractice/TFGThirdTry3/CKM_Dataset.h5 (shared).
+Dataset on cluster: /scratch/nas/3/gmoreno/TFGpractice/Datasets/CKM_Dataset_old_and_small.h5 (shared).
 Usage: python cluster/upload_and_submit.py
 """
 import os
@@ -22,7 +22,7 @@ PASSWORD = "Slenderman,2004"
 REMOTE_BASE = "/scratch/nas/3/gmoreno/TFGpractice"
 LOCAL_DIR = "TFGFifthTry5"
 # Shared dataset on cluster - do NOT upload
-HDF5_CLUSTER_PATH = "/scratch/nas/3/gmoreno/TFGpractice/TFGThirdTry3/CKM_Dataset.h5"
+HDF5_CLUSTER_PATH = "/scratch/nas/3/gmoreno/TFGpractice/Datasets/CKM_Dataset_old_and_small.h5"
 
 # Exclude from upload: dataset, outputs, caches, checkpoints
 EXCLUDE_NAMES = {

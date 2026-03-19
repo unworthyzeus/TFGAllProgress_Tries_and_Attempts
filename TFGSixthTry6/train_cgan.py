@@ -17,7 +17,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler, Subset
 from tqdm import tqdm
 
-from config_utils import ensure_output_dir, is_cuda_device, load_config, load_torch_checkpoint, move_optimizer_state_to_device, resolve_device
+from config_utils import ensure_output_dir, is_cuda_device, anchor_data_paths_to_config_file, load_config, load_torch_checkpoint, move_optimizer_state_to_device, resolve_device
 from data_utils import build_datasets_from_config, compute_input_channels, path_loss_linear_normalized_to_db
 from evaluate_cgan import (
     build_loader_for_split,
@@ -751,6 +751,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    anchor_data_paths_to_config_file(cfg, args.config)
     ddp_context = init_distributed_context(str(cfg['runtime']['device']), args.local_rank)
     device = ddp_context['device']
     if ddp_context['is_main_process']:

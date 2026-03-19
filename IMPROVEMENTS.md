@@ -17,9 +17,14 @@ Things found 2:
 
 - Train one model for LoS and one for not LoS (it's an input matrix).
 
+- Now in the new dataset with antenna height we have the antenna height for every image, include it always in the inputs. 
+
 - (DON'T DO THIS ONE Right Now) Normalize the height now that we have the antenna height parameter. Train one model with height normalized and one with NOT normalized (the normalized one with the drone height as the max).
 
 - Be careful with very high path loss (infinite or NaN) in the dataset.
 
 - Look at the data, don't rely on bigger models or more data.
 
+- If we normalize the height let the 1 be the antenna height in that case.
+
+- Basically do a 9th, 10th 11th and 12 th try. 9th just being including the antenna height, 10th separating the model (because the LoS is an input!) having one for LoS and one for not LoS, 11th being normalizing the antenna height but not separating the models, and 12th being normalizing the antenna height AND separating the models (do a 1 and 2 gpu script for each)

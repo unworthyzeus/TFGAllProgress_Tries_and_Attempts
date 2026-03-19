@@ -2,7 +2,7 @@ import json
 import glob
 from pathlib import Path
 
-BASE = Path(r"c:\TFG\TFGpractice\outputs\cluster")
+BASE = Path(r"c:\TFG\TFGpractice\cluster_outputs")
 TRIES = ["TFGThirdTry3", "TFGFourthTry4", "TFGFifthTry5", "TFGSixthTry6"]
 
 def load_best(path: Path):
