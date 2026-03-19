@@ -1,3 +1,5 @@
+Things found day 1:
+
 - Postprocessing: The path loss exponent decreases with higher height. Maybe doing some checking algorithm.
 ![alt text](vinogradov_height_formula.png)
 
@@ -10,3 +12,14 @@
 - Path loss is data missing because sometimes it was too high (so no signal). This affected delay spread and angular spread. But Line of Sight will always exist.
 
 - I'm normalizing the values with the highest and minimum of the dataset. Maybe not doing it that way, if the value goes higher than the highest of the dataset can give problems (and lowest). And also maybe predict the path loss linearly, converting it to linear before training the model, because that way the loss will be higher, it will be more varied data.
+
+Things found 2:
+
+- Train one model for LoS and one for not LoS (it's an input matrix).
+
+- (DON'T DO THIS ONE Right Now) Normalize the height now that we have the antenna height parameter. Train one model with height normalized and one with NOT normalized (the normalized one with the drone height as the max).
+
+- Be careful with very high path loss (infinite or NaN) in the dataset.
+
+- Look at the data, don't rely on bigger models or more data.
+
