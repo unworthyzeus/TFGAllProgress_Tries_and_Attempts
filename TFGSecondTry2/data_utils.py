@@ -577,6 +577,43 @@ def build_dataset_splits_from_config(cfg: Dict[str, Any]) -> Dict[str, Dataset]:
     return splits
 
 
+def merge_hdf5_splits_for_inference(cfg: Dict[str, Any]) -> 'CKMHDF5Dataset':
+    """Train + val + test in one dataset, augment off (HDF5 only)."""
+    data_cfg = cfg['data']
+    if str(data_cfg.get('format', 'hdf5')).lower() != 'hdf5':
+        raise ValueError("merge_hdf5_splits_for_inference requires data.format: hdf5")
+    splits = build_dataset_splits_from_config(cfg)
+    train_ds = splits['train']
+    if not isinstance(train_ds, CKMHDF5Dataset):
+        raise TypeError('merge_hdf5_splits_for_inference expected CKMHDF5Dataset splits.')
+    refs: List[Tuple[str, str]] = []
+    refs.extend(train_ds.sample_refs)
+    refs.extend(splits['val'].sample_refs)
+    if 'test' in splits:
+        refs.extend(splits['test'].sample_refs)
+    return CKMHDF5Dataset(
+        hdf5_path=str(data_cfg['hdf5_path']),
+        sample_refs=refs,
+        target_columns=list(cfg['target_columns']),
+        image_size=int(data_cfg['image_size']),
+        augment=False,
+        hflip_prob=0.0,
+        vflip_prob=0.0,
+        rot90_prob=0.0,
+        add_scalar_channels=bool(cfg['model']['use_scalar_channels']),
+        scalar_feature_columns=list(data_cfg.get('scalar_feature_columns', [])),
+        constant_scalar_features=dict(data_cfg.get('constant_scalar_features', {})),
+        scalar_feature_norms=dict(data_cfg.get('scalar_feature_norms', {})),
+        los_input_column=data_cfg.get('los_input_column'),
+        input_column=str(data_cfg.get('input_column', 'topology_map')),
+        input_metadata=dict(data_cfg.get('input_metadata', {})),
+        target_metadata=dict(cfg.get('target_metadata', {})),
+        target_field_map=dict(data_cfg.get('target_field_map', {})),
+        distance_map_channel=bool(data_cfg.get('distance_map_channel', False)),
+        path_loss_saturation_db=data_cfg.get('path_loss_saturation_db'),
+    )
+
+
 def build_datasets_from_config(cfg: Dict[str, Any]) -> Tuple[Dataset, Dataset]:
     splits = build_dataset_splits_from_config(cfg)
     return splits['train'], splits['val']

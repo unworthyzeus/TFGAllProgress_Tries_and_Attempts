@@ -11,7 +11,12 @@ from PIL import Image
 from torchvision.transforms import functional as TF
 
 from config_utils import anchor_data_paths_to_config_file, load_config, load_torch_checkpoint, resolve_device
-from data_utils import compute_input_channels, _compute_distance_map_2d
+from data_utils import (
+    _compute_distance_map_2d,
+    compute_input_channels,
+    compute_scalar_cond_dim,
+    uses_scalar_film_conditioning,
+)
 from heuristics_cgan import (
     apply_augmented_los_heuristics,
     apply_binary_mask_heuristics,
@@ -84,6 +89,8 @@ def main() -> None:
 
     in_channels = compute_input_channels(cfg)
 
+    sc_dim = int(compute_scalar_cond_dim(cfg)) if uses_scalar_film_conditioning(cfg) else 0
+    film_h = int(cfg['model'].get('scalar_film_hidden', 128))
     generator = UNetGenerator(
         in_channels=in_channels,
         out_channels=int(cfg['model']['out_channels']),
@@ -91,6 +98,8 @@ def main() -> None:
         gradient_checkpointing=bool(cfg['model'].get('gradient_checkpointing', False)),
         path_loss_hybrid=hybrid_enabled,
         norm_type=str(cfg['model'].get('norm_type', 'batch')),
+        scalar_cond_dim=sc_dim,
+        scalar_film_hidden=film_h,
     ).to(device)
 
     state = load_torch_checkpoint(args.checkpoint, device)
@@ -110,6 +119,7 @@ def main() -> None:
     if cfg['data'].get('distance_map_channel', False):
         channels.append(_compute_distance_map_2d(image_size))
 
+    scalar_cond_batch: torch.Tensor | None = None
     if bool(cfg['model']['use_scalar_channels']):
         scalar_columns = list(cfg['data'].get('scalar_feature_columns', []))
         constant_scalars = dict(cfg['data'].get('constant_scalar_features', {}))
@@ -124,12 +134,20 @@ def main() -> None:
             norm = float(scalar_norms.get(col, 1.0)) or 1.0
             values.append(float(raw_value) / norm)
         if values:
-            scalar_tensor = torch.tensor(values, dtype=torch.float32).view(len(values), 1, 1).expand(len(values), image_size, image_size)
-            channels.append(scalar_tensor)
+            if uses_scalar_film_conditioning(cfg):
+                scalar_cond_batch = torch.tensor(values, dtype=torch.float32).unsqueeze(0).to(device)
+            else:
+                scalar_tensor = torch.tensor(values, dtype=torch.float32).view(len(values), 1, 1).expand(
+                    len(values), image_size, image_size
+                )
+                channels.append(scalar_tensor)
 
     model_input = torch.cat(channels, dim=0).unsqueeze(0).to(device)
     with torch.no_grad():
-        pred = generator(model_input).squeeze(0).cpu().numpy()
+        if scalar_cond_batch is not None:
+            pred = generator(model_input, scalar_cond_batch).squeeze(0).cpu().numpy()
+        else:
+            pred = generator(model_input).squeeze(0).cpu().numpy()
 
     out_dir = Path(cfg['runtime']['output_dir']) / 'predict_cgan_outputs'
     out_dir.mkdir(parents=True, exist_ok=True)

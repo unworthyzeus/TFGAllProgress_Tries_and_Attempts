@@ -13,7 +13,15 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from config_utils import anchor_data_paths_to_config_file, is_cuda_device, load_config, load_torch_checkpoint, resolve_device
-from data_utils import build_dataset_splits_from_config, compute_input_channels, path_loss_linear_normalized_to_db
+from data_utils import (
+    build_dataset_splits_from_config,
+    compute_input_channels,
+    compute_scalar_cond_dim,
+    forward_cgan_generator,
+    path_loss_linear_normalized_to_db,
+    unpack_cgan_batch,
+    uses_scalar_film_conditioning,
+)
 from heuristics_cgan import apply_path_loss_confidence_fallback, apply_regression_heuristics
 from model_cgan import UNetGenerator
 
@@ -401,10 +409,10 @@ def summarize_loader(
     post_cfg = dict(cfg.get('postprocess', {}))
 
     with torch.no_grad():
-        for inputs, targets, masks in tqdm(loader, desc='eval_cgan', leave=False):
-            inputs, targets, masks = inputs.to(device), targets.to(device), masks.to(device)
+        for batch in tqdm(loader, desc='eval_cgan', leave=False):
+            inputs, targets, masks, sc = unpack_cgan_batch(batch, device)
             with amp.autocast(device_type='cuda', enabled=amp_enabled):
-                outputs = generator(inputs)
+                outputs = forward_cgan_generator(generator, inputs, sc)
 
             if 'path_loss' in target_columns:
                 path_loss_index = target_columns.index('path_loss')
@@ -508,6 +516,8 @@ def main() -> None:
     if int(cfg['model']['out_channels']) != len(target_columns):
         raise ValueError('model.out_channels must match len(target_columns)')
 
+    sc_dim = int(compute_scalar_cond_dim(cfg)) if uses_scalar_film_conditioning(cfg) else 0
+    film_h = int(cfg['model'].get('scalar_film_hidden', 128))
     generator = UNetGenerator(
         in_channels=compute_input_channels(cfg),
         out_channels=int(cfg['model']['out_channels']),
@@ -515,6 +525,8 @@ def main() -> None:
         gradient_checkpointing=bool(cfg['model'].get('gradient_checkpointing', False)),
         path_loss_hybrid=is_path_loss_hybrid_enabled(cfg),
         norm_type=str(cfg['model'].get('norm_type', 'batch')),
+        scalar_cond_dim=sc_dim,
+        scalar_film_hidden=film_h,
     ).to(device)
 
     state = load_torch_checkpoint(args.checkpoint, device)

@@ -12,7 +12,14 @@ from torch import amp
 from torch.utils.data import DataLoader, Subset
 
 from config_utils import anchor_data_paths_to_config_file, ensure_output_dir, is_cuda_device, load_config, resolve_device
-from data_utils import build_cross_validation_datasets_from_config, compute_input_channels
+from data_utils import (
+    build_cross_validation_datasets_from_config,
+    compute_input_channels,
+    compute_scalar_cond_dim,
+    forward_cgan_generator,
+    unpack_cgan_batch,
+    uses_scalar_film_conditioning,
+)
 from evaluate_cgan import summarize_loader
 from model_cgan import PatchDiscriminator, UNetGenerator
 from train_cgan import (
@@ -20,6 +27,7 @@ from train_cgan import (
     build_loss_map,
     build_optimizer,
     compute_reconstruction_loss,
+    is_path_loss_hybrid_enabled,
     resolve_adversarial_loss_name,
     set_seed,
     validate_generator,
@@ -83,6 +91,7 @@ def main() -> None:
     target_losses = dict(cfg.get('target_losses', {}))
     target_metadata = dict(cfg.get('target_metadata', {}))
     target_loss_weights = {str(k): float(v) for k, v in dict(cfg['loss'].get('target_loss_weights', {})).items()}
+    target_metadata = dict(cfg.get('target_metadata', {}))
     in_channels = compute_input_channels(cfg)
 
     fold_results = []
@@ -111,12 +120,17 @@ def main() -> None:
             persistent_workers=max(1, int(cfg['data']['num_workers']) // 2) > 0,
         )
 
+        sc_dim = int(compute_scalar_cond_dim(cfg)) if uses_scalar_film_conditioning(cfg) else 0
+        film_h = int(cfg['model'].get('scalar_film_hidden', 128))
         generator = UNetGenerator(
             in_channels=in_channels,
             out_channels=int(cfg['model']['out_channels']),
             base_channels=int(cfg['model']['base_channels']),
             gradient_checkpointing=bool(cfg['model'].get('gradient_checkpointing', False)),
+            path_loss_hybrid=is_path_loss_hybrid_enabled(cfg),
             norm_type=str(cfg['model'].get('norm_type', 'batch')),
+            scalar_cond_dim=sc_dim,
+            scalar_film_hidden=film_h,
         ).to(device)
         discriminator = PatchDiscriminator(
             in_channels=in_channels,
@@ -168,11 +182,11 @@ def main() -> None:
             g_running = 0.0
             d_running = 0.0
 
-            for x, y, m in train_loader:
-                x, y, m = x.to(device), y.to(device), m.to(device)
+            for batch in train_loader:
+                x, y, m, sc = unpack_cgan_batch(batch, device)
 
                 with amp.autocast(device_type='cuda', enabled=amp_enabled):
-                    fake = generator(x)
+                    fake = forward_cgan_generator(generator, x, sc)
                     real_logits = discriminator(x, y)
                     fake_logits = discriminator(x, fake.detach())
                     real_labels = torch.ones_like(real_logits)
@@ -188,7 +202,7 @@ def main() -> None:
                 scaler_d.update()
 
                 with amp.autocast(device_type='cuda', enabled=amp_enabled):
-                    fake = generator(x)
+                    fake = forward_cgan_generator(generator, x, sc)
                     fake_logits_for_g = discriminator(x, fake)
                     gan_loss = adv_criterion(fake_logits_for_g, torch.ones_like(fake_logits_for_g))
                     recon_loss = compute_reconstruction_loss(fake, y, m, target_columns, loss_map, mse_weight, l1_weight, target_loss_weights)
@@ -205,7 +219,20 @@ def main() -> None:
                 g_running += g_loss.item()
                 d_running += d_loss.item()
 
-            val_recon = validate_generator(generator, val_loader, device, target_columns, loss_map, amp_enabled, mse_weight, l1_weight, target_loss_weights)
+            val_recon, _val_summary = validate_generator(
+                generator,
+                val_loader,
+                device,
+                cfg,
+                target_columns,
+                loss_map,
+                amp_enabled,
+                mse_weight,
+                l1_weight,
+                target_loss_weights,
+                target_losses,
+                target_metadata,
+            )
             row = {
                 'epoch': epoch,
                 'adversarial_loss': adversarial_loss_name,

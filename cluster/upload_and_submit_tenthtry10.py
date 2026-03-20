@@ -3,10 +3,15 @@
 
 For two parallel jobs (LOS + NLOS), first upload uses default (cleans outputs once);
 second upload add --no-clean-outputs so the first run's checkpoints are not deleted.
+
+--film uses cluster/run_tenthtry10_film_{los|nlos}_{1|2}gpu.slurm.
+
+--both-film-1gpu: one upload + sbatch LoS FiLM 1GPU + sbatch NLoS FiLM 1GPU (same clean rules).
 """
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import stat
 import sys
@@ -100,10 +105,30 @@ def clean_remote_outputs(sftp, remote_dir: str) -> None:
     rm_r(remote_dir)
 
 
+def sftp_put_slurm_lf(sftp, local_path: str, remote_path: str, rel: str) -> None:
+    """Slurm on Linux rejects CRLF; normalize .slurm uploads from Windows."""
+    if rel.replace("\\", "/").lower().endswith(".slurm"):
+        with open(local_path, "rb") as f:
+            blob = f.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        sftp.putfo(io.BytesIO(blob), remote_path)
+    else:
+        sftp.put(local_path, remote_path)
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--variant", choices=["los", "nlos"], required=True)
+    p.add_argument("--variant", choices=["los", "nlos"], default=None)
     p.add_argument("--gpus", type=int, choices=[1, 2], default=2)
+    p.add_argument(
+        "--film",
+        action="store_true",
+        help="FiLM configs (experiments/tenthtry10_film/*.yaml).",
+    )
+    p.add_argument(
+        "--both-film-1gpu",
+        action="store_true",
+        help="Upload once and sbatch LoS + NLoS FiLM with 1 GPU each (ignores --variant/--gpus).",
+    )
     p.add_argument(
         "--no-clean-outputs",
         action="store_true",
@@ -114,14 +139,29 @@ def main() -> None:
     if not pw:
         raise SystemExit("Set SSH_PASSWORD")
 
+    if args.both_film_1gpu:
+        if args.variant is not None:
+            print("Note: --variant ignored with --both-film-1gpu.")
+        if args.gpus != 1:
+            print("Note: --both-film-1gpu always uses 1 GPU per job (ignoring --gpus).")
+        slurm_jobs = [
+            "cluster/run_tenthtry10_film_los_1gpu.slurm",
+            "cluster/run_tenthtry10_film_nlos_1gpu.slurm",
+        ]
+    else:
+        if args.variant is None:
+            raise SystemExit("Specify --variant los|nlos or use --both-film-1gpu.")
+        v = args.variant
+        g = args.gpus
+        if args.film:
+            slurm_jobs = [f"cluster/run_tenthtry10_film_{v}_{g}gpu.slurm"]
+        else:
+            slurm_jobs = [f"cluster/run_tenthtry10_{v}_{g}gpu.slurm"]
+
     root = Path(__file__).resolve().parent.parent
     local_try = root / LOCAL_DIR
     if not local_try.is_dir() or not LOCAL_H5.is_file():
         raise SystemExit("Missing try folder or HDF5")
-
-    v = args.variant
-    g = args.gpus
-    slurm = f"cluster/run_tenthtry10_{v}_{g}gpu.slurm"
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -140,17 +180,18 @@ def main() -> None:
         for i, (lf, rel) in enumerate(files, start=1):
             rf = f"{rdir}/{rel}"
             mkdir_p(sftp, os.path.dirname(rf).replace("\\", "/"))
-            sftp.put(lf, rf)
+            sftp_put_slurm_lf(sftp, lf, rf, rel)
             if i == 1 or i == len(files) or i % 40 == 0:
                 print(f"  ... {i}/{len(files)} {rel}")
         sftp.close()
-        cmd = f"cd {rdir} && sbatch {slurm}"
-        print(cmd)
-        _, stdout, stderr = client.exec_command(cmd)
-        print(stdout.read().decode().strip())
-        e = stderr.read().decode().strip()
-        if e:
-            print("stderr:", e)
+        for slurm in slurm_jobs:
+            cmd = f"cd {rdir} && sbatch {slurm}"
+            print(cmd)
+            _, stdout, stderr = client.exec_command(cmd)
+            print(stdout.read().decode().strip())
+            e = stderr.read().decode().strip()
+            if e:
+                print("stderr:", e)
     finally:
         client.close()
 

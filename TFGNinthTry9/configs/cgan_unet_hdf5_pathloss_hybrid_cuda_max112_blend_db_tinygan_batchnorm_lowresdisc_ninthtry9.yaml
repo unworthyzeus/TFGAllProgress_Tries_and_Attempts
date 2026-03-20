@@ -36,12 +36,21 @@ model:
   gradient_checkpointing: true
   out_channels: 1
   use_scalar_channels: true
+  # false = canal espacial de altura (compatible con checkpoints ya guardados).
+  # true = FiLM en bottleneck; NO reanudar desde ckpt viejos (arquitectura distinta).
+  use_scalar_film: false
+  scalar_film_hidden: 128
   norm_type: batch
   disc_norm_type: batch
 
 training:
   batch_size: 1
   epochs: 60
+  early_stopping:
+    enabled: false
+    patience: 10
+    min_delta: 0.0
+  scalar_report_samples: 1000
   selection_metrics:
     path_loss.rmse_physical: 1.0
   save_validation_json_each_epoch: true

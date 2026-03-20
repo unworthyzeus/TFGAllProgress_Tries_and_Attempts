@@ -26,7 +26,16 @@ from config_utils import (
     move_optimizer_state_to_device,
     resolve_device,
 )
-from data_utils import build_datasets_from_config, compute_input_channels, path_loss_linear_normalized_to_db
+from data_utils import (
+    build_datasets_from_config,
+    compute_input_channels,
+    compute_scalar_cond_dim,
+    forward_cgan_generator,
+    log_scalar_data_report,
+    path_loss_linear_normalized_to_db,
+    unpack_cgan_batch,
+    uses_scalar_film_conditioning,
+)
 from evaluate_cgan import (
     build_loader_for_split,
     denormalize_channel,
@@ -617,10 +626,10 @@ def validate_generator(
     fused_path_loss_targets: List[np.ndarray] = []
     post_cfg = dict(cfg.get('postprocess', {}))
     with torch.no_grad():
-        for x, y, m in tqdm(loader, desc='val', leave=False):
-            x, y, m = x.to(device), y.to(device), m.to(device)
+        for batch in tqdm(loader, desc='val', leave=False):
+            x, y, m, sc = unpack_cgan_batch(batch, device)
             with amp.autocast(device_type='cuda', enabled=amp_enabled):
-                pred = generator(x)
+                pred = forward_cgan_generator(generator, x, sc)
                 primary_pred = extract_primary_outputs(pred, target_columns)
                 recon = compute_reconstruction_loss(primary_pred, y, m, target_columns, loss_map, mse_weight, l1_weight, target_loss_weights)
                 confidence_loss, confidence_stats = compute_confidence_loss(pred, y, m, target_columns, target_metadata, cfg)
@@ -787,6 +796,12 @@ def main() -> None:
         is_main_process=bool(ddp_context['is_main_process']),
     )
 
+    if ddp_context['is_main_process']:
+        log_scalar_data_report(train_loader.dataset, cfg, sample_limit=int(cfg['training'].get('scalar_report_samples', 1000)))
+
+    scalar_cond_dim = int(compute_scalar_cond_dim(cfg)) if uses_scalar_film_conditioning(cfg) else 0
+    film_hidden = int(cfg['model'].get('scalar_film_hidden', 128))
+
     generator = UNetGenerator(
         in_channels=in_channels,
         out_channels=int(cfg['model']['out_channels']),
@@ -794,6 +809,8 @@ def main() -> None:
         gradient_checkpointing=bool(cfg['model'].get('gradient_checkpointing', False)),
         path_loss_hybrid=is_path_loss_hybrid_enabled(cfg),
         norm_type=str(cfg['model'].get('norm_type', 'batch')),
+        scalar_cond_dim=scalar_cond_dim,
+        scalar_film_hidden=film_hidden,
     ).to(device)
     discriminator = PatchDiscriminator(
         in_channels=in_channels,
@@ -871,6 +888,11 @@ def main() -> None:
     best_val_recon = float('inf')
     history = []
     start_epoch = 1
+    es_cfg = cfg['training'].get('early_stopping') or {}
+    es_enabled = bool(es_cfg.get('enabled', False))
+    es_patience = int(es_cfg.get('patience', 10))
+    es_min_delta = float(es_cfg.get('min_delta', 0.0))
+    epochs_without_improvement = 0
     target_metadata = dict(cfg.get('target_metadata', {}))
 
     resume_path = resolve_resume_checkpoint(out_dir, cfg['runtime'].get('resume_checkpoint'))
@@ -941,13 +963,13 @@ def main() -> None:
         d_running = 0.0
         batch_count = 0
 
-        for x, y, m in tqdm(
+        for batch in tqdm(
             train_loader,
             desc=f'epoch {epoch}',
             leave=False,
             disable=not ddp_context['is_main_process'],
         ):
-            x, y, m = x.to(device), y.to(device), m.to(device)
+            x, y, m, sc = unpack_cgan_batch(batch, device)
 
             if gan_enabled:
                 discriminator_model.train()
@@ -956,7 +978,7 @@ def main() -> None:
                 # so avoid building a generator graph here to reduce peak VRAM.
                 with torch.no_grad():
                     with amp.autocast(device_type='cuda', enabled=amp_enabled):
-                        fake = generator_model(x)
+                        fake = forward_cgan_generator(generator_model, x, sc)
                         fake_primary = extract_primary_outputs(fake, target_columns)
 
                 opt_d.zero_grad(set_to_none=True)
@@ -987,7 +1009,7 @@ def main() -> None:
                 set_requires_grad(discriminator, False)
                 discriminator_model.eval()
             with amp.autocast(device_type='cuda', enabled=amp_enabled):
-                fake = generator_model(x)
+                fake = forward_cgan_generator(generator_model, x, sc)
                 fake_primary = extract_primary_outputs(fake, target_columns)
                 if gan_enabled:
                     fake_logits_for_g = discriminator_model(x, fake_primary)
@@ -1038,6 +1060,7 @@ def main() -> None:
             dist.barrier()
 
         if ddp_context['is_main_process']:
+            prev_best_selection = float(best_selection_value)
             if val_loader is None:
                 raise RuntimeError('Validation loader is required on rank 0.')
             val_recon, val_summary = validate_generator(
@@ -1085,6 +1108,12 @@ def main() -> None:
                 row['selection_metric_normalized_components'] = dict(selection_normalized_values)
             history.append(row)
             print(json.dumps(row))
+
+            if es_enabled and es_patience > 0:
+                if selection_value < (prev_best_selection - es_min_delta):
+                    epochs_without_improvement = 0
+                else:
+                    epochs_without_improvement += 1
 
             if scheduler_g is not None:
                 scheduler_g.step(float(selection_value))
@@ -1145,8 +1174,23 @@ def main() -> None:
                     selection_normalized_values=selection_normalized_values,
                     selection_weighted_values=selection_weighted_values,
                 )
+        stop_tensor = torch.tensor([0], device=device, dtype=torch.int32)
+        if ddp_context['is_main_process'] and es_enabled and es_patience > 0 and epochs_without_improvement >= es_patience:
+            stop_tensor[0] = 1
+            print(
+                json.dumps(
+                    {
+                        'early_stopping': True,
+                        'epochs_without_improvement': int(epochs_without_improvement),
+                        'patience': int(es_patience),
+                    }
+                )
+            )
         if ddp_context['distributed']:
+            dist.broadcast(stop_tensor, src=0)
             dist.barrier()
+        if int(stop_tensor.item()) != 0:
+            break
 
     if ddp_context['is_main_process']:
         with (out_dir / 'history_cgan.json').open('w', encoding='utf-8') as handle:

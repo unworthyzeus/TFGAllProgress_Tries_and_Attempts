@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Upload TFGEleventhTry11; --gpus 1|2. Set SSH_PASSWORD."""
+"""Upload TFGEleventhTry11; --gpus 1|2. Set SSH_PASSWORD.
+
+Por defecto limpia remote outputs/ antes de subir. Si lanzas dos jobs seguidos (p. ej. canal + FiLM),
+usa --no-clean-outputs en el segundo para no borrar checkpoints del primero.
+
+--film sube y lanza experiments/eleventhtry11_film (Slurm *_film_*gpu).
+"""
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import stat
 import sys
@@ -92,9 +99,29 @@ def clean_remote_outputs(sftp, remote_dir: str) -> None:
     rm_r(remote_dir)
 
 
+def sftp_put_slurm_lf(sftp, local_path: str, remote_path: str, rel: str) -> None:
+    """Slurm on Linux rejects CRLF; normalize .slurm uploads from Windows."""
+    if rel.replace("\\", "/").lower().endswith(".slurm"):
+        with open(local_path, "rb") as f:
+            blob = f.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        sftp.putfo(io.BytesIO(blob), remote_path)
+    else:
+        sftp.put(local_path, remote_path)
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--gpus", type=int, choices=[1, 2], default=2)
+    p.add_argument(
+        "--film",
+        action="store_true",
+        help="sbatch cluster/run_eleventhtry11_film_{1,2}gpu.slurm (variante FiLM).",
+    )
+    p.add_argument(
+        "--no-clean-outputs",
+        action="store_true",
+        help="No borrar TFGEleventhTry11/outputs ni __pycache__ remotos antes del upload.",
+    )
     args = p.parse_args()
     pw = os.environ.get("SSH_PASSWORD", "")
     if not pw:
@@ -105,9 +132,18 @@ def main() -> None:
     if not local_try.is_dir() or not LOCAL_H5.is_file():
         raise SystemExit("Missing try folder or HDF5")
 
-    slurm = (
-        "cluster/run_eleventhtry11_2gpu.slurm" if args.gpus == 2 else "cluster/run_eleventhtry11_1gpu.slurm"
-    )
+    if args.film:
+        slurm = (
+            "cluster/run_eleventhtry11_film_2gpu.slurm"
+            if args.gpus == 2
+            else "cluster/run_eleventhtry11_film_1gpu.slurm"
+        )
+    else:
+        slurm = (
+            "cluster/run_eleventhtry11_2gpu.slurm"
+            if args.gpus == 2
+            else "cluster/run_eleventhtry11_1gpu.slurm"
+        )
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -118,11 +154,15 @@ def main() -> None:
         upload_csv_always(sftp, LOCAL_CSV, f"{REMOTE_BASE}/Datasets/CKM_180326_antenna_height.csv")
         rdir = f"{REMOTE_BASE}/{LOCAL_DIR}"
         mkdir_p(sftp, rdir)
-        clean_remote_outputs(sftp, rdir)
+        if not args.no_clean_outputs:
+            print("Cleaning remote outputs/ and __pycache__ under TFGEleventhTry11...")
+            clean_remote_outputs(sftp, rdir)
+        else:
+            print("Skip remote clean (--no-clean-outputs).")
         for lf, rel in collect_files(local_try):
             rf = f"{rdir}/{rel}"
             mkdir_p(sftp, os.path.dirname(rf).replace("\\", "/"))
-            sftp.put(lf, rf)
+            sftp_put_slurm_lf(sftp, lf, rf, rel)
         sftp.close()
         cmd = f"cd {rdir} && sbatch {slurm}"
         print(cmd)

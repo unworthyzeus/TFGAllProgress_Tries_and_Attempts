@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,6 +18,8 @@ class UNetGenerator(nn.Module):
         gradient_checkpointing: bool = False,
         path_loss_hybrid: bool = False,
         norm_type: str = 'batch',
+        scalar_cond_dim: int = 0,
+        scalar_film_hidden: int = 128,
     ):
         super().__init__()
         self.generator = CKMUNet(
@@ -25,10 +29,12 @@ class UNetGenerator(nn.Module):
             gradient_checkpointing=gradient_checkpointing,
             path_loss_hybrid=path_loss_hybrid,
             norm_type=norm_type,
+            scalar_cond_dim=scalar_cond_dim,
+            scalar_film_hidden=scalar_film_hidden,
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.generator(x)
+    def forward(self, x: torch.Tensor, scalar_cond: Optional[torch.Tensor] = None) -> torch.Tensor:
+        return self.generator(x, scalar_cond)
 
 
 class PatchDiscriminator(nn.Module):

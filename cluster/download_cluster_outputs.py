@@ -11,6 +11,8 @@ Into local:
 Default behavior:
   - Download EVERYTHING under outputs/ (mirrors the remote tree).
 
+Use --filter json_and_best_cgan to pull metrics (*.json) + only best_cgan.pt (skip epoch_*_cgan.pt).
+
 Auth:
   - Requires SSH_PASSWORD env var (so we never hardcode credentials).
 
@@ -53,8 +55,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--filter",
         default="all",
-        choices=["all", "json_and_pt", "json_only"],
-        help="Download mode. 'all' mirrors outputs/ entirely (default). 'json_and_pt' downloads only *.json and *.pt. 'json_only' downloads only *.json (excludes models/checkpoints).",
+        choices=["all", "json_and_pt", "json_only", "json_and_best_cgan"],
+        help=(
+            "Download mode. 'all' = mirror outputs/ (default). "
+            "'json_and_pt' = *.json and every *.pt (includes epoch_*_cgan.pt). "
+            "'json_only' = *.json only. "
+            "'json_and_best_cgan' = *.json + only best_cgan.pt (no epoch checkpoints)."
+        ),
     )
     return p.parse_args()
 
@@ -84,6 +91,12 @@ def should_download(rel_path: str, mode: str) -> bool:
         return name.endswith(".json") or name.endswith(".pt")
     if mode == "json_only":
         return name.endswith(".json")
+    if mode == "json_and_best_cgan":
+        if name.endswith(".json"):
+            return True
+        if name.endswith(".pt"):
+            return name == "best_cgan.pt"
+        return False
     return True
 
 

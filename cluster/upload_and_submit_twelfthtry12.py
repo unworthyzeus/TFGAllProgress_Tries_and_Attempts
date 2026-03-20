@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Upload TFGTwelfthTry12; --variant los|nlos --gpus 1|2. Set SSH_PASSWORD."""
+"""Upload TFGTwelfthTry12; --variant los|nlos --gpus 1|2. Set SSH_PASSWORD.
+
+Por defecto limpia remote outputs/ antes de subir. Para dos jobs en paralelo (LoS + NLoS),
+el segundo debe usar --no-clean-outputs para no borrar checkpoints del primero.
+"""
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import stat
 import sys
@@ -92,10 +97,26 @@ def clean_remote_outputs(sftp, remote_dir: str) -> None:
     rm_r(remote_dir)
 
 
+def sftp_put_slurm_lf(sftp, local_path: str, remote_path: str, rel: str) -> None:
+    """Slurm on Linux rejects CRLF; normalize .slurm uploads from Windows."""
+    if rel.replace("\\", "/").lower().endswith(".slurm"):
+        with open(local_path, "rb") as f:
+            blob = f.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        sftp.putfo(io.BytesIO(blob), remote_path)
+    else:
+        sftp.put(local_path, remote_path)
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--variant", choices=["los", "nlos"], required=True)
     p.add_argument("--gpus", type=int, choices=[1, 2], default=2)
+    p.add_argument(
+        "--no-clean-outputs",
+        action="store_true",
+        help="No borrar TFGTwelfthTry12/outputs ni __pycache__ remotos antes del upload "
+        "(usar en el 2º job si lanzas LoS y NLoS a la vez). Por defecto sí se limpia.",
+    )
     args = p.parse_args()
     pw = os.environ.get("SSH_PASSWORD", "")
     if not pw:
@@ -119,11 +140,15 @@ def main() -> None:
         upload_csv_always(sftp, LOCAL_CSV, f"{REMOTE_BASE}/Datasets/CKM_180326_antenna_height.csv")
         rdir = f"{REMOTE_BASE}/{LOCAL_DIR}"
         mkdir_p(sftp, rdir)
-        clean_remote_outputs(sftp, rdir)
+        if not args.no_clean_outputs:
+            print("Cleaning remote outputs/ and __pycache__ under TFGTwelfthTry12...")
+            clean_remote_outputs(sftp, rdir)
+        else:
+            print("Skip remote clean (--no-clean-outputs).")
         for lf, rel in collect_files(local_try):
             rf = f"{rdir}/{rel}"
             mkdir_p(sftp, os.path.dirname(rf).replace("\\", "/"))
-            sftp.put(lf, rf)
+            sftp_put_slurm_lf(sftp, lf, rf, rel)
         sftp.close()
         cmd = f"cd {rdir} && sbatch {slurm}"
         print(cmd)

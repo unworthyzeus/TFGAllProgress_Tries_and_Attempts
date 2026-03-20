@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import stat
 import sys
@@ -96,6 +97,16 @@ def clean_remote_outputs(sftp, remote_dir: str) -> None:
     rm_r(remote_dir)
 
 
+def sftp_put_slurm_lf(sftp, local_path: str, remote_path: str, rel: str) -> None:
+    """Slurm on Linux rejects CRLF; normalize .slurm uploads from Windows."""
+    if rel.replace("\\", "/").lower().endswith(".slurm"):
+        with open(local_path, "rb") as f:
+            blob = f.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        sftp.putfo(io.BytesIO(blob), remote_path)
+    else:
+        sftp.put(local_path, remote_path)
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--gpus", type=int, choices=[1, 2], default=2)
@@ -128,7 +139,7 @@ def main() -> None:
         for lf, rel in collect_files(local_try):
             rf = f"{rdir}/{rel}"
             mkdir_p(sftp, os.path.dirname(rf).replace("\\", "/"))
-            sftp.put(lf, rf)
+            sftp_put_slurm_lf(sftp, lf, rf, rel)
         sftp.close()
         cmd = f"cd {rdir} && sbatch {slurm}"
         print(cmd)

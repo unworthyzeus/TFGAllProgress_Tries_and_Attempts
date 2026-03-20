@@ -6,16 +6,28 @@ from typing import Any, Dict
 import yaml
 
 
+def _try_root_from_config_path(cfg_p: Path) -> Path:
+    """Directory that contains configs/ (try root), for YAML under configs/ or experiments/..."""
+    cur = cfg_p.resolve().parent
+    for _ in range(10):
+        if (cur / "configs").is_dir():
+            return cur
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    if cfg_p.resolve().parent.name == "configs":
+        return cfg_p.resolve().parent.parent
+    return cfg_p.resolve().parent
+
+
 def anchor_data_paths_to_config_file(cfg: Dict[str, Any], config_path: str) -> None:
     """
     Resolve relative data.hdf5_path and data.scalar_table_csv against the try-folder root
-    (parent of configs/), so training works no matter the process cwd.
+    (directory containing configs/), so training works no matter the process cwd.
     """
     cfg_p = Path(config_path).resolve()
-    if cfg_p.parent.name == "configs":
-        root = cfg_p.parent.parent
-    else:
-        root = cfg_p.parent
+    root = _try_root_from_config_path(cfg_p)
     data = cfg.get("data")
     if not isinstance(data, dict):
         return

@@ -1,9 +1,9 @@
 #!/bin/bash
-# EleventhTry11 — 1 GPU
+# EleventhTry11 — 1 GPU (small_gpu: evita QOSMinGRES con 1×GPU)
 #SBATCH --job-name=ckm-t11-1gpu
 #SBATCH -A gpu
 #SBATCH -p gpu
-#SBATCH --qos=medium_gpu
+#SBATCH --qos=small_gpu
 #SBATCH --gres=gpu:rtx2080:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import random
 import warnings
+from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import h5py
 import numpy as np
@@ -107,16 +109,106 @@ def _compute_distance_map_2d(image_size: int) -> torch.Tensor:
     return normalized.unsqueeze(0)
 
 
+def uses_scalar_film_conditioning(cfg: Dict[str, Any]) -> bool:
+    """When True, scalars are passed as a vector + FiLM (no extra input channels)."""
+    m = cfg.get('model', {})
+    return bool(m.get('use_scalar_film', False)) and bool(m.get('use_scalar_channels', False))
+
+
+def compute_scalar_cond_dim(cfg: Dict[str, Any]) -> int:
+    data_cfg = cfg['data']
+    return len(list(data_cfg.get('scalar_feature_columns', []))) + len(dict(data_cfg.get('constant_scalar_features', {})))
+
+
+def add_scalar_channels_from_config(cfg: Dict[str, Any]) -> bool:
+    """Stack scalar features as constant spatial channels (legacy path)."""
+    return bool(cfg['model'].get('use_scalar_channels', False)) and not uses_scalar_film_conditioning(cfg)
+
+
+def return_scalar_cond_from_config(cfg: Dict[str, Any]) -> bool:
+    """Dataset returns a 4th tensor [B, D] for FiLM when enabled and D > 0."""
+    return uses_scalar_film_conditioning(cfg) and compute_scalar_cond_dim(cfg) > 0
+
+
 def compute_input_channels(cfg: Dict[str, Any]) -> int:
     in_channels = 1
     if cfg['data'].get('los_input_column'):
         in_channels += 1
     if cfg['data'].get('distance_map_channel', False):
         in_channels += 1
-    if bool(cfg['model']['use_scalar_channels']):
-        in_channels += len(list(cfg['data'].get('scalar_feature_columns', [])))
-        in_channels += len(dict(cfg['data'].get('constant_scalar_features', {})))
+    if bool(cfg['model'].get('use_scalar_channels', False)):
+        if not bool(cfg['model'].get('use_scalar_film', False)):
+            in_channels += len(list(cfg['data'].get('scalar_feature_columns', [])))
+            in_channels += len(dict(cfg['data'].get('constant_scalar_features', {})))
     return in_channels
+
+
+def unpack_cgan_batch(
+    batch: Tuple[Any, ...],
+    device: Union[str, torch.device],
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    if len(batch) == 4:
+        x, y, m, sc = batch
+        return x.to(device), y.to(device), m.to(device), sc.to(device)
+    x, y, m = batch
+    return x.to(device), y.to(device), m.to(device), None
+
+
+def forward_cgan_generator(
+    generator: torch.nn.Module,
+    x: torch.Tensor,
+    scalar_cond: Optional[torch.Tensor],
+) -> torch.Tensor:
+    if scalar_cond is not None:
+        return generator(x, scalar_cond)
+    return generator(x)
+
+
+def log_scalar_data_report(train_dataset: Dataset, cfg: Dict[str, Any], sample_limit: int = 1000) -> None:
+    """Log min/max/mean/%zeros for configured scalar columns (rank-0 sanity check)."""
+    if not bool(cfg['model'].get('use_scalar_channels', False)):
+        return
+    cols = list(cfg['data'].get('scalar_feature_columns', []))
+    const_names = list(dict(cfg['data'].get('constant_scalar_features', {})).keys())
+    names = cols + const_names
+    if not names:
+        return
+    data_cfg = cfg['data']
+    n_prefix = 1
+    if data_cfg.get('los_input_column'):
+        n_prefix += 1
+    if bool(data_cfg.get('distance_map_channel', False)):
+        n_prefix += 1
+    n_sc = len(names)
+    stats: Dict[str, List[float]] = defaultdict(list)
+    n = min(int(sample_limit), len(train_dataset))
+    for i in range(n):
+        item = train_dataset[i]
+        if len(item) == 4:
+            sc = item[3]
+            vals = [float(sc[j].item()) for j in range(min(n_sc, int(sc.shape[0])))]
+        else:
+            x = item[0]
+            if x.shape[0] < n_prefix + n_sc:
+                continue
+            vals = [float(x[n_prefix + j, 0, 0].item()) for j in range(n_sc)]
+        for name, v in zip(names, vals):
+            stats[name].append(v)
+    report: Dict[str, Any] = {}
+    for name, vs in stats.items():
+        if not vs:
+            continue
+        arr = np.asarray(vs, dtype=np.float64)
+        report[name] = {
+            'n': int(len(vs)),
+            'min': float(np.min(arr)),
+            'max': float(np.max(arr)),
+            'mean': float(np.mean(arr)),
+            'std': float(np.std(arr)),
+            'frac_zero': float(np.mean(np.abs(arr) < 1e-12)),
+        }
+    if report:
+        print(json.dumps({'scalar_data_report': report}, indent=2))
 
 
 class CKMDataset(Dataset):
@@ -131,6 +223,7 @@ class CKMDataset(Dataset):
         vflip_prob: float = 0.5,
         rot90_prob: float = 0.4,
         add_scalar_channels: bool = True,
+        return_scalar_cond: bool = False,
         scalar_feature_columns: Optional[List[str]] = None,
         constant_scalar_features: Optional[Dict[str, float]] = None,
         scalar_feature_norms: Optional[Dict[str, float]] = None,
@@ -145,6 +238,7 @@ class CKMDataset(Dataset):
         self.vflip_prob = vflip_prob
         self.rot90_prob = rot90_prob
         self.add_scalar_channels = add_scalar_channels
+        self.return_scalar_cond = bool(return_scalar_cond)
         self.scalar_feature_columns = scalar_feature_columns or []
         self.constant_scalar_features = constant_scalar_features or {}
         self.scalar_feature_norms_cfg = scalar_feature_norms or {}
@@ -234,21 +328,23 @@ class CKMDataset(Dataset):
         if los_input_img is not None:
             model_input_channels.append(TF.to_tensor(los_input_img))
 
-        if self.add_scalar_channels:
-            scalar_values = []
+        scalar_values: List[float] = []
+        if self.add_scalar_channels or self.return_scalar_cond:
             for col in self.scalar_feature_columns:
                 raw_value = pd.to_numeric(row.get(col, 0.0), errors='coerce')
                 value = 0.0 if pd.isna(raw_value) else float(raw_value)
                 norm = self.scalar_norms.get(col, 1.0)
-                scalar_values.append(value / norm)
+                scalar_values.append(value / max(norm, 1e-12))
 
             for col, value in self.constant_scalar_features.items():
                 norm = self.scalar_norms.get(col, 1.0)
-                scalar_values.append(float(value) / norm)
+                scalar_values.append(float(value) / max(norm, 1e-12))
 
-            if scalar_values:
+            if self.add_scalar_channels and scalar_values:
                 h, w = model_input_channels[0].shape[1:]
-                scalar_tensor = torch.tensor(scalar_values, dtype=torch.float32).view(len(scalar_values), 1, 1).expand(len(scalar_values), h, w)
+                scalar_tensor = torch.tensor(scalar_values, dtype=torch.float32).view(len(scalar_values), 1, 1).expand(
+                    len(scalar_values), h, w
+                )
                 model_input_channels.append(scalar_tensor)
 
         model_input = torch.cat(model_input_channels, dim=0)
@@ -266,6 +362,9 @@ class CKMDataset(Dataset):
         target_tensor = torch.cat(target_tensors, dim=0)
         mask_tensor = torch.cat(mask_tensors, dim=0)
 
+        if self.return_scalar_cond and scalar_values:
+            cond = torch.tensor(scalar_values, dtype=torch.float32)
+            return model_input, target_tensor, mask_tensor, cond
         return model_input, target_tensor, mask_tensor
 
 
@@ -281,6 +380,7 @@ class CKMHDF5Dataset(Dataset):
         vflip_prob: float = 0.5,
         rot90_prob: float = 0.4,
         add_scalar_channels: bool = True,
+        return_scalar_cond: bool = False,
         scalar_feature_columns: Optional[List[str]] = None,
         constant_scalar_features: Optional[Dict[str, float]] = None,
         scalar_feature_norms: Optional[Dict[str, float]] = None,
@@ -304,6 +404,7 @@ class CKMHDF5Dataset(Dataset):
         self.vflip_prob = vflip_prob
         self.rot90_prob = rot90_prob
         self.add_scalar_channels = add_scalar_channels
+        self.return_scalar_cond = bool(return_scalar_cond)
         self.scalar_feature_columns = scalar_feature_columns or []
         self.constant_scalar_features = constant_scalar_features or {}
         self.scalar_feature_norms_cfg = scalar_feature_norms or {}
@@ -481,19 +582,21 @@ class CKMHDF5Dataset(Dataset):
         if distance_map_tensor is not None:
             model_input_channels.append(distance_map_tensor)
 
-        if self.add_scalar_channels:
-            scalar_values = []
+        scalar_values: List[float] = []
+        if self.add_scalar_channels or self.return_scalar_cond:
             for col in self.scalar_feature_columns:
                 norm = self.scalar_norms.get(col, 1.0)
                 val = self._resolve_hdf5_scalar_value(city, sample, col)
                 scalar_values.append(float(val) / max(norm, 1e-12))
             for col, value in self.constant_scalar_features.items():
                 norm = self.scalar_norms.get(col, 1.0)
-                scalar_values.append(float(value) / norm)
+                scalar_values.append(float(value) / max(norm, 1e-12))
 
-            if scalar_values:
+            if self.add_scalar_channels and scalar_values:
                 h, w = model_input_channels[0].shape[1:]
-                scalar_tensor = torch.tensor(scalar_values, dtype=torch.float32).view(len(scalar_values), 1, 1).expand(len(scalar_values), h, w)
+                scalar_tensor = torch.tensor(scalar_values, dtype=torch.float32).view(len(scalar_values), 1, 1).expand(
+                    len(scalar_values), h, w
+                )
                 model_input_channels.append(scalar_tensor)
 
         model_input = torch.cat(model_input_channels, dim=0)
@@ -507,6 +610,9 @@ class CKMHDF5Dataset(Dataset):
             if self.path_loss_ignore_nonfinite and path_loss_invalid_mask is not None:
                 inv = path_loss_invalid_mask.squeeze(0)
                 mask_tensor[path_loss_idx] = mask_tensor[path_loss_idx] * (1.0 - inv)
+        if self.return_scalar_cond and scalar_values:
+            cond = torch.tensor(scalar_values, dtype=torch.float32)
+            return model_input, target_tensor, mask_tensor, cond
         return model_input, target_tensor, mask_tensor
 
 
@@ -650,6 +756,60 @@ def _read_scalar_from_h5_group(group: h5py.Group, spec: Dict[str, Optional[str]]
     return None
 
 
+def infer_scalar_feature_norms_from_hdf5(data_cfg: Dict[str, Any]) -> Dict[str, float]:
+    """
+    When scalar_table_csv is not used, infer max-abs norms from HDF5 so scalar planes match CSV-based training.
+    """
+    hdf5_path = data_cfg.get('hdf5_path')
+    if not hdf5_path:
+        return {}
+    path = Path(str(hdf5_path))
+    if not path.is_file():
+        return {}
+    specs_map = _normalize_hdf5_scalar_specs(list(data_cfg.get('hdf5_scalar_specs') or []))
+    cols = [str(c) for c in data_cfg.get('scalar_feature_columns', []) if c in specs_map]
+    if not cols:
+        return {}
+    max_abs = {c: 0.0 for c in cols}
+    with h5py.File(path, 'r') as handle:
+        for city in handle.keys():
+            for sample in handle[city].keys():
+                grp = handle[city][sample]
+                for col in cols:
+                    v = _read_scalar_from_h5_group(grp, specs_map[col])
+                    if v is not None and np.isfinite(v):
+                        max_abs[col] = max(max_abs[col], abs(float(v)))
+    out: Dict[str, float] = {}
+    for c in cols:
+        if max_abs[c] > 1e-12:
+            out[c] = max(max_abs[c], 1.0)
+    return out
+
+
+def sample_is_los_dominant(
+    hdf5_path: str,
+    city: str,
+    sample: str,
+    field_name: str,
+    threshold: float,
+) -> Optional[bool]:
+    """True if los_mask fraction > 0.5 is >= threshold (los_only rule); None if unreadable."""
+    try:
+        with h5py.File(str(hdf5_path), 'r') as handle:
+            if city not in handle or sample not in handle[city]:
+                return None
+            grp = handle[city][sample]
+            if field_name not in grp:
+                return None
+            arr = np.asarray(grp[field_name][...], dtype=np.float32)
+            if not np.isfinite(arr).all():
+                arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+            frac_los = float(np.mean(arr > 0.5))
+            return bool(frac_los >= float(threshold))
+    except (OSError, KeyError, TypeError, ValueError):
+        return None
+
+
 def _filter_hdf5_refs_by_los_dominance(
     hdf5_path: str,
     refs: Sequence[Tuple[str, str]],
@@ -692,7 +852,8 @@ def build_dataset_splits_from_config(cfg: Dict[str, Any]) -> Dict[str, Dataset]:
             root_dir=data_cfg['root_dir'],
             target_columns=target_columns,
             image_size=int(data_cfg['image_size']),
-            add_scalar_channels=bool(cfg['model']['use_scalar_channels']),
+            add_scalar_channels=add_scalar_channels_from_config(cfg),
+            return_scalar_cond=return_scalar_cond_from_config(cfg),
             scalar_feature_columns=list(data_cfg.get('scalar_feature_columns', [])),
             constant_scalar_features=dict(data_cfg.get('constant_scalar_features', {})),
             scalar_feature_norms=dict(data_cfg.get('scalar_feature_norms', {})),
@@ -725,6 +886,22 @@ def build_dataset_splits_from_config(cfg: Dict[str, Any]) -> Dict[str, Dataset]:
     if dataset_format != 'hdf5':
         raise ValueError(f"Unsupported data.format '{dataset_format}'. Expected 'manifest' or 'hdf5'.")
 
+    if not data_cfg.get('scalar_table_csv') and data_cfg.get('hdf5_scalar_specs'):
+        existing = dict(data_cfg.get('scalar_feature_norms') or {})
+        inferred = infer_scalar_feature_norms_from_hdf5(data_cfg)
+        merged = dict(existing)
+        updated = False
+        for k, v in inferred.items():
+            if k not in merged:
+                merged[k] = float(v)
+                updated = True
+        if updated:
+            data_cfg = dict(data_cfg)
+            data_cfg['scalar_feature_norms'] = merged
+            cfg['data'] = data_cfg
+            added = {k: merged[k] for k in inferred if k not in existing}
+            print(f"[INFO] scalar_table_csv not set: inferred scalar_feature_norms from HDF5 maxima: {added}")
+
     sample_refs = _list_hdf5_samples(data_cfg['hdf5_path'])
     train_refs, val_refs, test_refs = _split_hdf5_samples(
         sample_refs,
@@ -753,7 +930,8 @@ def build_dataset_splits_from_config(cfg: Dict[str, Any]) -> Dict[str, Dataset]:
         hdf5_path=data_cfg['hdf5_path'],
         target_columns=target_columns,
         image_size=int(data_cfg['image_size']),
-        add_scalar_channels=bool(cfg['model']['use_scalar_channels']),
+        add_scalar_channels=add_scalar_channels_from_config(cfg),
+        return_scalar_cond=return_scalar_cond_from_config(cfg),
         scalar_feature_columns=list(data_cfg.get('scalar_feature_columns', [])),
         constant_scalar_features=dict(data_cfg.get('constant_scalar_features', {})),
         scalar_feature_norms=dict(data_cfg.get('scalar_feature_norms', {})),
@@ -792,6 +970,50 @@ def build_dataset_splits_from_config(cfg: Dict[str, Any]) -> Dict[str, Dataset]:
     return splits
 
 
+def merge_hdf5_splits_for_inference(cfg: Dict[str, Any]) -> CKMHDF5Dataset:
+    """
+    Single HDF5 dataset with train + val + test sample_refs, augmentation off.
+    Same split and LoS filtering as training; use for exporting predictions on the full set.
+    """
+    if str(cfg['data'].get('format', 'hdf5')).lower() != 'hdf5':
+        raise ValueError("merge_hdf5_splits_for_inference requires data.format: hdf5")
+    splits = build_dataset_splits_from_config(cfg)
+    data_cfg = cfg['data']
+    train_ds = splits['train']
+    if not isinstance(train_ds, CKMHDF5Dataset):
+        raise TypeError('merge_hdf5_splits_for_inference expected CKMHDF5Dataset splits.')
+    refs: List[Tuple[str, str]] = []
+    refs.extend(train_ds.sample_refs)
+    refs.extend(splits['val'].sample_refs)
+    if 'test' in splits:
+        refs.extend(splits['test'].sample_refs)
+    return CKMHDF5Dataset(
+        hdf5_path=str(data_cfg['hdf5_path']),
+        sample_refs=refs,
+        target_columns=list(cfg['target_columns']),
+        image_size=int(data_cfg['image_size']),
+        augment=False,
+        hflip_prob=0.0,
+        vflip_prob=0.0,
+        rot90_prob=0.0,
+        add_scalar_channels=add_scalar_channels_from_config(cfg),
+        return_scalar_cond=return_scalar_cond_from_config(cfg),
+        scalar_feature_columns=list(data_cfg.get('scalar_feature_columns', [])),
+        constant_scalar_features=dict(data_cfg.get('constant_scalar_features', {})),
+        scalar_feature_norms=dict(data_cfg.get('scalar_feature_norms', {})),
+        los_input_column=data_cfg.get('los_input_column'),
+        input_column=str(data_cfg.get('input_column', 'topology_map')),
+        input_metadata=dict(data_cfg.get('input_metadata', {})),
+        target_metadata=dict(cfg.get('target_metadata', {})),
+        target_field_map=dict(data_cfg.get('target_field_map', {})),
+        distance_map_channel=bool(data_cfg.get('distance_map_channel', False)),
+        path_loss_saturation_db=data_cfg.get('path_loss_saturation_db'),
+        scalar_table_csv=data_cfg.get('scalar_table_csv'),
+        hdf5_scalar_specs=list(data_cfg.get('hdf5_scalar_specs', [])),
+        path_loss_ignore_nonfinite=bool(data_cfg.get('path_loss_ignore_nonfinite', True)),
+    )
+
+
 def build_datasets_from_config(cfg: Dict[str, Any]) -> Tuple[Dataset, Dataset]:
     splits = build_dataset_splits_from_config(cfg)
     return splits['train'], splits['val']
@@ -807,7 +1029,8 @@ def build_cross_validation_datasets_from_config(cfg: Dict[str, Any]) -> Tuple[Da
             root_dir=data_cfg['root_dir'],
             target_columns=target_columns,
             image_size=int(data_cfg['image_size']),
-            add_scalar_channels=bool(cfg['model']['use_scalar_channels']),
+            add_scalar_channels=add_scalar_channels_from_config(cfg),
+            return_scalar_cond=return_scalar_cond_from_config(cfg),
             scalar_feature_columns=list(data_cfg.get('scalar_feature_columns', [])),
             constant_scalar_features=dict(data_cfg.get('constant_scalar_features', {})),
             scalar_feature_norms=dict(data_cfg.get('scalar_feature_norms', {})),
@@ -862,7 +1085,8 @@ def build_cross_validation_datasets_from_config(cfg: Dict[str, Any]) -> Tuple[Da
         hdf5_path=data_cfg['hdf5_path'],
         target_columns=target_columns,
         image_size=int(data_cfg['image_size']),
-        add_scalar_channels=bool(cfg['model']['use_scalar_channels']),
+        add_scalar_channels=add_scalar_channels_from_config(cfg),
+        return_scalar_cond=return_scalar_cond_from_config(cfg),
         scalar_feature_columns=list(data_cfg.get('scalar_feature_columns', [])),
         constant_scalar_features=dict(data_cfg.get('constant_scalar_features', {})),
         scalar_feature_norms=dict(data_cfg.get('scalar_feature_norms', {})),

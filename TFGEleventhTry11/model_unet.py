@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -55,12 +57,27 @@ class CKMUNet(nn.Module):
         gradient_checkpointing: bool = False,
         path_loss_hybrid: bool = False,
         norm_type: str = 'batch',
+        scalar_cond_dim: int = 0,
+        scalar_film_hidden: int = 128,
     ):
         super().__init__()
         bc = base_channels
         self.gradient_checkpointing = gradient_checkpointing
         self.path_loss_hybrid = path_loss_hybrid
         self.norm_type = str(norm_type)
+        self.scalar_cond_dim = max(0, int(scalar_cond_dim))
+        bot_c = bc * 16
+        if self.scalar_cond_dim > 0:
+            hid = max(8, int(scalar_film_hidden))
+            self.scalar_film_mlp = nn.Sequential(
+                nn.Linear(self.scalar_cond_dim, hid),
+                nn.ReLU(inplace=True),
+                nn.Linear(hid, 2 * bot_c),
+            )
+            nn.init.zeros_(self.scalar_film_mlp[-1].weight)
+            nn.init.zeros_(self.scalar_film_mlp[-1].bias)
+        else:
+            self.scalar_film_mlp = None
 
         self.inc = DoubleConv(in_channels, bc, norm_type=self.norm_type)
         self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(bc, bc * 2, norm_type=self.norm_type))
@@ -112,12 +129,23 @@ class CKMUNet(nn.Module):
         end_x = start_x + skip.size(3)
         return x[:, :, start_y:end_y, start_x:end_x]
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, scalar_cond: Optional[torch.Tensor] = None) -> torch.Tensor:
         x1 = self._run_block(self.inc, x)
         x2 = self._run_block(self.down1, x1)
         x3 = self._run_block(self.down2, x2)
         x4 = self._run_block(self.down3, x3)
         x5 = self._run_block(self.down4, x4)
+
+        if self.scalar_film_mlp is not None:
+            if scalar_cond is None:
+                raise ValueError('scalar_cond is required when scalar_cond_dim > 0')
+            if scalar_cond.dim() == 1:
+                scalar_cond = scalar_cond.unsqueeze(0)
+            gb = self.scalar_film_mlp(scalar_cond)
+            gamma, beta = gb.chunk(2, dim=1)
+            g = gamma.view(gamma.size(0), -1, 1, 1)
+            b = beta.view(beta.size(0), -1, 1, 1)
+            x5 = x5 * (1.0 + torch.tanh(g)) + b
 
         x = self.up1(x5)
         x = self._align_to_skip(x, x4)

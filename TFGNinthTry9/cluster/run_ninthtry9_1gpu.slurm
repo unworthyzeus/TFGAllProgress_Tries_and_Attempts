@@ -1,9 +1,9 @@
 #!/bin/bash
-# NinthTry9: 1 GPU (torchrun --nproc-per-node=1).
+# NinthTry9: 1 GPU (small_gpu: 1×GPU con medium_gpu suele dar QOSMinGRES).
 #SBATCH --job-name=ckm-ninthtry9-1gpu
 #SBATCH -A gpu
 #SBATCH -p gpu
-#SBATCH --qos=medium_gpu
+#SBATCH --qos=small_gpu
 #SBATCH --gres=gpu:rtx2080:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G

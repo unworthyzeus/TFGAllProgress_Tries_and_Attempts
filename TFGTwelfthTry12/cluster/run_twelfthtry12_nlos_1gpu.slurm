@@ -1,9 +1,9 @@
 #!/bin/bash
-# TwelfthTry12 NLoS — 1 GPU
+# TwelfthTry12 NLoS — 1 GPU (small_gpu: medium_gpu suele requerir >=2 GPUs → QOSMinGRES)
 #SBATCH --job-name=ckm-t12-nlos-1gpu
 #SBATCH -A gpu
 #SBATCH -p gpu
-#SBATCH --qos=medium_gpu
+#SBATCH --qos=small_gpu
 #SBATCH --gres=gpu:rtx2080:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
