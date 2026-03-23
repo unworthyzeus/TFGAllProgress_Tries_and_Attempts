@@ -532,7 +532,9 @@ class CKMHDF5Dataset(Dataset):
                 handle = self._get_handle()
                 raw = np.asarray(handle[city][sample][field_name][...], dtype=np.float32)
                 invalid = ~np.isfinite(raw)
-                raw_fixed = np.where(np.isfinite(raw), raw, 0.0).astype(np.float32)
+                finite_vals = raw[np.isfinite(raw)]
+                fill_val = float(np.max(finite_vals)) if finite_vals.size > 0 else 0.0
+                raw_fixed = np.where(np.isfinite(raw), raw, fill_val).astype(np.float32)
                 if self.path_loss_ignore_nonfinite and invalid.any():
                     path_loss_invalid_mask = _resize_mask_nearest(invalid, self.image_size)
                 if meta.get('predict_linear', False):

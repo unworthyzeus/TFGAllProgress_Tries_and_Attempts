@@ -54,3 +54,7 @@ From the most recent `validate_metrics_cgan_best.json` downloaded into `c:\TFG\T
 - **FifthTry5**: path loss `RMSE_physical = 19.747 dB` (hybrid_fused_metrics = `true`)
 - **SixthTry6**: path loss `RMSE_physical = 19.676 dB` (hybrid_fused_metrics = `true`)
 
+## Next direction
+
+The next experiment family is documented in [NEXT_TRIES_CITY_REGIME.md](NEXT_TRIES_CITY_REGIME.md). It moves from "one model per city" to "one model per city type" and splits the work into city-conditioned, long-range, attention, mixture-of-experts, and physics-aware variants.
+

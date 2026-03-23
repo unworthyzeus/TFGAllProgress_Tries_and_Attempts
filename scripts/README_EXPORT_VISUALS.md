@@ -65,6 +65,13 @@ python scripts/export_dataset_and_predictions.py `
 
 Salida path loss: `$Out\predictions_ninthtry9_path_loss\<split>\by_field\path_loss\...` (nombre histórico). En modo dual también `*_gt_nlos_los_combined.png`.
 
+### 2b) **ThirteenthTry13** / **FourteenthTry14** — FiLM (`path_loss_saturation_db: 180`)
+
+- **Try 13 — un modelo (dataset completo):** `--path-loss-try-root` = `TFGThirteenthTry13`, YAML `experiments/thirteenthtry13_film/thirteenthtry13_film.yaml`. Tras entrenar (1 GPU), sufijo típico `ddp1_t13_film`.
+- **Try 14 — dos modelos (LoS + NLoS):** `TFGFourteenthTry14`, YAMLs `experiments/fourteenthtry14_film/fourteenthtry14_{los,nlos}_film.yaml`; 2 GPU → `ddp2_t14_los_film` / `ddp2_t14_nlos_film`.
+
+Comandos subida/sbatch: `cluster/CLUSTER_COMMANDS.md` y los README en cada carpeta `experiments/..._film/`.
+
 ### 3) Panel 2×4: `build_alltogether_panel.py`
 
 **Mismo `--split`** que en el export (`test`, `val`, `train` o `all`). **`--spread-label`** por defecto es **`auto`** (elige una carpeta `predictions_*_delay_angular` que exista para ese split). Si ves “Missing image” en predicciones, suele ser **`--split` distinto al export** o no haber corrido el export con **`--spread-checkpoint`**. Usa **`--verbose-paths`** en la primera muestra para imprimir rutas exactas.
@@ -107,6 +114,29 @@ O manualmente: activa el venv y usa el mismo comando `python scripts/export_data
 - **Dos checkpoints** (uno entrenado solo en muestras LoS-dominantes y otro en NLoS): suele ser **TenthTry10** → mismo script, pero `--path-loss-try-root` (o `--ninth-root`) = `TFGTenthTry10`, `--ninth-checkpoint` = LoS, `--ninth-checkpoint-nlos` = NLoS, y YAMLs `-los` / `-nlos` si difieren.
 
 Los flags siguen llamándose `--ninth-*` por histórico; **`--path-loss-try-root`** es alias de `--ninth-root`. La carpeta de salida sigue siendo `predictions_ninthtry9_path_loss/` aunque uses TenthTry10 (solo es el nombre de la carpeta).
+
+### Gráficos de evolución por época (`validate_metrics_epoch_*`)
+
+Script: **`scripts/plot_cluster_validate_metrics.py`** (requiere `matplotlib`).
+
+- Por cada carpeta de run bajo un try, lee los JSON `validate_metrics_epoch_*_cgan.json`.
+- Si solo hay **`path_loss`** → **un** panel.
+- Si hay **varias salidas** con `rmse_physical` (p. ej. `path_loss`, `delay_spread`, `angular_spread`) → **un panel por salida**, apilados.
+
+```powershell
+cd C:\TFG\TFGpractice
+pip install matplotlib
+python scripts/plot_cluster_validate_metrics.py --tries TFGNinthTry9,TFGTenthTry10
+# Salida por defecto: TFGpractice/cluster_plots/validate_metrics/<try>/<run>_rmse_physical.png
+```
+
+Salidas locales tipo `TFGSecondTry2/outputs/<run>/` (sin carpeta `TFGNinthTry9` encima):
+
+```powershell
+python scripts/plot_cluster_validate_metrics.py --root ".\TFGSecondTry2\outputs" --tries . --out ".\cluster_plots\secondtry2"
+```
+
+Otras opciones: `--metric mae_physical`, `--dpi 150`, `--show`.
 
 ### Ver pistas sin ejecutar inferencia
 

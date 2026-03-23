@@ -27,6 +27,11 @@ except ImportError:
     os.system(f"{sys.executable} -m pip install paramiko -q")
     import paramiko
 
+_CLUSTER_DIR = Path(__file__).resolve().parent
+if str(_CLUSTER_DIR) not in sys.path:
+    sys.path.insert(0, str(_CLUSTER_DIR))
+import upload_dataset_helpers as udh
+
 HOST = "sert.ac.upc.edu"
 USER = "gmoreno"
 REMOTE_BASE = "/scratch/nas/3/gmoreno/TFGpractice"
@@ -40,28 +45,11 @@ EXCLUDE_EXTS = {".h5", ".pt", ".pth", ".pyc", ".pyo"}
 
 
 def mkdir_p(sftp, remote_path: str) -> None:
-    parts = [p for p in remote_path.strip("/").split("/") if p]
-    current = ""
-    for part in parts:
-        current = f"{current}/{part}" if current else f"/{part}"
-        try:
-            sftp.stat(current)
-        except FileNotFoundError:
-            sftp.mkdir(current)
+    udh.mkdir_p_with_quota_hint(sftp, remote_path)
 
 
 def upload_if_missing(sftp, local_path: str, remote_path: str) -> None:
-    try:
-        sftp.stat(remote_path)
-        print(f"Dataset already present: {remote_path}")
-        return
-    except FileNotFoundError:
-        pass
-
-    mkdir_p(sftp, os.path.dirname(remote_path).replace("\\", "/"))
-    print(f"Uploading dataset: {local_path} -> {remote_path} (one-time)...")
-    sftp.put(local_path, remote_path)
-    print("Dataset upload done.")
+    udh.upload_if_missing_file(sftp, mkdir_p, Path(local_path), remote_path)
 
 
 def should_skip(name: str) -> bool:
@@ -141,6 +129,7 @@ def main() -> None:
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(HOST, username=USER, password=password, timeout=30)
+    udh.prepare_ssh_transport_for_large_uploads(client)
 
     try:
         sftp = client.open_sftp()

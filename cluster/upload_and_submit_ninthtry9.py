@@ -9,6 +9,11 @@ import stat
 import sys
 from pathlib import Path
 
+_CLUSTER_DIR = Path(__file__).resolve().parent
+if str(_CLUSTER_DIR) not in sys.path:
+    sys.path.insert(0, str(_CLUSTER_DIR))
+import upload_dataset_helpers as udh
+
 try:
     import paramiko
 except ImportError:
@@ -19,43 +24,12 @@ HOST = "sert.ac.upc.edu"
 USER = "gmoreno"
 REMOTE_BASE = "/scratch/nas/3/gmoreno/TFGpractice"
 LOCAL_DIR = "TFGNinthTry9"
-LOCAL_H5 = Path(__file__).resolve().parent.parent / "Datasets" / "CKM_Dataset_180326.h5"
-LOCAL_CSV = Path(__file__).resolve().parent.parent / "Datasets" / "CKM_180326_antenna_height.csv"
 EXCLUDE_DIRS = {"outputs", "__pycache__", ".git", ".venv", ".cursor"}
 EXCLUDE_EXTS = {".h5", ".pt", ".pth", ".pyc", ".pyo"}
 
 
 def mkdir_p(sftp, remote_path: str) -> None:
-    parts = [p for p in remote_path.strip("/").split("/") if p]
-    current = ""
-    for part in parts:
-        current = f"{current}/{part}" if current else f"/{part}"
-        try:
-            sftp.stat(current)
-        except FileNotFoundError:
-            sftp.mkdir(current)
-
-
-def upload_if_missing(sftp, local_path: Path, remote_path: str) -> None:
-    try:
-        sftp.stat(remote_path)
-        print(f"Skip (exists): {remote_path}")
-        return
-    except FileNotFoundError:
-        pass
-    mkdir_p(sftp, os.path.dirname(remote_path).replace("\\", "/"))
-    print(f"Upload {local_path} -> {remote_path}")
-    sftp.put(str(local_path), remote_path)
-
-
-def upload_csv_always(sftp, local_path: Path, remote_path: str) -> None:
-    """Small file: always overwrite so cluster gets latest heights."""
-    if not local_path.is_file():
-        print(f"Skip antenna CSV (missing locally): {local_path}")
-        return
-    mkdir_p(sftp, os.path.dirname(remote_path).replace("\\", "/"))
-    print(f"Upload antenna CSV -> {remote_path}")
-    sftp.put(str(local_path), remote_path)
+    udh.mkdir_p_with_quota_hint(sftp, remote_path)
 
 
 def should_skip(name: str) -> bool:
@@ -119,8 +93,6 @@ def main() -> None:
     local_try = root / LOCAL_DIR
     if not local_try.is_dir():
         raise SystemExit(f"Missing {local_try}")
-    if not LOCAL_H5.is_file():
-        raise SystemExit(f"Missing {LOCAL_H5}")
 
     slurm = (
         "cluster/run_ninthtry9_2gpu.slurm" if args.gpus == 2 else "cluster/run_ninthtry9_1gpu.slurm"
@@ -129,10 +101,17 @@ def main() -> None:
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(HOST, username=USER, password=pw, timeout=30)
+    udh.prepare_ssh_transport_for_large_uploads(client)
     try:
         sftp = client.open_sftp()
-        upload_if_missing(sftp, LOCAL_H5, f"{REMOTE_BASE}/Datasets/CKM_Dataset_180326.h5")
-        upload_csv_always(sftp, LOCAL_CSV, f"{REMOTE_BASE}/Datasets/CKM_180326_antenna_height.csv")
+        ant_loc = udh.resolve_antenna_height_h5(root)
+        if ant_loc:
+            udh.upload_if_missing_file(sftp, mkdir_p, ant_loc, udh.remote_antenna_h5_path(REMOTE_BASE))
+        else:
+            print(f"Warning: no local antenna HDF5 ({udh.LOCAL_ANTENNA_H5_CANDIDATES})")
+        main_loc = udh.resolve_main_maps_h5(root)
+        if main_loc:
+            udh.upload_if_missing_file(sftp, mkdir_p, main_loc, udh.remote_main_h5_path(REMOTE_BASE))
         rdir = f"{REMOTE_BASE}/{LOCAL_DIR}"
         mkdir_p(sftp, rdir)
         clean_remote_outputs(sftp, rdir)
