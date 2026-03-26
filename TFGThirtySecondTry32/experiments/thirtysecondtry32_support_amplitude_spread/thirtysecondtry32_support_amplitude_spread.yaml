@@ -1,0 +1,171 @@
+# Try 32: spread as support detection plus amplitude regression.
+seed: 42
+
+data:
+  format: hdf5
+  hdf5_path: ../Datasets/CKM_180326_antenna_height.h5
+  input_column: topology_map
+  input_metadata:
+    scale: 255.0
+    offset: 0.0
+  los_input_column: los_mask
+  distance_map_channel: true
+  path_loss_saturation_db: 180
+  path_loss_ignore_nonfinite: true
+  target_field_map: {}
+  val_ratio: 0.15
+  test_ratio: 0.15
+  split_seed: 42
+  scalar_feature_columns:
+    - antenna_height_m
+  hdf5_scalar_specs:
+    - name: antenna_height_m
+      from_dataset: uav_height
+  constant_scalar_features: {}
+  scalar_feature_norms:
+    antenna_height_m: 120.0
+  image_size: 513
+  num_workers: 8
+
+model:
+  base_channels: 104
+  disc_base_channels: 14
+  disc_input_downsample_factor: 2
+  gradient_checkpointing: true
+  out_channels: 4
+  use_scalar_channels: true
+  use_scalar_film: true
+  scalar_film_hidden: 176
+  upsample_mode: bilinear
+  norm_type: group
+  disc_norm_type: group
+
+training:
+  batch_size: 1
+  epochs: 250
+  early_stopping:
+    enabled: false
+    patience: 15
+    min_delta: 0.0
+  scalar_report_samples: 1000
+  selection_metrics:
+    delay_spread.rmse_physical: 1.0
+    angular_spread.rmse_physical: 1.0
+  save_validation_json_each_epoch: true
+  run_final_test_after_training: true
+  auto_batch_by_vram:
+    enabled: true
+    reference_vram_gb: 80.0
+    reference_batch_size: 1
+    min_batch_size: 1
+    max_batch_size: 2
+    safety_factor: 0.9
+  generator_lr: 0.00003
+  discriminator_lr: 0.00002
+  beta1: 0.5
+  beta2: 0.999
+  weight_decay: 0.00002
+  lr_scheduler: reduce_on_plateau
+  lr_scheduler_factor: 0.5
+  lr_scheduler_patience: 4
+  lr_scheduler_min_lr: 5.0e-6
+  amp: true
+  clip_grad_norm: 1.0
+  save_every: 5
+
+loss:
+  adversarial_loss: mse
+  lambda_gan: 0.0
+  lambda_recon: 100.0
+  mse_weight: 1.0
+  l1_weight: 0.2
+  target_loss_weights:
+    delay_spread: 1.0
+    angular_spread: 1.0
+
+multiscale_targets:
+  enabled: true
+  targets: [delay_spread, angular_spread]
+  target_weights:
+    delay_spread: 1.0
+    angular_spread: 1.0
+  scales: [2, 4]
+  weights: [0.6, 0.4]
+  min_valid_ratio: 0.5
+  loss_weight: 0.3
+
+gradient_targets:
+  enabled: true
+  targets: [delay_spread, angular_spread]
+  target_weights:
+    delay_spread: 1.0
+    angular_spread: 1.0
+  min_valid_ratio: 0.5
+  loss_weight: 0.2
+
+support_amplitude_targets:
+  enabled: true
+  targets: [delay_spread, angular_spread]
+  percentile: 0.90
+  min_level: 0.10
+  min_valid_ratio: 0.5
+  min_support_fraction: 0.02
+  positive_weight: 4.0
+  support_loss_weight: 0.20
+  amplitude_loss_weight: 0.18
+  amplitude_mse_weight: 1.0
+  amplitude_l1_weight: 0.2
+
+augmentation:
+  enable: true
+  hflip_prob: 0.5
+  vflip_prob: 0.5
+  rot90_prob: 0.4
+
+runtime:
+  device: cuda
+  output_dir: outputs/thirtysecondtry32_support_amplitude_spread
+  resume_checkpoint: null
+
+postprocess:
+  enable: true
+  use_saved_heuristic_calibration: false
+  regression_median_kernel: 1
+  export_derived_link_budget_maps: false
+  link_budget:
+    tx_power_dbm: 46.0
+    tx_gain_dbi: 0.0
+    rx_gain_dbi: 0.0
+    other_losses_db: 0.0
+    bandwidth_hz: null
+    noise_figure_db: 0.0
+    reception_threshold_dbm: null
+
+target_columns:
+  - delay_spread
+  - angular_spread
+
+target_losses:
+  delay_spread: mse
+  angular_spread: mse
+
+target_metadata:
+  delay_spread:
+    scale: 1000.0
+    offset: 0.0
+    unit: ns
+    clip_min: 0.0
+    clip_max: 1000.0
+  angular_spread:
+    scale: 180.0
+    offset: 0.0
+    unit: deg
+    clip_min: 0.0
+    clip_max: 180.0
+
+path_loss_hybrid:
+  enabled: false
+  confidence_loss_weight: 0.0
+  confidence_error_threshold_db: 8.0
+  fallback_threshold: 0.5
+  fallback_mode: blend

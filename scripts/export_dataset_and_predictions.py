@@ -28,6 +28,7 @@ import copy
 import inspect
 import json
 import math
+import importlib
 import sys
 import warnings
 from pathlib import Path
@@ -52,6 +53,42 @@ HDF5_FIELDS: Tuple[str, ...] = (
     "angular_spread",
     "los_mask",
 )
+
+
+class _ConcatDatasetWithSampleRefs:
+    def __init__(self, datasets: Sequence[Any]) -> None:
+        self.datasets = [ds for ds in datasets if ds is not None]
+        self.cum_sizes: List[int] = []
+        total = 0
+        self.sample_refs: List[Tuple[str, str]] = []
+        for ds in self.datasets:
+            n = len(ds)
+            total += n
+            self.cum_sizes.append(total)
+            refs = list(getattr(ds, "sample_refs", []))
+            if refs:
+                self.sample_refs.extend(refs)
+
+    def __len__(self) -> int:
+        return self.cum_sizes[-1] if self.cum_sizes else 0
+
+    def __getitem__(self, idx: int) -> Any:
+        if idx < 0:
+            idx += len(self)
+        if idx < 0 or idx >= len(self):
+            raise IndexError(idx)
+        prev = 0
+        for ds, end in zip(self.datasets, self.cum_sizes):
+            if idx < end:
+                return ds[idx - prev]
+            prev = end
+        raise IndexError(idx)
+
+
+def merge_splits_with_fallback(build_dataset_splits_fn: Any, cfg: Dict[str, Any]) -> Any:
+    splits = build_dataset_splits_fn(cfg)
+    ordered = [splits[k] for k in ("train", "val", "test") if k in splits]
+    return _ConcatDatasetWithSampleRefs(ordered)
 
 def pick_inference_device(device_pref: str, resolve_device_fn: Any) -> Any:
     """
@@ -332,7 +369,7 @@ def _build_path_loss_generator(cfg: Dict[str, Any], device: Any, checkpoint: Pat
     hybrid_enabled = bool(dict(cfg.get("path_loss_hybrid", {})).get("enabled", False))
     sc_dim = int(compute_scalar_cond_dim(cfg)) if uses_scalar_film_conditioning(cfg) else 0
     film_h = int(cfg["model"].get("scalar_film_hidden", 128))
-    gen = UNetGenerator(
+    gen_kw: Dict[str, Any] = dict(
         in_channels=compute_input_channels(cfg),
         out_channels=int(cfg["model"]["out_channels"]),
         base_channels=int(cfg["model"]["base_channels"]),
@@ -341,7 +378,17 @@ def _build_path_loss_generator(cfg: Dict[str, Any], device: Any, checkpoint: Pat
         norm_type=str(cfg["model"].get("norm_type", "batch")),
         scalar_cond_dim=sc_dim,
         scalar_film_hidden=film_h,
-    ).to(device)
+    )
+    sig = inspect.signature(UNetGenerator.__init__)
+    if "upsample_mode" in sig.parameters:
+        gen_kw["upsample_mode"] = str(cfg["model"].get("upsample_mode", "transpose"))
+    if "bottleneck_attention" in sig.parameters:
+        gen_kw["bottleneck_attention"] = bool(cfg["model"].get("bottleneck_attention", False))
+    if "bottleneck_attention_dim" in sig.parameters:
+        gen_kw["bottleneck_attention_dim"] = int(cfg["model"].get("bottleneck_attention_dim", 256))
+    if "bottleneck_attention_heads" in sig.parameters:
+        gen_kw["bottleneck_attention_heads"] = int(cfg["model"].get("bottleneck_attention_heads", 4))
+    gen = UNetGenerator(**gen_kw).to(device)
     if not is_cuda_device(device):
         gen = gen.float()
     state = load_torch_checkpoint(str(checkpoint), device)
@@ -360,6 +407,7 @@ def predict_ninth_path_loss(
     split: str,
     limit: int | None,
     device_pref: str,
+    output_label: str = "ninthtry9",
     path_loss_viz_scale: str = "gt",
     checkpoint_nlos: Optional[Path] = None,
     config_los: Optional[Path] = None,
@@ -370,13 +418,12 @@ def predict_ninth_path_loss(
 
     _insert_try_path(try_root)
     from config_utils import resolve_device
-    from data_utils import (
-        build_dataset_splits_from_config,
-        forward_cgan_generator,
-        merge_hdf5_splits_for_inference,
-        sample_is_los_dominant,
-        unpack_cgan_batch,
-    )
+    data_utils = importlib.import_module("data_utils")
+    build_dataset_splits_from_config = getattr(data_utils, "build_dataset_splits_from_config")
+    forward_cgan_generator = getattr(data_utils, "forward_cgan_generator")
+    unpack_cgan_batch = getattr(data_utils, "unpack_cgan_batch")
+    merge_hdf5_splits_for_inference = getattr(data_utils, "merge_hdf5_splits_for_inference", None)
+    sample_is_los_dominant = getattr(data_utils, "sample_is_los_dominant", None)
     from evaluate_cgan import denormalize_channel
 
     device = pick_inference_device(device_pref, resolve_device)
@@ -416,7 +463,10 @@ def predict_ninth_path_loss(
         warnings.warn("[path_loss] LoS vs NLoS target_columns differ; using LoS column list.")
 
     if split == "all":
-        ds = merge_hdf5_splits_for_inference(active_cfg_for_ds)
+        if callable(merge_hdf5_splits_for_inference):
+            ds = merge_hdf5_splits_for_inference(active_cfg_for_ds)
+        else:
+            ds = merge_splits_with_fallback(build_dataset_splits_from_config, active_cfg_for_ds)
         split_dir = "all"
         print(f"[path_loss] split=all: {len(ds)} samples (train+val+test), augmentation off")
     else:
@@ -429,7 +479,7 @@ def predict_ninth_path_loss(
         ds = splits[split]
         split_dir = split
 
-    split_root = out_root / "predictions_ninthtry9_path_loss" / split_dir
+    split_root = out_root / f"predictions_{output_label}_path_loss" / split_dir
     by_field_pl = split_root / "by_field" / "path_loss"
     by_field_pl.mkdir(parents=True, exist_ok=True)
 
@@ -474,7 +524,10 @@ def predict_ninth_path_loss(
 
         use_los_model = True
         if dual:
-            dom = sample_is_los_dominant(h5p, city, sample, los_field, los_th)
+            if callable(sample_is_los_dominant):
+                dom = sample_is_los_dominant(h5p, city, sample, los_field, los_th)
+            else:
+                dom = None
             if dom is None:
                 n_unknown += 1
                 if n_unknown == 1:
@@ -582,6 +635,7 @@ def predict_spread_multichannel(
     limit: int | None,
     device_pref: str,
     run_label: str,
+    output_label: Optional[str] = None,
     columns_only: Optional[Sequence[str]] = None,
 ) -> None:
     import torch
@@ -595,11 +649,14 @@ def predict_spread_multichannel(
         load_torch_checkpoint,
         resolve_device,
     )
-    from data_utils import (
-        build_dataset_splits_from_config,
-        compute_input_channels,
-        merge_hdf5_splits_for_inference,
-    )
+    data_utils = importlib.import_module("data_utils")
+    build_dataset_splits_from_config = getattr(data_utils, "build_dataset_splits_from_config")
+    compute_input_channels = getattr(data_utils, "compute_input_channels")
+    compute_scalar_cond_dim = getattr(data_utils, "compute_scalar_cond_dim", None)
+    forward_cgan_generator = getattr(data_utils, "forward_cgan_generator", None)
+    unpack_cgan_batch = getattr(data_utils, "unpack_cgan_batch", None)
+    uses_scalar_film_conditioning = getattr(data_utils, "uses_scalar_film_conditioning", None)
+    merge_hdf5_splits_for_inference = getattr(data_utils, "merge_hdf5_splits_for_inference", None)
     from model_cgan import UNetGenerator
 
     cfg_path_s = str(config_path.resolve())
@@ -611,6 +668,8 @@ def predict_spread_multichannel(
     target_columns = list(cfg["target_columns"])
     target_metadata = dict(cfg.get("target_metadata", {}))
     hybrid_enabled = bool(dict(cfg.get("path_loss_hybrid", {})).get("enabled", False))
+    scalar_film_enabled = bool(callable(uses_scalar_film_conditioning) and uses_scalar_film_conditioning(cfg))
+    scalar_cond_dim = int(compute_scalar_cond_dim(cfg)) if scalar_film_enabled and callable(compute_scalar_cond_dim) else 0
     gen_kw: Dict[str, Any] = dict(
         in_channels=compute_input_channels(cfg),
         out_channels=int(cfg["model"]["out_channels"]),
@@ -622,6 +681,12 @@ def predict_spread_multichannel(
         gen_kw["path_loss_hybrid"] = hybrid_enabled
     if "norm_type" in sig.parameters:
         gen_kw["norm_type"] = str(cfg["model"].get("norm_type", "batch"))
+    if "scalar_cond_dim" in sig.parameters:
+        gen_kw["scalar_cond_dim"] = scalar_cond_dim
+    if "scalar_film_hidden" in sig.parameters:
+        gen_kw["scalar_film_hidden"] = int(cfg["model"].get("scalar_film_hidden", 128))
+    if "upsample_mode" in sig.parameters:
+        gen_kw["upsample_mode"] = str(cfg["model"].get("upsample_mode", "transpose"))
     gen = UNetGenerator(**gen_kw).to(device)
     if not is_cuda_device(device):
         gen = gen.float()
@@ -630,7 +695,10 @@ def predict_spread_multichannel(
     gen.eval()
 
     if split == "all":
-        ds = merge_hdf5_splits_for_inference(cfg)
+        if callable(merge_hdf5_splits_for_inference):
+            ds = merge_hdf5_splits_for_inference(cfg)
+        else:
+            ds = merge_splits_with_fallback(build_dataset_splits_from_config, cfg)
         split_dir = "all"
         print(f"[{run_label}] split=all: {len(ds)} samples (train+val+test), augmentation off")
     else:
@@ -641,7 +709,8 @@ def predict_spread_multichannel(
             )
         ds = splits[split]
         split_dir = split
-    split_root = out_root / f"predictions_{run_label}_delay_angular" / split_dir
+    export_label = str(output_label or run_label)
+    split_root = out_root / f"predictions_{export_label}_delay_angular" / split_dir
     by_field_root = split_root / "by_field"
     by_field_root.mkdir(parents=True, exist_ok=True)
 
@@ -656,16 +725,30 @@ def predict_spread_multichannel(
     n = len(ds) if limit is None else min(len(ds), limit)
     amp_ok = bool(cfg["training"].get("amp", False)) and should_use_cuda_amp(device)
     for idx in range(n):
-        x, y, m = ds[idx]
-        x = x.unsqueeze(0).to(device)
-        y = y.unsqueeze(0).to(device)
+        batch = ds[idx]
+        if callable(unpack_cgan_batch):
+            items = list(batch) if isinstance(batch, (tuple, list)) else [batch]
+            pack = tuple(t.unsqueeze(0).to(device) for t in items)
+            x, y, m, sc_tensor = unpack_cgan_batch(pack, device)
+        else:
+            x = batch[0].unsqueeze(0).to(device)
+            y = batch[1].unsqueeze(0).to(device)
+            m = batch[2].unsqueeze(0).to(device) if len(batch) > 2 else None
+            sc_tensor = batch[3].unsqueeze(0).to(device) if len(batch) > 3 else None
         city, sample = ds.sample_refs[idx]
         city_s, sample_s = _sanitize(city), _sanitize(sample)
 
         with torch.no_grad():
             x = x.float()
+            if sc_tensor is not None:
+                sc_tensor = sc_tensor.float()
             with amp.autocast(device_type="cuda", enabled=amp_ok):
-                pred = gen(x)
+                if callable(forward_cgan_generator):
+                    pred = forward_cgan_generator(gen, x, sc_tensor)
+                elif sc_tensor is not None:
+                    pred = gen(x, sc_tensor)
+                else:
+                    pred = gen(x)
             pred = pred.float()
 
         for col in export_cols:
@@ -787,6 +870,15 @@ def parse_args() -> argparse.Namespace:
         "'gt' = use GT min/max for both (default; fixes flat-pred + per-image min-max looking like static); "
         "'joint' = min/max over GT union Pred; 'independent' = old per-panel min-max.",
     )
+    p.add_argument(
+        "--path-loss-output-label",
+        type=str,
+        default="ninthtry9",
+        help=(
+            "Folder label for path loss exports: predictions_<label>_path_loss/<split>/... "
+            "Default keeps the historical predictions_ninthtry9_path_loss layout."
+        ),
+    )
 
     p.add_argument(
         "--spread-try",
@@ -795,8 +887,26 @@ def parse_args() -> argparse.Namespace:
         choices=("auto", "first", "second", "third"),
         help="Try para delay+angular: auto = mejor según JSONs en cluster_outputs; si no hay, third.",
     )
+    p.add_argument(
+        "--spread-root",
+        type=str,
+        default=None,
+        help=(
+            "Custom Python try root for delay/angular inference (overrides built-in first/second/third layout). "
+            "Use together with --spread-config and optionally --spread-output-label."
+        ),
+    )
     p.add_argument("--spread-config", type=str, default=None, help="Sobrescribe el yaml del try spread.")
     p.add_argument("--spread-checkpoint", type=str, default=None)
+    p.add_argument(
+        "--spread-output-label",
+        type=str,
+        default=None,
+        help=(
+            "Folder label for delay/angular exports: predictions_<label>_delay_angular/<split>/... "
+            "Default uses the built-in try label or the custom --spread-root folder name."
+        ),
+    )
     p.add_argument(
         "--spread-include-path-loss",
         action="store_true",
@@ -890,6 +1000,7 @@ def main() -> None:
             args.split,
             args.limit,
             args.device,
+            output_label=str(args.path_loss_output_label),
             path_loss_viz_scale=str(args.path_loss_viz_scale),
             checkpoint_nlos=Path(ck_nl) if ck_nl else None,
             config_los=Path(args.ninth_config_los) if args.ninth_config_los else None,

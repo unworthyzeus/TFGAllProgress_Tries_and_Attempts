@@ -49,6 +49,117 @@ class Preset:
 
 
 PRESETS: dict[str, Preset] = {
+    "fifteenth": Preset(
+        local_dir="TFGFifteenthTry15",
+        slurms_by_gpus={
+            1: ("cluster/run_fifteenthtry15_cityregime_1gpu.slurm",),
+            2: ("cluster/run_fifteenthtry15_cityregime_2gpu.slurm",),
+        },
+    ),
+    "sixteenth": Preset(
+        local_dir="TFGSixteenthTry16",
+        slurms_by_gpus={
+            1: ("cluster/run_sixteenthtry16_cityregime_1gpu.slurm",),
+            2: ("cluster/run_sixteenthtry16_cityregime_2gpu.slurm",),
+        },
+    ),
+    "seventeenth": Preset(
+        local_dir="TFGSeventeenthTry17",
+        slurms_by_gpus={
+            1: ("cluster/run_seventeenthtry17_cityregime_1gpu.slurm",),
+            2: ("cluster/run_seventeenthtry17_cityregime_2gpu.slurm",),
+        },
+    ),
+    "eighteenth": Preset(
+        local_dir="TFGEighteenthTry18",
+        slurms_by_gpus={
+            1: ("cluster/run_eighteenthtry18_cityregime_1gpu.slurm",),
+            2: ("cluster/run_eighteenthtry18_cityregime_2gpu.slurm",),
+        },
+    ),
+    "nineteenth": Preset(
+        local_dir="TFGNineteenthTry19",
+        slurms_by_gpus={
+            1: ("cluster/run_nineteenthtry19_cityregime_1gpu.slurm",),
+            2: ("cluster/run_nineteenthtry19_cityregime_2gpu.slurm",),
+        },
+    ),
+    "twentieth": Preset(
+        local_dir="TFGTwentiethTry20",
+        slurms_by_gpus={
+            1: ("cluster/run_twentiethtry20_cityregime_1gpu.slurm",),
+            2: ("cluster/run_twentiethtry20_cityregime_2gpu.slurm",),
+        },
+    ),
+    "twentyfirst": Preset(
+        local_dir="TFGTwentyFirstTry21",
+        slurms_by_gpus={
+            2: ("cluster/run_twentyfirsttry21_multiscale_2gpu.slurm",),
+        },
+    ),
+    "twentysecond": Preset(
+        local_dir="TFGTwentySecondTry22",
+        slurms_by_gpus={
+            2: ("cluster/run_twentysecondtry22_decoder_multiscale_2gpu.slurm",),
+        },
+    ),
+    "twentythird": Preset(
+        local_dir="TFGTwentyThirdTry23",
+        slurms_by_gpus={
+            2: ("cluster/run_twentythirdtry23_delay_angular_multiscale_2gpu.slurm",),
+        },
+    ),
+    "twentyfifth": Preset(
+        local_dir="TFGTwentyFifthTry25",
+        slurms_by_gpus={
+            1: ("cluster/run_twentyfifthtry25_bottleneck_attention_1gpu.slurm",),
+        },
+    ),
+    "twentysixth": Preset(
+        local_dir="TFGTwentySixthTry26",
+        slurms_by_gpus={
+            1: ("cluster/run_twentysixthtry26_delay_angular_gradient_1gpu.slurm",),
+            2: ("cluster/run_twentysixthtry26_delay_angular_gradient_2gpu.slurm",),
+        },
+    ),
+    "twentyseventh": Preset(
+        local_dir="TFGTwentySeventhTry27",
+        slurms_by_gpus={
+            1: ("cluster/run_twentyseventhtry27_topology_edge_pathloss_1gpu.slurm",),
+        },
+    ),
+    "twentyeighth": Preset(
+        local_dir="TFGTwentyEighthTry28",
+        slurms_by_gpus={
+            1: ("cluster/run_twentyeighthtry28_attention_topology_1gpu.slurm",),
+            2: ("cluster/run_twentyeighthtry28_attention_topology_2gpu.slurm",),
+            4: ("cluster/run_twentyeighthtry28_attention_topology_4gpu.slurm",),
+        },
+    ),
+    "twentyninth": Preset(
+        local_dir="TFGTwentyNinthTry29",
+        slurms_by_gpus={
+            2: ("cluster/run_twentyninthtry29_radial_pathloss_2gpu.slurm",),
+        },
+    ),
+    "thirtieth": Preset(
+        local_dir="TFGThirtiethTry30",
+        slurms_by_gpus={
+            2: ("cluster/run_thirtiethtry30_spread_priority_2gpu.slurm",),
+        },
+    ),
+    "thirtyfirst": Preset(
+        local_dir="TFGThirtyFirstTry31",
+        slurms_by_gpus={
+            2: ("cluster/run_thirtyfirsttry31_prior_residual_pathloss_2gpu.slurm",),
+        },
+    ),
+    "thirtysecond": Preset(
+        local_dir="TFGThirtySecondTry32",
+        slurms_by_gpus={
+            2: ("cluster/run_thirtysecondtry32_support_amplitude_spread_2gpu.slurm",),
+        },
+    ),
     "ninth": Preset(
         local_dir="TFGNinthTry9",
         slurms_by_gpus={
