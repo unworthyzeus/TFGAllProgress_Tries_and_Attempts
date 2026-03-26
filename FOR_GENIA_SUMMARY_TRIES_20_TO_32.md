@@ -237,9 +237,10 @@ What happened:
 
 `Try 31` was the first real paradigm shift for `path_loss`.
 
-What "physical prior + learned residual" means:
+physical prior + learned residual (also inherits try 22 but not try 26 or try 29):
 
-- instead of predicting the whole path-loss map from scratch, the model starts from a simple physical prior based on distance and carrier frequency;
+- instead of predicting the whole path-loss map from scratch, the model starts from a simple physical prior based on distance and carrier frequency (7.125GHz);
+(Not a good formula $PL_{prior} (dB)=20log_{10} (d_{3D} )+20log_{10} (fGHz)+32.45$) (frequency is 7.125GHz)
 - the network then learns only the residual correction on top of that prior.
 
 In simple terms:
@@ -260,7 +261,7 @@ What happened so far:
 
 `Try 32` was the equivalent paradigm shift for `delay_spread` and `angular_spread`.
 
-What "support + amplitude" means:
+support + amplitude
 
 - the model no longer predicts only one map per target;
 - it predicts:
