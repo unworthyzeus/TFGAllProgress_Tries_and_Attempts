@@ -51,17 +51,25 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _output_keys(data: Dict[str, Any]) -> List[str]:
-    out: List[str] = []
-    for k, v in data.items():
-        if k.startswith("_") or not isinstance(v, dict):
-            continue
-        out.append(k)
-    return out
-
-
 def _has_metric_block(v: Dict[str, Any], metric_name: str) -> bool:
     return metric_name in v and isinstance(v.get(metric_name), (int, float))
+
+
+def extract_metric_blocks(data: Dict[str, Any], metric_name: str) -> Dict[str, Dict[str, Any]]:
+    blocks: Dict[str, Dict[str, Any]] = {}
+    for k, v in data.items():
+        if not isinstance(v, dict):
+            continue
+        if not k.startswith("_"):
+            if _has_metric_block(v, metric_name):
+                blocks[k] = v
+            continue
+        if k == "_checkpoint":
+            continue
+        for subk, subv in v.items():
+            if isinstance(subv, dict) and _has_metric_block(subv, metric_name):
+                blocks[subk] = subv
+    return blocks
 
 
 def order_metric_names(names: Sequence[str]) -> List[str]:
@@ -82,11 +90,8 @@ def discover_plottable_metrics(
     """Union of output names that have y_key in at least one epoch JSON."""
     found: set[str] = set()
     for data in samples:
-        for name, block in data.items():
-            if name.startswith("_") or not isinstance(block, dict):
-                continue
-            if _has_metric_block(block, y_key):
-                found.add(name)
+        for name in extract_metric_blocks(data, y_key).keys():
+            found.add(name)
     return order_metric_names(found)
 
 
@@ -148,7 +153,7 @@ def plot_one_run(
         es: List[int] = []
         unit = ""
         for ep, data in points:
-            block = data.get(mname)
+            block = extract_metric_blocks(data, metric_y).get(mname)
             if not isinstance(block, dict):
                 ys.append(float("nan"))
                 es.append(ep)
@@ -166,7 +171,7 @@ def plot_one_run(
 
         ax.plot(es, ys, "-o", markersize=3, linewidth=1.2)
         ax.set_ylabel(f"{metric_y}\n({unit})" if unit else metric_y)
-        ax.set_title(mname.replace("_", " "))
+        ax.set_title(mname.replace("__", " / ").replace("_", " "))
         ax.grid(True, alpha=0.3)
         finite = [y for y in ys if y == y]  # not nan
         if finite:

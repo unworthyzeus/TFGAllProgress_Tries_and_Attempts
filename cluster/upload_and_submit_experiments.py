@@ -160,6 +160,96 @@ PRESETS: dict[str, Preset] = {
             2: ("cluster/run_thirtysecondtry32_support_amplitude_spread_2gpu.slurm",),
         },
     ),
+    "thirtythird": Preset(
+        local_dir="TFGThirtyThirdTry33",
+        slurms_by_gpus={
+            2: ("cluster/run_thirtythirdtry33_buildingmask_pathloss_2gpu.slurm",),
+        },
+    ),
+    "thirtyfourth": Preset(
+        local_dir="TFGThirtyFourthTry34",
+        slurms_by_gpus={
+            2: ("cluster/run_thirtyfourthtry34_hybrid_two_ray_prior_input_2gpu.slurm",),
+            1: ("cluster/run_thirtyfourthtry34_hybrid_two_ray_prior_input_1gpu.slurm",),
+
+        },
+    ),
+    "thirtyfifth": Preset(
+        local_dir="TFGThirtyFifthTry35",
+        slurms_by_gpus={
+            1: ("cluster/run_thirtyfifthtry35_spread_buildingmask_1gpu.slurm",),
+        },
+    ),
+    "thirtysixth": Preset(
+        local_dir="TFGThirtySixthTry36",
+        slurms_by_gpus={
+            1: ("cluster/run_thirtysixthtry36_spread_buildingmask_1gpu.slurm",),
+            2: ("cluster/run_thirtysixthtry36_spread_buildingmask_2gpu.slurm",),
+        },
+    ),
+    "thirtyseventh": Preset(
+        local_dir="TFGThirtySeventhTry37",
+        slurms_by_gpus={
+            1: ("cluster/run_thirtyseventhtry37_buildingmask_pathloss_1gpu.slurm",),
+            2: ("cluster/run_thirtyseventhtry37_buildingmask_pathloss_2gpu.slurm",),
+        },
+    ),
+    "thirtyeighth": Preset(
+        local_dir="TFGThirtyEighthTry38",
+        slurms_by_gpus={
+            1: ("cluster/run_thirtyeighthtry38_hybrid_two_ray_prior_input_1gpu.slurm",),
+            2: ("cluster/run_thirtyeighthtry38_hybrid_two_ray_prior_input_2gpu.slurm",),
+        },
+    ),
+    "thirtyninth": Preset(
+        local_dir="TFGThirtyNinthTry39",
+        slurms_by_gpus={
+            1: ("cluster/run_thirtyninthtry39_spread_buildingmask_1gpu.slurm",),
+            2: ("cluster/run_thirtyninthtry39_spread_buildingmask_2gpu.slurm",),
+        },
+    ),
+    "fortieth": Preset(
+        local_dir="TFGFortiethTry40",
+        slurms_by_gpus={
+            1: ("cluster/run_fortiethtry40_spread_buildingmask_1gpu.slurm",),
+            2: ("cluster/run_fortiethtry40_spread_buildingmask_2gpu.slurm",),
+        },
+    ),
+    "fortyfirst": Preset(
+        local_dir="TFGFortyFirstTry41",
+        slurms_by_gpus={
+            1: ("cluster/run_fortyfirsttry41_prior_residual_formula_1gpu.slurm",),
+            2: ("cluster/run_fortyfirsttry41_prior_residual_formula_2gpu.slurm",),
+        },
+    ),
+    "fortysecond": Preset(
+        local_dir="TFGFortySecondTry42",
+        slurms_by_gpus={
+            1: ("cluster/run_fortysecondtry42_pmnet_prior_residual_1gpu.slurm",),
+            2: ("cluster/run_fortysecondtry42_pmnet_prior_residual_2gpu.slurm",),
+        },
+    ),
+    "fortythird": Preset(
+        local_dir="TFGFortyThirdTry43",
+        slurms_by_gpus={
+            1: ("cluster/run_fortythirdtry43_pmnet_no_prior_1gpu.slurm",),
+            2: ("cluster/run_fortythirdtry43_pmnet_no_prior_2gpu.slurm",),
+        },
+    ),
+    "fortyfourth": Preset(
+        local_dir="TFGFortyFourthTry44",
+        slurms_by_gpus={
+            1: ("cluster/run_fortyfourthtry44_pmnet_v3_no_prior_1gpu.slurm",),
+            2: ("cluster/run_fortyfourthtry44_pmnet_v3_no_prior_2gpu.slurm",),
+        },
+    ),
+    "fortyfifth": Preset(
+        local_dir="TFGFortyFifthTry45",
+        slurms_by_gpus={
+            1: ("cluster/run_fortyfifthtry45_pmnet_moe_enhanced_prior_1gpu.slurm",),
+            2: ("cluster/run_fortyfifthtry45_pmnet_moe_enhanced_prior_2gpu.slurm",),
+        },
+    ),
     "ninth": Preset(
         local_dir="TFGNinthTry9",
         slurms_by_gpus={

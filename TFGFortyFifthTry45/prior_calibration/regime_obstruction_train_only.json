@@ -1,0 +1,463 @@
+{
+  "model_type": "regime_obstruction_multiscale_v1",
+  "dataset": "C:\\TFG\\TFGpractice\\Datasets\\CKM_Dataset_270326.h5",
+  "split_seed": 42,
+  "official_metric_mask": "topology == 0 and dataset mask > 0",
+  "city_type_thresholds": {
+    "density_q1": 0.1956760965207146,
+    "density_q2": 0.2549084200418514,
+    "height_q1": 10.913664557109195,
+    "height_q2": 15.950557886832314
+  },
+  "antenna_height_thresholds": {
+    "q1": 58.12179183959961,
+    "q2": 103.85484313964844
+  },
+  "city_type_by_city": {
+    "Abu Dhabi": "dense_highrise",
+    "Buenos Aires": "dense_highrise",
+    "Canberra": "mixed_midrise",
+    "Shanghai": "dense_highrise",
+    "Athens": "dense_highrise",
+    "Rio de Janeiro": "mixed_midrise",
+    "Bilbao": "dense_highrise",
+    "Kuala Lumpur": "dense_highrise",
+    "Mexico City": "dense_highrise",
+    "Tunis": "mixed_midrise",
+    "Victoria": "open_lowrise",
+    "Kinshasa": "mixed_midrise",
+    "Johannesburg": "mixed_midrise",
+    "Bangalore": "dense_highrise",
+    "Paris": "dense_highrise",
+    "Ho Chi Minh City": "dense_highrise",
+    "Vancouver": "open_lowrise",
+    "Hyderabad": "dense_highrise",
+    "Siem Reap": "open_lowrise",
+    "Santiago": "dense_highrise",
+    "Hanoi": "dense_highrise",
+    "Pune": "dense_highrise",
+    "Bangkok": "dense_highrise",
+    "Berlin": "dense_highrise",
+    "Dhaka": "dense_highrise",
+    "Copenhagen": "mixed_midrise",
+    "Bratislava": "dense_highrise",
+    "Carcassonne": "open_lowrise",
+    "Jaipur": "dense_highrise",
+    "Beijing": "dense_highrise",
+    "Valparaiso": "dense_highrise",
+    "Nagpur": "dense_highrise",
+    "Marrakesh": "open_lowrise",
+    "Lyon": "mixed_midrise",
+    "Venice": "open_lowrise",
+    "Alexandria": "mixed_midrise",
+    "Cleveland": "mixed_midrise",
+    "Minsk": "mixed_midrise",
+    "Munich": "dense_highrise",
+    "Antigua Guatemala": "open_lowrise",
+    "Vienna": "dense_highrise",
+    "Leuven": "mixed_midrise",
+    "Halifax": "open_lowrise",
+    "Brugge": "mixed_midrise",
+    "St. Louis": "mixed_midrise",
+    "Surat": "dense_highrise",
+    "Abidjan": "mixed_midrise",
+    "Barcelona": "dense_highrise",
+    "Chiang Mai": "dense_highrise",
+    "Fortaleza": "dense_highrise",
+    "Nazareth": "mixed_midrise",
+    "Luanda": "dense_highrise",
+    "Key West": "mixed_midrise",
+    "Osaka": "dense_highrise",
+    "Salvador": "dense_highrise",
+    "Ljubljana": "mixed_midrise",
+    "Dubrovnik": "mixed_midrise",
+    "Chefchaouen": "open_lowrise",
+    "Segovia": "mixed_midrise",
+    "Phuket": "dense_highrise",
+    "Nice": "mixed_midrise",
+    "Dalian": "dense_highrise",
+    "Manaus": "dense_highrise",
+    "Bath": "mixed_midrise",
+    "Thane": "dense_highrise",
+    "Toledo": "mixed_midrise"
+  },
+  "local_kernel_sizes": [
+    15,
+    41
+  ],
+  "feature_order": [
+    "prior_db_squared",
+    "prior_db",
+    "log1p_distance_m",
+    "local_building_density_small",
+    "local_building_density_large",
+    "local_mean_height_small_norm",
+    "local_mean_height_large_norm",
+    "local_building_density_large_x_log1p_distance_m",
+    "nlos_support_small",
+    "nlos_support_large",
+    "nlos_support_large_x_log1p_distance_m",
+    "bias"
+  ],
+  "coefficients": {
+    "dense_highrise|LoS|low_ant": {
+      "weights": [
+        0.0003490854376978635,
+        0.9124301512171085,
+        0.19393291263528908,
+        -0.18561486525474613,
+        0.14398785087856875,
+        -1.6808812258279338,
+        -0.8168817433459012,
+        -0.025297659436916538,
+        0.08814879346175561,
+        -0.2767152106050133,
+        0.040337236932220306
+      ],
+      "bias": 4.15890883453377,
+      "count": 415795,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "dense_highrise|NLoS|low_ant": {
+      "weights": [
+        -0.027675399836523496,
+        5.3123002961997665,
+        -1.007723024714261,
+        -35.31325825220999,
+        -62.996848043712966,
+        218.29486592436902,
+        -284.8074427019555,
+        11.062524213817962,
+        -5.736191037109485,
+        -70.08175153666612,
+        9.049290218847514
+      ],
+      "bias": -154.8688777464153,
+      "count": 440554,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "dense_highrise|LoS|mid_ant": {
+      "weights": [
+        0.001962352164682065,
+        0.5989065011845855,
+        0.20689718752621575,
+        -0.24983162628161995,
+        0.8434326754228194,
+        0.8804629947467313,
+        -3.9236470060426063,
+        -0.11909612095219402,
+        0.1241096745398639,
+        -1.1418588010653854,
+        0.20391110925492575
+      ],
+      "bias": 19.31234515810414,
+      "count": 529585,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "dense_highrise|NLoS|mid_ant": {
+      "weights": [
+        -0.02670881840147791,
+        6.801319513679674,
+        -2.3513453245688303,
+        -41.747201617728834,
+        -10.529122519474065,
+        162.258381617302,
+        -272.4980375042568,
+        2.5292087157326466,
+        -11.387987694274399,
+        70.38620576047046,
+        -12.657581879396092
+      ],
+      "bias": -377.0066593605101,
+      "count": 348336,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "mixed_midrise|LoS|high_ant": {
+      "weights": [
+        0.0022485427883101356,
+        0.5396886714537491,
+        0.2397331863265844,
+        -0.13382490814515266,
+        -3.4916260212864043,
+        -0.7679029641836655,
+        -7.216856042762054,
+        0.7371281831198562,
+        0.1114314569013982,
+        3.1232935297608053,
+        -0.6236231548119119
+      ],
+      "bias": 22.263858405228152,
+      "count": 395780,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "mixed_midrise|NLoS|high_ant": {
+      "weights": [
+        -0.013761741161352039,
+        5.730568068490248,
+        -21.424994770707368,
+        -2.9997121323324945,
+        124.89287263412335,
+        -286.559199425479,
+        280.9813938626618,
+        -24.030456192461298,
+        -5.56063930529159,
+        -16.422046026886193,
+        4.803771812805694
+      ],
+      "bias": -380.7381179311691,
+      "count": 71328,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "mixed_midrise|LoS|mid_ant": {
+      "weights": [
+        0.0030843288166825427,
+        0.3566767345456891,
+        0.4095012584336918,
+        0.092681875881153,
+        2.559789537182633,
+        -5.70218194714162,
+        1.382245577631591,
+        -0.5314320328361688,
+        -0.09298761386623364,
+        -1.5322349826413084,
+        0.3138239869973179
+      ],
+      "bias": 31.1591886884246,
+      "count": 338346,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "mixed_midrise|NLoS|mid_ant": {
+      "weights": [
+        -0.01907194442091565,
+        5.8851562465398235,
+        -6.069205367098247,
+        -31.64017039053523,
+        126.20125052286879,
+        20.369347590570598,
+        -222.35146147948115,
+        -22.66066264993159,
+        -10.556119626368355,
+        54.46978068535634,
+        -7.272831747836759
+      ],
+      "bias": -384.6412220480658,
+      "count": 125979,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "dense_highrise|LoS|high_ant": {
+      "weights": [
+        0.0026093967542811162,
+        0.4700844636126539,
+        0.22527063383544138,
+        -0.2588649499509282,
+        -5.191761418587415,
+        -0.8808934578356916,
+        -4.060125439758313,
+        1.0705557681745048,
+        0.15486900704207462,
+        4.347538518515364,
+        -0.8589440843869074
+      ],
+      "bias": 25.68283617856931,
+      "count": 660649,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "dense_highrise|NLoS|high_ant": {
+      "weights": [
+        -0.019159640862542963,
+        6.768884540614313,
+        -17.366557127289656,
+        -23.64490606370532,
+        58.36910057771002,
+        -53.893543101533076,
+        -18.11611214739849,
+        -9.766393749462607,
+        -5.646421574379975,
+        39.82419581814404,
+        -5.267525495793577
+      ],
+      "bias": -439.82109216790366,
+      "count": 204865,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "open_lowrise|LoS|mid_ant": {
+      "weights": [
+        0.0007092613165512606,
+        0.8407752189981949,
+        0.18686320228512626,
+        -0.3683527697881449,
+        2.9149272149042718,
+        -1.1230362825710583,
+        -9.668760034772317,
+        -0.4114740597239596,
+        0.10803641529558244,
+        -1.524352926792197,
+        0.25054384941215446
+      ],
+      "bias": 7.747908490306568,
+      "count": 134955,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "open_lowrise|NLoS|mid_ant": {
+      "weights": [
+        0.0021790564073438518,
+        1.2412390897841912,
+        -22.38867527535516,
+        -9.229174397914802,
+        -46.205910157646244,
+        -136.75638356849748,
+        -20.200324624778723,
+        9.414043833092649,
+        -8.592277583803515,
+        68.47184496700615,
+        -9.509652635298364
+      ],
+      "bias": -66.04434874006041,
+      "count": 27140,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "mixed_midrise|LoS|low_ant": {
+      "weights": [
+        0.00016461478635015087,
+        0.9261412862121078,
+        0.3400242235722832,
+        -0.42186456833553077,
+        2.249359416165139,
+        11.288487113549687,
+        -8.212025754023944,
+        -0.3761183927572514,
+        -0.10464926635991986,
+        -1.0201776068540116,
+        0.206967027751254
+      ],
+      "bias": 3.7452596895047976,
+      "count": 286825,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "mixed_midrise|NLoS|low_ant": {
+      "weights": [
+        -0.02630504598516895,
+        5.6396627175231755,
+        9.041859592957792,
+        -40.12587562355124,
+        -35.462522463328625,
+        289.84318276956463,
+        -487.7777434775515,
+        7.247725033009893,
+        -11.243452168272517,
+        41.45068063972053,
+        -8.248828797952324
+      ],
+      "bias": -286.40777799647384,
+      "count": 185069,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "open_lowrise|LoS|low_ant": {
+      "weights": [
+        4.6023055804226884e-05,
+        0.9762595201783654,
+        0.13481334356848504,
+        0.3081796892199716,
+        -4.148102739937325,
+        -16.240152146051503,
+        -2.3155637679585044,
+        0.8052340486920054,
+        -0.18110640548129125,
+        2.2018222232176057,
+        -0.3999777502692851
+      ],
+      "bias": 1.1307344323474058,
+      "count": 136254,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "open_lowrise|NLoS|low_ant": {
+      "weights": [
+        -0.009456182739155087,
+        3.067313858552011,
+        3.1396853613885147,
+        -46.874300045158584,
+        -7.617317223939307,
+        458.51116447517035,
+        -623.863367952279,
+        2.491120575281226,
+        -7.585759124430009,
+        160.25431363668608,
+        -27.42759733869869
+      ],
+      "bias": -227.47552160154203,
+      "count": 45242,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "open_lowrise|LoS|high_ant": {
+      "weights": [
+        0.000632340376163914,
+        0.85770977198493,
+        0.25213679660972826,
+        -0.11226092936243372,
+        -5.124810331295275,
+        -14.580989177170437,
+        7.255840473504114,
+        1.016050626724225,
+        0.12507912206139796,
+        3.744469614918443,
+        -0.7786207586044291
+      ],
+      "bias": 6.556743012632898,
+      "count": 168344,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    },
+    "open_lowrise|NLoS|high_ant": {
+      "weights": [
+        -3.907193438447627e-05,
+        1.5316912624549226,
+        -19.036835029960816,
+        32.12648257297305,
+        -28.311545057994913,
+        -582.8504250821455,
+        532.9834580802217,
+        1.3344103648212826,
+        0.44654263035574987,
+        -23.189461416417835,
+        5.785469727770594
+      ],
+      "bias": -92.20363175963739,
+      "count": 14219,
+      "distance_scale_m": 362.03867196751236,
+      "height_scale": 255.0
+    }
+  },
+  "val_results": {
+    "overall": {
+      "count": 485380287,
+      "rmse_db": 23.604611534577888,
+      "mae_db": 12.279028947255124
+    },
+    "LoS": {
+      "count": 329805515,
+      "rmse_db": 3.814862404429501,
+      "mae_db": 3.0450826752213205
+    },
+    "NLoS": {
+      "count": 155574772,
+      "rmse_db": 41.321862273792185,
+      "mae_db": 31.854223156054868
+    }
+  }
+}

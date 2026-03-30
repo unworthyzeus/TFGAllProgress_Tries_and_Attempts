@@ -1,0 +1,140 @@
+# Try 38: Try 34 rerun on the new 270326 dataset with a larger model than the tiny debug version.
+seed: 42
+
+data:
+  format: hdf5
+  hdf5_path: ../Datasets/CKM_Dataset_270326.h5
+  input_column: topology_map
+  input_metadata:
+    scale: 255.0
+    offset: 0.0
+  los_input_column: los_mask
+  distance_map_channel: true
+  exclude_non_ground_targets: true
+  non_ground_threshold: 0.0
+  path_loss_formula_input:
+    enabled: true
+    formula: hybrid_two_ray_cost231
+    meters_per_pixel: 1.0
+    frequency_ghz: 7.125
+    receiver_height_m: 1.5
+  path_loss_saturation_db: 180
+  path_loss_ignore_nonfinite: true
+  target_field_map: {}
+  val_ratio: 0.15
+  test_ratio: 0.15
+  split_seed: 42
+  scalar_feature_columns:
+    - antenna_height_m
+  hdf5_scalar_specs:
+    - name: antenna_height_m
+      from_dataset: uav_height
+  constant_scalar_features: {}
+  scalar_feature_norms:
+    antenna_height_m: 120.0
+  image_size: 513
+  num_workers: 8
+
+model:
+  base_channels: 64
+  disc_base_channels: 10
+  disc_input_downsample_factor: 2
+  gradient_checkpointing: true
+  out_channels: 1
+  use_scalar_channels: true
+  upsample_mode: bilinear
+  norm_type: group
+  disc_norm_type: group
+
+training:
+  batch_size: 1
+  epochs: 250
+  early_stopping:
+    enabled: false
+    patience: 15
+    min_delta: 0.0
+  scalar_report_samples: 1000
+  selection_metrics:
+    path_loss.rmse_physical: 1.0
+  save_validation_json_each_epoch: true
+  run_final_test_after_training: true
+  auto_batch_by_vram:
+    enabled: true
+    reference_vram_gb: 80.0
+    reference_batch_size: 1
+    min_batch_size: 1
+    max_batch_size: 2
+    safety_factor: 0.9
+  generator_lr: 0.00003
+  discriminator_lr: 0.00002
+  beta1: 0.5
+  beta2: 0.999
+  weight_decay: 0.00002
+  lr_scheduler: reduce_on_plateau
+  lr_scheduler_factor: 0.5
+  lr_scheduler_patience: 4
+  lr_scheduler_min_lr: 5.0e-6
+  amp: true
+  clip_grad_norm: 1.0
+  save_every: 5
+
+loss:
+  adversarial_loss: mse
+  lambda_gan: 0.0
+  lambda_recon: 100.0
+  mse_weight: 1.0
+  l1_weight: 0.2
+  target_loss_weights:
+    path_loss: 1.0
+
+multiscale_path_loss:
+  enabled: true
+  scales: [2, 4]
+  weights: [0.6, 0.4]
+  min_valid_ratio: 0.5
+  loss_weight: 0.5
+
+augmentation:
+  enable: true
+  hflip_prob: 0.5
+  vflip_prob: 0.5
+  rot90_prob: 0.4
+
+runtime:
+  device: cuda
+  output_dir: outputs/thirtyeighthtry38_hybrid_two_ray_prior_input
+  resume_checkpoint: null
+
+postprocess:
+  enable: true
+  use_saved_heuristic_calibration: false
+  regression_median_kernel: 1
+  path_loss_median_kernel: 3
+  path_loss_median_kernel_candidates: [1, 3, 5]
+  path_loss_los_correction: false
+  path_loss_los_blend_weight: 0.0
+  path_loss_los_frequency_ghz: 7.125
+  export_derived_link_budget_maps: false
+  link_budget:
+    tx_power_dbm: 46.0
+    tx_gain_dbi: 0.0
+    rx_gain_dbi: 0.0
+    other_losses_db: 0.0
+    bandwidth_hz: null
+    noise_figure_db: 0.0
+    reception_threshold_dbm: null
+
+target_columns:
+  - path_loss
+
+target_losses:
+  path_loss: mse
+
+target_metadata:
+  path_loss:
+    scale: 180.0
+    offset: 0.0
+    unit: dB
+    clip_min: 0.0
+    clip_max: 180.0
+    predict_linear: false

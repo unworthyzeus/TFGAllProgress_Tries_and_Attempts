@@ -1,0 +1,104 @@
+# Try 34: path loss with hybrid two-ray/COST231 prior-input and building masking.
+seed: 42
+
+data:
+  format: hdf5
+  hdf5_path: ../Datasets/CKM_180326_antenna_height.h5
+  input_column: topology_map
+  input_metadata:
+    scale: 255.0
+    offset: 0.0
+  los_input_column: los_mask
+  distance_map_channel: true
+  exclude_non_ground_targets: true
+  non_ground_threshold: 0.0
+  path_loss_formula_input:
+    enabled: true
+    formula: hybrid_two_ray_cost231
+    meters_per_pixel: 1.0
+    frequency_ghz: 7.125
+    receiver_height_m: 1.5
+  path_loss_saturation_db: 180
+  path_loss_ignore_nonfinite: true
+  target_field_map: {}
+  val_ratio: 0.15
+  test_ratio: 0.15
+  split_seed: 42
+  scalar_feature_columns:
+    - antenna_height_m
+  hdf5_scalar_specs:
+    - name: antenna_height_m
+      from_dataset: uav_height
+  constant_scalar_features: {}
+  scalar_feature_norms:
+    antenna_height_m: 120.0
+  image_size: 513
+  num_workers: 8
+
+model:
+  base_channels: 24
+  gradient_checkpointing: true
+  out_channels: 1
+  use_scalar_channels: true
+  upsample_mode: bilinear
+  norm_type: group
+
+training:
+  batch_size: 1
+  epochs: 30
+  optimizer: adamw
+  learning_rate: 0.00003
+  weight_decay: 0.00002
+  amp: true
+  clip_grad_norm: 1.0
+  save_every: 5
+  subset_size: 100
+
+loss:
+  mse_weight: 1.0
+  l1_weight: 0.2
+
+augmentation:
+  enable: true
+  hflip_prob: 0.5
+  vflip_prob: 0.5
+  rot90_prob: 0.4
+
+runtime:
+  device: cuda
+  output_dir: outputs/thirtyfourthtry34_hybrid_two_ray_prior_input_plain
+  resume_checkpoint: null
+
+postprocess:
+  enable: true
+  use_saved_heuristic_calibration: false
+  regression_median_kernel: 1
+  path_loss_median_kernel: 3
+  path_loss_median_kernel_candidates: [1, 3, 5]
+  path_loss_los_correction: false
+  path_loss_los_blend_weight: 0.0
+  path_loss_los_frequency_ghz: 7.125
+  export_derived_link_budget_maps: false
+  link_budget:
+    tx_power_dbm: 46.0
+    tx_gain_dbi: 0.0
+    rx_gain_dbi: 0.0
+    other_losses_db: 0.0
+    bandwidth_hz: null
+    noise_figure_db: 0.0
+    reception_threshold_dbm: null
+
+target_columns:
+  - path_loss
+
+target_losses:
+  path_loss: mse
+
+target_metadata:
+  path_loss:
+    scale: 180.0
+    offset: 0.0
+    unit: dB
+    clip_min: 0.0
+    clip_max: 180.0
+    predict_linear: false

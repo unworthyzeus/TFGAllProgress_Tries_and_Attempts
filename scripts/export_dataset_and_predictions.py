@@ -342,6 +342,50 @@ def _insert_try_path(try_root: Path) -> None:
         sys.path.insert(0, p)
 
 
+def _reload_try_module(try_root: Path, module_name: str):
+    _insert_try_path(try_root)
+    importlib.invalidate_caches()
+    if module_name in sys.modules:
+        del sys.modules[module_name]
+    return importlib.import_module(module_name)
+
+
+def _decode_outputs_if_available(
+    try_root: Path,
+    outputs: Any,
+    x: Any,
+    scalar_cond: Any,
+    target_columns: Sequence[str],
+    target_metadata: Dict[str, Any],
+    cfg: Dict[str, Any],
+) -> Any:
+    try:
+        train_mod = _reload_try_module(try_root, "train_cgan")
+    except Exception:
+        return outputs[:, : len(target_columns)]
+    decode_fn = getattr(train_mod, "decode_generator_outputs", None)
+    if not callable(decode_fn):
+        return outputs[:, : len(target_columns)]
+
+    sig = inspect.signature(decode_fn)
+    kwargs: Dict[str, Any] = {}
+    if "x" in sig.parameters:
+        kwargs["x"] = x
+    if "scalar_cond" in sig.parameters:
+        kwargs["scalar_cond"] = scalar_cond
+    if "target_columns" in sig.parameters:
+        kwargs["target_columns"] = list(target_columns)
+    if "target_metadata" in sig.parameters:
+        kwargs["target_metadata"] = dict(target_metadata)
+    if "cfg" in sig.parameters:
+        kwargs["cfg"] = cfg
+
+    decoded = decode_fn(outputs, **kwargs)
+    if isinstance(decoded, tuple) and decoded:
+        return decoded[0]
+    return decoded
+
+
 def _prepare_path_loss_cfg(
     config_path: Path,
     hdf5_override: Path,
@@ -416,15 +460,16 @@ def predict_ninth_path_loss(
     import torch
     from torch import amp
 
-    _insert_try_path(try_root)
-    from config_utils import resolve_device
-    data_utils = importlib.import_module("data_utils")
+    config_utils_mod = _reload_try_module(try_root, "config_utils")
+    resolve_device = getattr(config_utils_mod, "resolve_device")
+    data_utils = _reload_try_module(try_root, "data_utils")
     build_dataset_splits_from_config = getattr(data_utils, "build_dataset_splits_from_config")
     forward_cgan_generator = getattr(data_utils, "forward_cgan_generator")
     unpack_cgan_batch = getattr(data_utils, "unpack_cgan_batch")
     merge_hdf5_splits_for_inference = getattr(data_utils, "merge_hdf5_splits_for_inference", None)
     sample_is_los_dominant = getattr(data_utils, "sample_is_los_dominant", None)
-    from evaluate_cgan import denormalize_channel
+    evaluate_mod = _reload_try_module(try_root, "evaluate_cgan")
+    denormalize_channel = getattr(evaluate_mod, "denormalize_channel")
 
     device = pick_inference_device(device_pref, resolve_device)
     dual = checkpoint_nlos is not None
@@ -562,19 +607,34 @@ def predict_ninth_path_loss(
             pred_los_t = pred_los_t.float()
             if pred_nlos_t is not None:
                 pred_nlos_t = pred_nlos_t.float()
+            pred_los_primary = _decode_outputs_if_available(
+                try_root, pred_los_t, x, sc_tensor, target_columns, dict(cfg_los.get("target_metadata", {})), cfg_los
+            ).float()
+            pred_nlos_primary = None
+            if pred_nlos_t is not None:
+                pred_nlos_primary = _decode_outputs_if_available(
+                    try_root, pred_nlos_t, x, sc_tensor, target_columns, dict(cfg_nlos.get("target_metadata", {})), cfg_nlos
+                ).float()
 
         pi = target_columns.index("path_loss")
         tmeta_gt = dict(cfg_los.get("target_metadata", {}))
         tgt_map = denorm_path(y[0, pi : pi + 1], tmeta_gt)[0]
+        valid_mask = np.asarray(m[0, pi : pi + 1].detach().cpu().numpy()[0] > 0.5, dtype=bool)
 
         if dual:
             tmeta_los = dict(cfg_los.get("target_metadata", {}))
             tmeta_nlos = dict(cfg_nlos.get("target_metadata", {}))
-            pred_los_map = denorm_path(pred_los_t[0, pi : pi + 1], tmeta_los)[0]
-            pred_nlos_map = denorm_path(pred_nlos_t[0, pi : pi + 1], tmeta_nlos)[0]
+            pred_los_map = denorm_path(pred_los_primary[0, pi : pi + 1], tmeta_los)[0]
+            pred_nlos_map = denorm_path(pred_nlos_primary[0, pi : pi + 1], tmeta_nlos)[0]
             pred_map = pred_los_map if use_los_model else pred_nlos_map
         else:
-            pred_map = denorm_path(pred_los_t[0, pi : pi + 1], dict(cfg_los.get("target_metadata", {})))[0]
+            pred_map = denorm_path(pred_los_primary[0, pi : pi + 1], dict(cfg_los.get("target_metadata", {})))[0]
+
+        tgt_map = np.where(valid_mask, tgt_map, np.nan)
+        pred_map = np.where(valid_mask, pred_map, np.nan)
+        if dual:
+            pred_los_map = np.where(valid_mask, pred_los_map, np.nan)
+            pred_nlos_map = np.where(valid_mask, pred_nlos_map, np.nan)
 
         if idx == 0:
             print(
@@ -641,15 +701,13 @@ def predict_spread_multichannel(
     import torch
     from torch import amp
 
-    _insert_try_path(try_root)
-    from config_utils import (
-        anchor_data_paths_to_config_file,
-        is_cuda_device,
-        load_config,
-        load_torch_checkpoint,
-        resolve_device,
-    )
-    data_utils = importlib.import_module("data_utils")
+    config_utils_mod = _reload_try_module(try_root, "config_utils")
+    anchor_data_paths_to_config_file = getattr(config_utils_mod, "anchor_data_paths_to_config_file")
+    is_cuda_device = getattr(config_utils_mod, "is_cuda_device")
+    load_config = getattr(config_utils_mod, "load_config")
+    load_torch_checkpoint = getattr(config_utils_mod, "load_torch_checkpoint")
+    resolve_device = getattr(config_utils_mod, "resolve_device")
+    data_utils = _reload_try_module(try_root, "data_utils")
     build_dataset_splits_from_config = getattr(data_utils, "build_dataset_splits_from_config")
     compute_input_channels = getattr(data_utils, "compute_input_channels")
     compute_scalar_cond_dim = getattr(data_utils, "compute_scalar_cond_dim", None)
@@ -657,7 +715,8 @@ def predict_spread_multichannel(
     unpack_cgan_batch = getattr(data_utils, "unpack_cgan_batch", None)
     uses_scalar_film_conditioning = getattr(data_utils, "uses_scalar_film_conditioning", None)
     merge_hdf5_splits_for_inference = getattr(data_utils, "merge_hdf5_splits_for_inference", None)
-    from model_cgan import UNetGenerator
+    model_cgan_mod = _reload_try_module(try_root, "model_cgan")
+    UNetGenerator = getattr(model_cgan_mod, "UNetGenerator")
 
     cfg_path_s = str(config_path.resolve())
     cfg = load_config(cfg_path_s)
@@ -750,13 +809,20 @@ def predict_spread_multichannel(
                 else:
                     pred = gen(x)
             pred = pred.float()
+            pred_primary = _decode_outputs_if_available(
+                try_root, pred, x, sc_tensor, target_columns, target_metadata, cfg
+            ).float()
 
         for col in export_cols:
             if col not in target_columns:
                 continue
             ci = target_columns.index(col)
-            pred_map = np.asarray(denorm_channel(pred[0, ci : ci + 1], col)[0], dtype=np.float32)
+            pred_map = np.asarray(denorm_channel(pred_primary[0, ci : ci + 1], col)[0], dtype=np.float32)
             tgt_map = np.asarray(denorm_channel(y[0, ci : ci + 1], col)[0], dtype=np.float32)
+            if m is not None:
+                valid_mask = np.asarray(m[0, ci : ci + 1].detach().cpu().numpy()[0] > 0.5, dtype=bool)
+                pred_map = np.where(valid_mask, pred_map, np.nan)
+                tgt_map = np.where(valid_mask, tgt_map, np.nan)
             if col == "los_mask":
                 pred_im = Image.fromarray(array_to_rgb_u8(pred_map, col))
                 tgt_im = Image.fromarray(array_to_rgb_u8(tgt_map, col))

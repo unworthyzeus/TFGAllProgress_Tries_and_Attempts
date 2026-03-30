@@ -95,7 +95,7 @@ def should_download(rel_path: str, mode: str) -> bool:
         if name.endswith(".json"):
             return True
         if name.endswith(".pt"):
-            return name == "best_cgan.pt"
+            return (name == "best_cgan.pt" or name == "best_model.pt")
         return False
     return True
 
@@ -135,11 +135,22 @@ def download_tree_filtered(
             local_path = local_base / rel_path
             mkdir_p(local_path.parent)
 
-            # Skip if same size exists locally
-            if local_path.exists() and local_path.stat().st_size == int(ent.st_size):
-                continue
+            # Best checkpoints are frequently overwritten with the same tensor
+            # shapes, so size equality alone is not enough to decide whether
+            # the local copy is up to date.
+            if local_path.exists():
+                local_stat = local_path.stat()
+                same_size = local_stat.st_size == int(ent.st_size)
+                local_mtime = int(local_stat.st_mtime)
+                remote_mtime = int(ent.st_mtime)
+                if same_size and local_mtime >= remote_mtime:
+                    continue
 
             sftp.get(remote_path, str(local_path))
+            try:
+                os.utime(local_path, (int(ent.st_atime), int(ent.st_mtime)))
+            except Exception:
+                pass
             files += 1
             total_bytes += int(ent.st_size)
     return files, total_bytes

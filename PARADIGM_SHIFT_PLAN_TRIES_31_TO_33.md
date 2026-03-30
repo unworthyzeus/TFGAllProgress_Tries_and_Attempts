@@ -1,5 +1,11 @@
 # Paradigm Shift Plan After Tries 29 and 30
 
+Historical note:
+
+- this file captures the planning stage before the later `Try 33-36` implementation;
+- the final implemented meaning of `Try 33` is no longer the one proposed here;
+- for the current implemented definition, see `TRIES_33_TO_36_PHYSICAL_PRIORS_AND_BUILDING_MASK.md`.
+
 This note summarizes why `Try 29` and `Try 30` should be treated as evidence that the project is reaching the limit of the current formulation, and proposes the next experiments as **formulation changes**, not just more auxiliary losses.
 
 ## 1. Why the current formulation looks saturated
