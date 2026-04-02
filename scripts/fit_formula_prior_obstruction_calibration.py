@@ -69,6 +69,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ridge", type=float, default=1e-3)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="cpu", help="cpu/cuda/directml")
+    p.add_argument("--formula", default="hybrid_two_ray_cost231_a2g_nlos")
+    p.add_argument("--a2g-params-json", default="")
     return p.parse_args()
 
 
@@ -154,6 +156,8 @@ def _feature_matrix(
     local_height_large: torch.Tensor,
     nlos_support_small: torch.Tensor,
     nlos_support_large: torch.Tensor,
+    shadow_sigma_db: torch.Tensor,
+    theta_norm: torch.Tensor,
 ) -> torch.Tensor:
     distance_scale_m = 256.0 * math.sqrt(2.0)
     logd = torch.log1p(distance_norm * distance_scale_m)
@@ -170,11 +174,34 @@ def _feature_matrix(
             nlos_support_small,
             nlos_support_large,
             nlos_support_large * logd,
+            shadow_sigma_db,
+            theta_norm,
+            nlos_support_large * theta_norm,
             torch.ones_like(prior_db),
         ],
         dim=-1,
     )
     return feats
+
+
+def _sigma_map(distance_norm: torch.Tensor, antenna_height_m: float, los_map: torch.Tensor, receiver_height_m: float = 1.5) -> torch.Tensor:
+    distance_scale_m = 256.0 * math.sqrt(2.0)
+    ground_distance_m = distance_norm * distance_scale_m
+    theta_deg = torch.rad2deg(
+        torch.atan2((antenna_height_m - receiver_height_m) * torch.ones_like(ground_distance_m), ground_distance_m.clamp(min=1.0))
+    )
+    sigma_los = 0.0272 * torch.pow((90.0 - theta_deg).clamp(min=0.0), 0.7475)
+    sigma_nlos = 2.3197 * torch.pow((90.0 - theta_deg).clamp(min=0.0), 0.2361)
+    return torch.where(los_map > 0.5, sigma_los, sigma_nlos)
+
+
+def _theta_norm_map(distance_norm: torch.Tensor, antenna_height_m: float, receiver_height_m: float = 1.5) -> torch.Tensor:
+    distance_scale_m = 256.0 * math.sqrt(2.0)
+    ground_distance_m = distance_norm * distance_scale_m
+    theta_deg = torch.rad2deg(
+        torch.atan2((antenna_height_m - receiver_height_m) * torch.ones_like(ground_distance_m), ground_distance_m.clamp(min=1.0))
+    )
+    return (theta_deg / 90.0).clamp(0.0, 1.0)
 
 
 def main() -> None:
@@ -195,7 +222,11 @@ def main() -> None:
     cfg["augmentation"]["enable"] = False
     cfg["data"] = dict(cfg.get("data", {}))
     formula_cfg = dict(cfg["data"].get("path_loss_formula_input", {}))
+    formula_cfg["enabled"] = True
+    formula_cfg["formula"] = str(args.formula)
     formula_cfg["regime_calibration_json"] = None
+    if args.a2g_params_json:
+        formula_cfg["a2g_params"] = json.loads(Path(args.a2g_params_json).read_text(encoding="utf-8"))
     cfg["data"]["path_loss_formula_input"] = formula_cfg
 
     splits = data_utils.build_dataset_splits_from_config(cfg)
@@ -234,6 +265,9 @@ def main() -> None:
             local_density_large, local_height_large = _compute_local_features(topology_norm, int(args.local_kernel_sizes[-1]))
             nlos_support_small = _compute_local_features((los_map <= 0.5).to(torch.float32), int(args.local_kernel_sizes[0]))[0]
             nlos_support_large = _compute_local_features((los_map <= 0.5).to(torch.float32), int(args.local_kernel_sizes[-1]))[0]
+            antenna_height_m = float(dataset._resolve_hdf5_scalar_value(city, sample, "antenna_height_m"))
+            shadow_sigma_db = _sigma_map(distance_map, antenna_height_m, los_map)
+            theta_norm = _theta_norm_map(distance_map, antenna_height_m)
             feature_map = _feature_matrix(
                 prior_db,
                 distance_map,
@@ -243,9 +277,9 @@ def main() -> None:
                 local_height_large,
                 nlos_support_small,
                 nlos_support_large,
+                shadow_sigma_db,
+                theta_norm,
             )
-
-            antenna_height_m = float(dataset._resolve_hdf5_scalar_value(city, sample, "antenna_height_m"))
             non_ground = topology_norm.cpu().numpy() > 0.0
             density = float(np.mean(non_ground))
             nz = topology_norm.cpu().numpy()[non_ground]
@@ -283,6 +317,8 @@ def main() -> None:
             "count": int(ls.count),
             "distance_scale_m": float(256.0 * math.sqrt(2.0)),
             "height_scale": 255.0,
+            "meters_per_pixel": float(formula_cfg.get("meters_per_pixel", 1.0)),
+            "receiver_height_m": float(formula_cfg.get("receiver_height_m", 1.5)),
         }
 
     # Train-only evaluation on val split with the fitted coefficients.
@@ -327,6 +363,9 @@ def main() -> None:
         local_density_large, local_height_large = _compute_local_features(topology_norm, int(args.local_kernel_sizes[-1]))
         nlos_support_small = _compute_local_features((los_map <= 0.5).to(torch.float32), int(args.local_kernel_sizes[0]))[0]
         nlos_support_large = _compute_local_features((los_map <= 0.5).to(torch.float32), int(args.local_kernel_sizes[-1]))[0]
+        antenna_height_m = float(val_ds._resolve_hdf5_scalar_value(city, sample, "antenna_height_m"))
+        shadow_sigma_db = _sigma_map(distance_map, antenna_height_m, los_map)
+        theta_norm = _theta_norm_map(distance_map, antenna_height_m)
         feature_map = _feature_matrix(
             prior_db,
             distance_map,
@@ -336,9 +375,9 @@ def main() -> None:
             local_height_large,
             nlos_support_small,
             nlos_support_large,
+            shadow_sigma_db,
+            theta_norm,
         )
-
-        antenna_height_m = float(val_ds._resolve_hdf5_scalar_value(city, sample, "antenna_height_m"))
         non_ground = topology_norm.cpu().numpy() > 0.0
         density = float(np.mean(non_ground))
         nz = topology_norm.cpu().numpy()[non_ground]
@@ -378,6 +417,8 @@ def main() -> None:
         "antenna_height_thresholds": ant_thresholds,
         "city_type_by_city": city_type_by_city,
         "local_kernel_sizes": [int(v) for v in args.local_kernel_sizes],
+        "formula": str(args.formula),
+        "a2g_params_json": str(args.a2g_params_json) if args.a2g_params_json else None,
         "feature_order": [
             "prior_db_squared",
             "prior_db",
@@ -390,6 +431,9 @@ def main() -> None:
             "nlos_support_small",
             "nlos_support_large",
             "nlos_support_large_x_log1p_distance_m",
+            "shadow_sigma_db",
+            "theta_norm",
+            "nlos_support_large_x_theta_norm",
             "bias",
         ],
         "coefficients": coeffs,
@@ -409,7 +453,7 @@ def main() -> None:
         "",
         "## Design",
         "",
-        "- Base formula: `hybrid_two_ray_cost231`.",
+        f"- Base formula: `{args.formula}`.",
         "- Regimes: `city_type × LoS/NLoS × antenna-height bin`.",
         "- Extra NLoS-aware pixel features:",
         "  - `log(1 + distance)`",
@@ -418,6 +462,7 @@ def main() -> None:
         "  - local mean building-height proxy at both scales",
         "  - broad-scale occupancy-distance interaction",
         "  - local NLoS support at near and broad scales",
+        "  - `Eq. 12`-style shadow-sigma feature",
         "",
         "The goal is to strengthen the prior specifically where Try 42 still fails: NLoS, lower antennas, and denser urban morphologies.",
         "",

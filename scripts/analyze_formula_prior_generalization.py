@@ -138,6 +138,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--try-dir", required=True, help="Path to the try folder")
     p.add_argument("--config", required=True, help="Config path relative to the try folder or absolute")
     p.add_argument("--device", default="cpu", help="cpu/cuda/directml")
+    p.add_argument("--log-every", type=int, default=100, help="Progress log interval in samples")
     p.add_argument("--dataset", default="", help="Override HDF5 path")
     p.add_argument("--out-json", default=str(PRACTICE_ROOT / "analysis" / "formula_prior_generalization.json"))
     p.add_argument("--out-md", default=str(PRACTICE_ROOT / "analysis" / "formula_prior_generalization.md"))
@@ -147,6 +148,19 @@ def parse_args() -> argparse.Namespace:
         help="Where to write the train-only regime-aware quadratic calibration JSON",
     )
     return p.parse_args()
+
+
+def _resolve_device(device_name: str) -> torch.device:
+    name = str(device_name).lower()
+    if name == "directml":
+        try:
+            import torch_directml  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("DirectML requested but torch_directml is not available") from exc
+        return torch_directml.device()
+    if name == "cuda":
+        return torch.device("cuda")
+    return torch.device("cpu")
 
 
 def _resolve(base: Path, value: str) -> Path:
@@ -323,15 +337,23 @@ def _ensure_batch_dims(
     return x, y, m, sc
 
 
+def _denormalize_channel(values: torch.Tensor, metadata: Dict[str, Any]) -> torch.Tensor:
+    scale = float(metadata.get("scale", 1.0))
+    offset = float(metadata.get("offset", 0.0))
+    if abs(scale) < 1e-12:
+        scale = 1.0
+    return values * scale + offset
+
+
 def main() -> None:
     args = parse_args()
     try_dir = _resolve(PRACTICE_ROOT, args.try_dir).resolve()
     config_path = _resolve(try_dir, args.config).resolve()
+    device = _resolve_device(args.device)
 
     sys.path.insert(0, str(try_dir))
     config_utils = importlib.import_module("config_utils")
     data_utils = importlib.import_module("data_utils")
-    evaluate_cgan = importlib.import_module("evaluate_cgan")
 
     cfg = config_utils.load_config(str(config_path))
     if args.dataset:
@@ -361,6 +383,10 @@ def main() -> None:
     image_size = int(cfg["data"].get("image_size", 513))
 
     dataset_path = Path(cfg["data"]["hdf5_path"]).resolve()
+    print(
+        f"[prior-calibration] try={try_dir.name} device={args.device} dataset={dataset_path.name} "
+        f"log_every={int(args.log_every)}"
+    )
     with h5py.File(str(dataset_path), "r") as handle:
         train_city_aggs: Dict[str, Dict[str, float]] = {}
         antenna_values: List[float] = []
@@ -409,14 +435,14 @@ def main() -> None:
             city_type = city_type_map.get(city, _city_type_for_stats(density, height, density_q1, density_q2, height_q1, height_q2))
             ant_label = _ant_bin(ant, ant_q1, ant_q2)
 
-            x, y, m, sc = data_utils.unpack_cgan_batch(train_ds[idx], torch.device("cpu"))
+            x, y, m, sc = data_utils.unpack_cgan_batch(train_ds[idx], device)
             x, y, m, sc = _ensure_batch_dims(x, y, m, sc)
-            prior = evaluate_cgan.denormalize_channel(x[:, formula_idx : formula_idx + 1], target_meta).numpy()[0, 0]
-            target = evaluate_cgan.denormalize_channel(y[:, :1], target_meta).numpy()[0, 0]
-            base_mask = (m[:, :1].numpy()[0, 0] > 0.0)
+            prior = _denormalize_channel(x[:, formula_idx : formula_idx + 1], target_meta).detach().cpu().numpy()[0, 0]
+            target = _denormalize_channel(y[:, :1], target_meta).detach().cpu().numpy()[0, 0]
+            base_mask = (m[:, :1].detach().cpu().numpy()[0, 0] > 0.0)
             ground_mask = _ground_mask_from_hdf5(handle, city, sample, image_size)
             mask = base_mask & ground_mask
-            los = x[:, 1:2].numpy()[0, 0] > 0.5
+            los = x[:, 1:2].detach().cpu().numpy()[0, 0] > 0.5
 
             support_train_valid += int(mask.sum())
             support_train_zero += int((mask & np.isclose(target, 0.0)).sum())
@@ -436,6 +462,12 @@ def main() -> None:
             yv = target[mask]
             stats_by_mode["global"].setdefault(("all",), LinStats()).update(xv, yv)
             stats_by_mode["city_type"].setdefault((city_type,), LinStats()).update(xv, yv)
+            if (idx + 1) % max(int(args.log_every), 1) == 0 or (idx + 1) == len(train_ds):
+                print(
+                    f"[prior-calibration] train {idx + 1}/{len(train_ds)} "
+                    f"valid_pixels={support_train_valid} zero_ratio="
+                    f"{(support_train_zero / max(support_train_valid, 1)):.3f}"
+                )
 
         results: Dict[str, ErrStats] = {
             "raw_prior": ErrStats(),
@@ -458,14 +490,14 @@ def main() -> None:
             city_type = city_type_map.get(city, _city_type_for_stats(density, height, density_q1, density_q2, height_q1, height_q2))
             ant_label = _ant_bin(ant, ant_q1, ant_q2)
 
-            x, y, m, sc = data_utils.unpack_cgan_batch(val_ds[idx], torch.device("cpu"))
+            x, y, m, sc = data_utils.unpack_cgan_batch(val_ds[idx], device)
             x, y, m, sc = _ensure_batch_dims(x, y, m, sc)
-            prior = evaluate_cgan.denormalize_channel(x[:, formula_idx : formula_idx + 1], target_meta).numpy()[0, 0]
-            target = evaluate_cgan.denormalize_channel(y[:, :1], target_meta).numpy()[0, 0]
-            base_mask = (m[:, :1].numpy()[0, 0] > 0.0)
+            prior = _denormalize_channel(x[:, formula_idx : formula_idx + 1], target_meta).detach().cpu().numpy()[0, 0]
+            target = _denormalize_channel(y[:, :1], target_meta).detach().cpu().numpy()[0, 0]
+            base_mask = (m[:, :1].detach().cpu().numpy()[0, 0] > 0.0)
             ground_mask = _ground_mask_from_hdf5(handle, city, sample, image_size)
             mask = base_mask & ground_mask
-            los = x[:, 1:2].numpy()[0, 0] > 0.5
+            los = x[:, 1:2].detach().cpu().numpy()[0, 0] > 0.5
 
             support_val_valid += int(mask.sum())
             support_val_zero += int((mask & np.isclose(target, 0.0)).sum())
@@ -507,6 +539,12 @@ def main() -> None:
                 pred_quad = (a2 * xvl * xvl) + (a1 * xvl) + a0
                 results["city_type_los_ant_quadratic"].update(pred_quad - yvl)
                 results["city_type_los_ant_quadratic_support_scaled"].update((p * pred_quad) - yvl)
+            if (idx + 1) % max(int(args.log_every), 1) == 0 or (idx + 1) == len(val_ds):
+                print(
+                    f"[prior-calibration] val {idx + 1}/{len(val_ds)} "
+                    f"raw_rmse={results['raw_prior'].summary()['rmse_db']:.4f} "
+                    f"best_so_far={min(v.summary()['rmse_db'] for v in results.values()):.4f}"
+                )
 
     result_payload = {name: stats.summary() for name, stats in results.items()}
     best_name, best_stats = min(result_payload.items(), key=lambda kv: kv[1]["rmse_db"])

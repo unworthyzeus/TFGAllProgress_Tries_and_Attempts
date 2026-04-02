@@ -1,6 +1,6 @@
-# Experiment Versions (Try 1 -> Try 45)
+# Experiment Versions (Try 1 -> Try 47)
 
-This document summarizes the evolution from `TFG_FirstTry1` to `TFGFortyFirstTry41`, what each family predicts, and why each new branch was opened.
+This document summarizes the evolution from `TFG_FirstTry1` to `TFGFortySeventhTry47`, what each family predicts, and why each new branch was opened.
 
 ## Current status
 
@@ -53,11 +53,39 @@ This document summarizes the evolution from `TFG_FirstTry1` to `TFGFortyFirstTry
     - antenna-height bin
     - multiscale obstruction features
     - local shadow-support proxies from the LOS map
+    - A2G-inspired `Eq. 9 / 10 / 11` strengthening for difficult `NLoS` cases
+    - `Eq. 12`-style shadow-variability as a side feature
   - lightweight spatial mixture-of-experts residual head on top of the calibrated prior
+- Current release gate:
+  - `Try 45` stays off the cluster until prior-only validation reaches `NLoS RMSE < 20 dB`
+- Current reference numbers:
+  - `Try 42`: about `19.78 dB` overall, `3.86 dB` in `LoS`, `34.47 dB` in `NLoS`
+  - `Try 44`: about `22.45 dB` overall, `4.74 dB` in `LoS`, `39.06 dB` in `NLoS`
+  - current best `Try 45` prior-only calibration: about `23.57 dB` overall, `3.81 dB` in `LoS`, `41.27 dB` in `NLoS`
 - Masking was re-verified in code:
   - building pixels are excluded from training loss,
   - excluded from validation/test metrics,
   - and exported as invalid regions in error-map style visualizations.
+- `Try 46` was the first explicit regime-split network for path loss:
+  - shared PMNet-style trunk
+  - small dedicated `LoS` residual head
+  - stronger `NLoS`-only MoE residual head
+  - branch-specific losses so `LoS` and `NLoS` do not collapse back into one average residual
+- `Try 47` keeps the calibrated prior idea but returns to the stronger spatial base of `Try 22`:
+  - bilinear U-Net decoder
+  - group norm
+  - scalar FiLM for antenna height
+  - distance-map channel
+  - explicit `prior + residual`
+  - small `LoS` residual head
+  - `NLoS`-only MoE residual head
+  - explicit obstruction proxy channels:
+    - shadow depth
+    - distance since LoS break
+    - maximum blocker height
+    - blocker count
+  - stronger combo losses for difficult `NLoS` subsets such as low-antenna deep-shadow cases
+  - train-only CUDA calibration now runs as a separate logged job with sample-level subsampling so it can finish within the cluster time limit before training starts
 
 ## Fast table
 
@@ -107,7 +135,9 @@ This document summarizes the evolution from `TFG_FirstTry1` to `TFGFortyFirstTry
 | 42 | `TFGFortySecondTry42` | `path_loss` | PMNet-inspired residual regressor over a calibrated physical prior |
 | 43 | `TFGFortyThirdTry43` | `path_loss` | PMNet control branch without physical prior |
 | 44 | `TFGFortyFourthTry44` | `path_loss` | more faithful PMNet-v3-style control branch without physical prior |
-| 45 | `TFGFortyFifthTry45` | `path_loss` | `Try 42` + stronger train-only NLoS-aware prior + spatial MoE residual head |
+| 45 | `TFGFortyFifthTry45` | `path_loss` | `Try 42` + stronger train-only NLoS-aware prior + spatial MoE residual head, held until prior-only `NLoS < 20 dB` |
+| 46 | `TFGFortySixthTry46` | `path_loss` | explicit `LoS / NLoS` branching over the calibrated prior, with `NLoS` experts only |
+| 47 | `TFGFortySeventhTry47` | `path_loss` | return to `Try 22` U-Net + calibrated prior + explicit `LoS` head + `NLoS`-only MoE + obstruction proxy channels |
 
 ## Main family transitions
 

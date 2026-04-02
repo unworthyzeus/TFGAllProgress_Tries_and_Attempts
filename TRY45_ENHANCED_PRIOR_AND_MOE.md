@@ -64,6 +64,28 @@ This is intended to let different experts focus on:
 
 without forcing one residual head to explain every case in the same way.
 
+## Current launch policy
+
+`Try 45` is currently a **prepared but gated** branch.
+
+It should only be launched to the cluster when the prior-only validation result reaches:
+
+- `NLoS RMSE < 20 dB`
+
+The reason is simple:
+
+- `Try 42` already showed that the prior matters,
+- `Try 44` showed that PMNet without prior is not enough,
+- so the next true bottleneck is prior quality in hard `NLoS`, not the MoE head by itself.
+
+Current reference values:
+
+- `Try 42`: about `19.78 dB` overall, `34.47 dB` in `NLoS`
+- `Try 44`: about `22.45 dB` overall, `39.06 dB` in `NLoS`
+- current best `Try 45` prior-only calibration: about `23.57 dB` overall, `41.27 dB` in `NLoS`
+
+So the MoE branch is ready, but the prior still needs more work before the cluster run is justified.
+
 ## Metrics
 
 `Try 45` keeps regime-level validation diagnostics:
@@ -95,4 +117,9 @@ Calibration artifacts:
 Utilities:
 
 - [fit_formula_prior_obstruction_calibration.py](C:/TFG/TFGpractice/scripts/fit_formula_prior_obstruction_calibration.py)
+- [search_try45_a2g_parameter_grid.py](C:/TFG/TFGpractice/scripts/search_try45_a2g_parameter_grid.py)
 - [export_try42_try45_predictions.py](C:/TFG/TFGpractice/scripts/export_try42_try45_predictions.py)
+
+Additional release note:
+
+- [TRY45_RELEASE_GATE_AND_PRIOR_STATUS.md](C:/TFG/TFGpractice/TRY45_RELEASE_GATE_AND_PRIOR_STATUS.md)

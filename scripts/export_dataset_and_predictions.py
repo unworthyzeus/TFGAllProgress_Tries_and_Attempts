@@ -362,28 +362,58 @@ def _decode_outputs_if_available(
     try:
         train_mod = _reload_try_module(try_root, "train_cgan")
     except Exception:
-        return outputs[:, : len(target_columns)]
-    decode_fn = getattr(train_mod, "decode_generator_outputs", None)
-    if not callable(decode_fn):
-        return outputs[:, : len(target_columns)]
+        train_mod = None
+    decode_fn = getattr(train_mod, "decode_generator_outputs", None) if train_mod is not None else None
+    if callable(decode_fn):
+        sig = inspect.signature(decode_fn)
+        kwargs: Dict[str, Any] = {}
+        if "x" in sig.parameters:
+            kwargs["x"] = x
+        if "scalar_cond" in sig.parameters:
+            kwargs["scalar_cond"] = scalar_cond
+        if "target_columns" in sig.parameters:
+            kwargs["target_columns"] = list(target_columns)
+        if "target_metadata" in sig.parameters:
+            kwargs["target_metadata"] = dict(target_metadata)
+        if "cfg" in sig.parameters:
+            kwargs["cfg"] = cfg
 
-    sig = inspect.signature(decode_fn)
-    kwargs: Dict[str, Any] = {}
-    if "x" in sig.parameters:
-        kwargs["x"] = x
-    if "scalar_cond" in sig.parameters:
-        kwargs["scalar_cond"] = scalar_cond
-    if "target_columns" in sig.parameters:
-        kwargs["target_columns"] = list(target_columns)
-    if "target_metadata" in sig.parameters:
-        kwargs["target_metadata"] = dict(target_metadata)
-    if "cfg" in sig.parameters:
-        kwargs["cfg"] = cfg
+        decoded = decode_fn(outputs, **kwargs)
+        if isinstance(decoded, tuple) and decoded:
+            return decoded[0]
+        return decoded
 
-    decoded = decode_fn(outputs, **kwargs)
-    if isinstance(decoded, tuple) and decoded:
-        return decoded[0]
-    return decoded
+    # Generic fallback for prior+residual path-loss models such as Try 42.
+    primary = outputs[:, : len(target_columns)]
+    residual_cfg = dict(cfg.get("prior_residual_path_loss", {}))
+    if bool(residual_cfg.get("enabled", False)) and bool(residual_cfg.get("use_formula_input_channel", False)):
+        try:
+            path_idx = list(target_columns).index("path_loss")
+            formula_idx = 1
+            if cfg.get("data", {}).get("los_input_column"):
+                formula_idx += 1
+            if bool(cfg.get("data", {}).get("distance_map_channel", False)):
+                formula_idx += 1
+            prior = x[:, formula_idx : formula_idx + 1]
+            decoded = primary.clone()
+            decoded[:, path_idx : path_idx + 1] = primary[:, path_idx : path_idx + 1] + prior
+            if bool(residual_cfg.get("clamp_final_output", True)):
+                meta = dict(target_metadata.get("path_loss", {}))
+                clip_min = meta.get("clip_min")
+                clip_max = meta.get("clip_max")
+                scale = float(meta.get("scale", 1.0))
+                offset = float(meta.get("offset", 0.0))
+                if clip_min is not None and clip_max is not None:
+                    min_norm = (float(clip_min) - offset) / max(scale, 1e-12)
+                    max_norm = (float(clip_max) - offset) / max(scale, 1e-12)
+                    decoded[:, path_idx : path_idx + 1] = decoded[:, path_idx : path_idx + 1].clamp(
+                        min=min_norm,
+                        max=max_norm,
+                    )
+            return decoded
+        except Exception:
+            return primary
+    return primary
 
 
 def _prepare_path_loss_cfg(
@@ -404,39 +434,77 @@ def _prepare_path_loss_cfg(
     return cfg, cfg_path_s
 
 
+def _load_path_loss_denormalizer(try_root: Path):
+    try:
+        evaluate_mod = _reload_try_module(try_root, "evaluate_cgan")
+        denormalize_channel = getattr(evaluate_mod, "denormalize_channel")
+        return denormalize_channel
+    except Exception:
+        try:
+            evaluate_mod = _reload_try_module(try_root, "evaluate")
+            denorm = getattr(evaluate_mod, "denormalize")
+        except Exception:
+            train_mod = _reload_try_module(try_root, "train_pmnet_residual")
+            denorm = getattr(train_mod, "denormalize")
+
+        def _wrapped(t: Any, meta: Dict[str, Any]) -> Any:
+            return denorm(t, meta)
+
+        return _wrapped
+
+
 def _build_path_loss_generator(cfg: Dict[str, Any], device: Any, checkpoint: Path) -> Any:
     import torch
     from config_utils import is_cuda_device, load_torch_checkpoint
     from data_utils import compute_input_channels, compute_scalar_cond_dim, uses_scalar_film_conditioning
-    from model_cgan import UNetGenerator
 
-    hybrid_enabled = bool(dict(cfg.get("path_loss_hybrid", {})).get("enabled", False))
-    sc_dim = int(compute_scalar_cond_dim(cfg)) if uses_scalar_film_conditioning(cfg) else 0
-    film_h = int(cfg["model"].get("scalar_film_hidden", 128))
-    gen_kw: Dict[str, Any] = dict(
-        in_channels=compute_input_channels(cfg),
-        out_channels=int(cfg["model"]["out_channels"]),
-        base_channels=int(cfg["model"]["base_channels"]),
-        gradient_checkpointing=bool(cfg["model"].get("gradient_checkpointing", False)),
-        path_loss_hybrid=hybrid_enabled,
-        norm_type=str(cfg["model"].get("norm_type", "batch")),
-        scalar_cond_dim=sc_dim,
-        scalar_film_hidden=film_h,
-    )
-    sig = inspect.signature(UNetGenerator.__init__)
-    if "upsample_mode" in sig.parameters:
-        gen_kw["upsample_mode"] = str(cfg["model"].get("upsample_mode", "transpose"))
-    if "bottleneck_attention" in sig.parameters:
-        gen_kw["bottleneck_attention"] = bool(cfg["model"].get("bottleneck_attention", False))
-    if "bottleneck_attention_dim" in sig.parameters:
-        gen_kw["bottleneck_attention_dim"] = int(cfg["model"].get("bottleneck_attention_dim", 256))
-    if "bottleneck_attention_heads" in sig.parameters:
-        gen_kw["bottleneck_attention_heads"] = int(cfg["model"].get("bottleneck_attention_heads", 4))
-    gen = UNetGenerator(**gen_kw).to(device)
+    gen = None
+    try:
+        from model_cgan import UNetGenerator
+
+        hybrid_enabled = bool(dict(cfg.get("path_loss_hybrid", {})).get("enabled", False))
+        sc_dim = int(compute_scalar_cond_dim(cfg)) if uses_scalar_film_conditioning(cfg) else 0
+        film_h = int(cfg["model"].get("scalar_film_hidden", 128))
+        gen_kw: Dict[str, Any] = dict(
+            in_channels=compute_input_channels(cfg),
+            out_channels=int(cfg["model"]["out_channels"]),
+            base_channels=int(cfg["model"]["base_channels"]),
+            gradient_checkpointing=bool(cfg["model"].get("gradient_checkpointing", False)),
+            path_loss_hybrid=hybrid_enabled,
+            norm_type=str(cfg["model"].get("norm_type", "batch")),
+            scalar_cond_dim=sc_dim,
+            scalar_film_hidden=film_h,
+        )
+        sig = inspect.signature(UNetGenerator.__init__)
+        if "upsample_mode" in sig.parameters:
+            gen_kw["upsample_mode"] = str(cfg["model"].get("upsample_mode", "transpose"))
+        if "bottleneck_attention" in sig.parameters:
+            gen_kw["bottleneck_attention"] = bool(cfg["model"].get("bottleneck_attention", False))
+        if "bottleneck_attention_dim" in sig.parameters:
+            gen_kw["bottleneck_attention_dim"] = int(cfg["model"].get("bottleneck_attention_dim", 256))
+        if "bottleneck_attention_heads" in sig.parameters:
+            gen_kw["bottleneck_attention_heads"] = int(cfg["model"].get("bottleneck_attention_heads", 4))
+        gen = UNetGenerator(**gen_kw).to(device)
+    except Exception:
+        from model_pmnet import PMNetResidualRegressor
+
+        gen = PMNetResidualRegressor(
+            in_channels=compute_input_channels(cfg),
+            out_channels=int(cfg["model"]["out_channels"]),
+            base_channels=int(cfg["model"]["base_channels"]),
+            encoder_blocks=tuple(cfg["model"].get("encoder_blocks", [2, 2, 2, 2])),
+            context_dilations=tuple(cfg["model"].get("context_dilations", [1, 2, 4, 8])),
+            norm_type=str(cfg["model"].get("norm_type", "group")),
+            dropout=float(cfg["model"].get("dropout", 0.0)),
+            gradient_checkpointing=bool(cfg["model"].get("gradient_checkpointing", False)),
+        ).to(device)
     if not is_cuda_device(device):
         gen = gen.float()
     state = load_torch_checkpoint(str(checkpoint), device)
-    gen.load_state_dict(state["generator"] if "generator" in state else state, strict=True)
+    if "model" in state:
+        gen.load_state_dict(state["model"], strict=True)
+    else:
+        gen.load_state_dict(state["generator"] if "generator" in state else state, strict=True)
     gen.eval()
     return gen
 
@@ -468,8 +536,7 @@ def predict_ninth_path_loss(
     unpack_cgan_batch = getattr(data_utils, "unpack_cgan_batch")
     merge_hdf5_splits_for_inference = getattr(data_utils, "merge_hdf5_splits_for_inference", None)
     sample_is_los_dominant = getattr(data_utils, "sample_is_los_dominant", None)
-    evaluate_mod = _reload_try_module(try_root, "evaluate_cgan")
-    denormalize_channel = getattr(evaluate_mod, "denormalize_channel")
+    denormalize_channel = _load_path_loss_denormalizer(try_root)
 
     device = pick_inference_device(device_pref, resolve_device)
     dual = checkpoint_nlos is not None

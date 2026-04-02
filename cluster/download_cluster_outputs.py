@@ -63,6 +63,11 @@ def parse_args() -> argparse.Namespace:
             "'json_and_best_cgan' = *.json + only best_cgan.pt (no epoch checkpoints)."
         ),
     )
+    p.add_argument(
+        "--include-prior-calibration",
+        action="store_true",
+        help="Also download files under <TRY>/prior_calibration into cluster_outputs/<TRY>/prior_calibration.",
+    )
     return p.parse_args()
 
 
@@ -190,17 +195,35 @@ def main() -> None:
 
         for t in tries:
             remote_outputs = f"{args.remote_root}/{t}/outputs"
-            if not sftp_isdir(sftp, remote_outputs):
-                continue
             local_outputs = local_root / t
-            files, nbytes = download_tree_filtered(
-                sftp,
-                remote_outputs,
-                local_outputs,
-                mode=str(args.filter),
-            )
-            if files:
-                print(f"{t}: downloaded {files} files ({nbytes/1024/1024:.1f} MiB) into {local_outputs}")
+            total_files = 0
+            total_bytes = 0
+
+            if sftp_isdir(sftp, remote_outputs):
+                files, nbytes = download_tree_filtered(
+                    sftp,
+                    remote_outputs,
+                    local_outputs,
+                    mode=str(args.filter),
+                )
+                total_files += files
+                total_bytes += nbytes
+
+            if args.include_prior_calibration:
+                remote_prior = f"{args.remote_root}/{t}/prior_calibration"
+                local_prior = local_outputs / "prior_calibration"
+                if sftp_isdir(sftp, remote_prior):
+                    files, nbytes = download_tree_filtered(
+                        sftp,
+                        remote_prior,
+                        local_prior,
+                        mode="all",
+                    )
+                    total_files += files
+                    total_bytes += nbytes
+
+            if total_files:
+                print(f"{t}: downloaded {total_files} files ({total_bytes/1024/1024:.1f} MiB) into {local_outputs}")
             else:
                 print(f"{t}: nothing new to download")
         sftp.close()

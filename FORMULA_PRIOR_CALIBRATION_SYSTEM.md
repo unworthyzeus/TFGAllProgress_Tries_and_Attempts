@@ -1,6 +1,6 @@
 # Formula Prior Calibration System
 
-This document explains the calibrated physical-prior system currently used by `Try 41`.
+This document explains the calibrated physical-prior system that started in `Try 41` and now underpins the stronger prior line for `Try 45`.
 
 ## Goal
 
@@ -134,6 +134,15 @@ This script:
 - reports which regime-aware prior works best,
 - and writes a reproducible JSON/Markdown summary.
 
+For the latest `Try 47` branch, the cluster calibration workflow was further tightened so that it remains operational under the cluster wall-clock limit:
+
+- explicit progress logging was added,
+- sample-level subsampling was added for both `train` and `val`,
+- and pixel-level subsampling is still applied inside the selected training samples.
+
+This does not change the conceptual design of the calibration.
+It changes the operational strategy so that the calibration can complete on the cluster instead of timing out silently.
+
 If needed later, it can be extended into a dedicated city-held-out calibration pipeline.
 
 ## How Try 42 uses this prior
@@ -150,3 +159,24 @@ So for `Try 42` the practical rule is:
 
 - do not ask the network to predict the whole path-loss map from scratch;
 - ask it to predict only the correction to this calibrated prior.
+
+## How Try 45 extends this system
+
+`Try 45` keeps the same overall philosophy:
+
+- `final_prediction = calibrated_physical_prior + learned_residual`
+
+but strengthens the prior further by adding:
+
+- multiscale obstruction-aware calibration features,
+- local LOS-shadow support proxies,
+- A2G-inspired `NLoS` terms from `Eq. 9 / 10 / 11`,
+- and an `Eq. 12`-style shadow-variability side feature.
+
+## Current release rule
+
+Because the dominant remaining problem is still `NLoS`, `Try 45` should only be launched when the prior-only validation result satisfies:
+
+- `NLoS RMSE < 20 dB`
+
+Until that happens, the priority remains prior improvement, not cluster training.

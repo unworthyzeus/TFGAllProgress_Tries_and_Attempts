@@ -1,4 +1,4 @@
-# Supervisor Summary: Tries 20 to 45
+# Supervisor Summary: Tries 20 to 46
 
 This summary keeps the recent path-loss story compact and supervisor-friendly.
 
@@ -31,7 +31,7 @@ That is why later branches focused less on generic tuning and more on:
 - residual learning
 - regime-aware diagnostics
 
-## What Tries 41-45 are testing
+## What Tries 41-46 are testing
 
 ### Try 41
 
@@ -83,6 +83,77 @@ The idea is that:
 
 - the prior should explain more of the easy-to-model large-scale structure
 - and the residual branch should specialize where the data remain hardest
+
+## What the current numbers say
+
+The current message from the data is already fairly clear.
+
+### Try 42
+
+`Try 42` shows that:
+
+- the calibrated prior is useful,
+- PMNet can improve over that prior,
+- but the hard part is still `NLoS`.
+
+Reference validation numbers:
+
+- overall RMSE: about `19.78 dB`
+- prior-only RMSE: about `24.16 dB`
+- `LoS`: about `3.86 dB`
+- `NLoS`: about `34.47 dB`
+
+So `Try 42` is not solving the project, but it does show that the prior is helping.
+
+### Try 44
+
+`Try 44` is useful because it shows what happens when PMNet is made more faithful to the original repository structure but the prior is removed.
+
+Reference validation numbers:
+
+- overall RMSE: about `22.45 dB`
+- `LoS`: about `4.74 dB`
+- `NLoS`: about `39.06 dB`
+
+So the more faithful PMNet control does **not** beat the prior-based branch.
+
+### Practical interpretation
+
+This means the current bottleneck is not simply:
+
+- "U-Net vs PMNet"
+
+The deeper issue is:
+
+- the prior is still too weak in `NLoS`,
+- and that weakness propagates into the learned residual problem.
+
+That is why `Try 45` is currently treated as a gated branch rather than the next automatic cluster run.
+
+## Current release rule for Try 45
+
+`Try 45` should only be launched when the **prior-only** validation result reaches:
+
+- `NLoS RMSE < 20 dB`
+
+Until that happens, the work should stay focused on improving the prior itself.
+
+Current best prepared `Try 45` prior-only calibration:
+
+- overall RMSE: about `23.57 dB`
+- `LoS`: about `3.81 dB`
+- `NLoS`: about `41.27 dB`
+
+### Try 46
+
+`Try 46` is the first branch that changes the network structure around the regime split itself:
+
+- one lightweight `LoS` residual head
+- one stronger `NLoS`-only MoE residual head
+- one shared PMNet-style trunk
+- and extra `NLoS` diagnostics split by shadow-depth proxy
+
+The idea is that `LoS` and `NLoS` should no longer be forced through one shared residual head.
 
 ## Main lesson so far
 

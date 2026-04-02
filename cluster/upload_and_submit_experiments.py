@@ -250,6 +250,19 @@ PRESETS: dict[str, Preset] = {
             2: ("cluster/run_fortyfifthtry45_pmnet_moe_enhanced_prior_2gpu.slurm",),
         },
     ),
+    "fortysixth": Preset(
+        local_dir="TFGFortySixthTry46",
+        slurms_by_gpus={
+            1: ("cluster/run_fortysixthtry46_los_nlos_moe_prior_1gpu.slurm",),
+            2: ("cluster/run_fortysixthtry46_los_nlos_moe_prior_2gpu.slurm",),
+        },
+    ),
+    "fortyseventh": Preset(
+        local_dir="TFGFortySeventhTry47",
+        slurms_by_gpus={
+            2: ("cluster/run_fortyseventhtry47_unet_prior_nlos_moe_2gpu.slurm",),
+        },
+    ),
     "ninth": Preset(
         local_dir="TFGNinthTry9",
         slurms_by_gpus={

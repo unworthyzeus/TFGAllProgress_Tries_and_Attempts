@@ -92,3 +92,40 @@ Then the decision for a future `Try 45` is:
 
 - if `Try 44 > Try 43`, the more faithful PMNet backbone is worth keeping;
 - if `Try 44` is also competitive enough overall, then `Try 45 = Try 44 + calibrated prior` becomes the logical next step.
+
+## What the first results actually said
+
+The first clean results changed that interpretation.
+
+### Try 43 result
+
+Latest useful reference:
+
+- overall RMSE: about `20.26 dB` at epoch `9`
+
+This is not catastrophic, but it still does not solve the project and it does not close the gap to the prior-based branch.
+
+### Try 44 result
+
+Latest useful reference:
+
+- overall RMSE: about `22.45 dB` at epoch `2`
+- `LoS`: about `4.74 dB`
+- `NLoS`: about `39.06 dB`
+
+This means the more faithful PMNet-v3-style implementation did **not** improve the situation enough.
+
+## Practical conclusion
+
+The control story is now clearer:
+
+- PMNet without prior is not enough
+- a more faithful PMNet without prior is still not enough
+- the prior is helping
+
+So the next serious step is **not** another no-prior PMNet variant.
+
+The next serious step is:
+
+- improve the prior, especially for `NLoS`,
+- and only then launch the MoE residual branch in `Try 45`.
