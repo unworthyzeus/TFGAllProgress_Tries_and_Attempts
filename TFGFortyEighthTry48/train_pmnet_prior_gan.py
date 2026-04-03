@@ -813,6 +813,9 @@ def main() -> None:
                 else:
                     scheduler_g.step()
 
+            if is_cuda_device(device):
+                torch.cuda.empty_cache()
+
             barrier_if_distributed(distributed)
     finally:
         cleanup_distributed(distributed)

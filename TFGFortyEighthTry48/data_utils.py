@@ -430,6 +430,58 @@ def _sigma_map(distance_norm: torch.Tensor, antenna_height_m: float, los_map: to
     return torch.where(los > 0.5, sigma_los, sigma_nlos)
 
 
+def _compute_local_obstruction_features(
+    topology_tensor: torch.Tensor,
+    *,
+    non_ground_threshold: float,
+    kernel_size: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    if topology_tensor.ndim != 3:
+        raise ValueError(f"Expected topology tensor [1,H,W], got {tuple(topology_tensor.shape)}")
+    building = (topology_tensor != float(non_ground_threshold)).to(dtype=torch.float32)
+    height = topology_tensor.to(dtype=torch.float32)
+    kernel = max(int(kernel_size), 1)
+    if kernel % 2 == 0:
+        kernel += 1
+    pad = kernel // 2
+    local_density = F.avg_pool2d(building.unsqueeze(0), kernel_size=kernel, stride=1, padding=pad).squeeze(0)
+    local_height = F.avg_pool2d(height.unsqueeze(0), kernel_size=kernel, stride=1, padding=pad).squeeze(0)
+    return local_density.clamp(0.0, 1.0), local_height.clamp(min=0.0)
+
+
+def _compute_a2g_shadow_sigma_db(
+    image_size: int,
+    antenna_height_m: float,
+    receiver_height_m: float,
+    meters_per_pixel: float,
+    *,
+    los_tensor: Optional[torch.Tensor] = None,
+    a2g_params: Optional[Dict[str, float]] = None,
+) -> torch.Tensor:
+    distance_norm = _compute_distance_map_2d(image_size)
+    if los_tensor is not None:
+        distance_norm = distance_norm.to(device=los_tensor.device, dtype=los_tensor.dtype)
+    half = (image_size - 1) / 2.0
+    max_dist_pixels = max(half * (2.0 ** 0.5), 1.0)
+    ground_distance_m = distance_norm * float(max_dist_pixels * meters_per_pixel)
+    h_tx = max(float(antenna_height_m), 1.0)
+    h_rx = max(float(receiver_height_m), 0.5)
+    theta_deg = torch.rad2deg(
+        torch.atan2((h_tx - h_rx) * torch.ones_like(ground_distance_m), ground_distance_m.clamp(min=1.0))
+    )
+    a2g_params = dict(a2g_params or {})
+    sigma_los_rho = float(a2g_params.get("sigma_los_rho", 0.0272))
+    sigma_los_mu = float(a2g_params.get("sigma_los_mu", 0.7475))
+    sigma_nlos_rho = float(a2g_params.get("sigma_nlos_rho", 2.3197))
+    sigma_nlos_mu = float(a2g_params.get("sigma_nlos_mu", 0.2361))
+    sigma_los = sigma_los_rho * torch.pow((90.0 - theta_deg).clamp(min=0.0), sigma_los_mu)
+    sigma_nlos = sigma_nlos_rho * torch.pow((90.0 - theta_deg).clamp(min=0.0), sigma_nlos_mu)
+    if los_tensor is None:
+        return 0.5 * (sigma_los + sigma_nlos)
+    los_prob = los_tensor.clamp(0.0, 1.0).to(dtype=torch.float32)
+    return los_prob * sigma_los + (1.0 - los_prob) * sigma_nlos
+
+
 def _theta_norm_map(distance_norm: torch.Tensor, antenna_height_m: float, receiver_height_m: float = 1.5) -> torch.Tensor:
     dist = distance_norm.squeeze(0) if distance_norm.ndim == 3 else distance_norm
     distance_scale_m = 256.0 * math.sqrt(2.0)
@@ -1218,6 +1270,7 @@ def _apply_formula_regime_calibration(
     los_tensor: Optional[torch.Tensor],
     topology_tensor: Optional[torch.Tensor],
     distance_map_tensor: Optional[torch.Tensor],
+    non_ground_threshold: float,
     clip_min: float,
     clip_max: float,
 ) -> torch.Tensor:
@@ -1230,8 +1283,106 @@ def _apply_formula_regime_calibration(
         city_type = _city_type_from_thresholds(density, height, dict(calibration.get("city_type_thresholds", {})))
     ant_bin = _antenna_height_bin(float(antenna_height_m), dict(calibration.get("antenna_height_thresholds", {})))
     coeff_map = dict(calibration.get("coefficients", {}))
+    model_type = str(calibration.get("model_type", "quadratic_regime"))
+    if model_type in {"regime_obstruction_linear_v1", "regime_obstruction_multiscale_v1"}:
+        kernel_sizes = calibration.get("local_kernel_sizes", [calibration.get("local_kernel_size", 25)])
+        kernel_sizes = [int(k) for k in kernel_sizes]
+        if topology_tensor is None:
+            raise ValueError("Obstruction-aware prior calibration requires topology_tensor.")
+        if distance_map_tensor is None:
+            distance_map_tensor = _compute_distance_map_2d(prior_db.shape[-1])
+        distance_map_tensor = distance_map_tensor.to(dtype=prior_db.dtype)
+        local_features = []
+        for kernel_size in kernel_sizes:
+            local_density, local_height = _compute_local_obstruction_features(
+                topology_tensor,
+                non_ground_threshold=non_ground_threshold,
+                kernel_size=kernel_size,
+            )
+            local_features.append((local_density.to(dtype=prior_db.dtype), local_height.to(dtype=prior_db.dtype)))
+        los_features = []
+        base_los_tensor = los_tensor if los_tensor is not None else torch.zeros_like(prior_db)
+        for kernel_size in kernel_sizes:
+            kernel = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
+            nlos_support = F.avg_pool2d(
+                (base_los_tensor <= 0.5).to(dtype=torch.float32).unsqueeze(0),
+                kernel_size=kernel,
+                stride=1,
+                padding=kernel // 2,
+            ).squeeze(0).to(dtype=prior_db.dtype)
+            los_features.append(nlos_support.clamp(0.0, 1.0))
 
-    def payload_for(los_label: str) -> Optional[Dict[str, Any]]:
+        def obstruction_pred(los_label: str) -> torch.Tensor:
+            candidates = [
+                f"{city_type}|{los_label}|{ant_bin}",
+                f"{city_type}|{los_label}|mid_ant",
+                f"{city_type}|{los_label}|low_ant",
+                f"{city_type}|{los_label}|high_ant",
+            ]
+            payload = None
+            for key in candidates:
+                if key in coeff_map:
+                    payload = coeff_map[key]
+                    break
+            if payload is None:
+                return prior_db
+            weights = [float(v) for v in payload.get("weights", [])]
+            bias = float(payload.get("bias", 0.0))
+            distance_scale = max(float(payload.get("distance_scale_m", 1.0)), 1.0)
+            height_scale = max(float(payload.get("height_scale", 1.0)), 1.0)
+            meters_per_pixel = max(float(payload.get("meters_per_pixel", 1.0)), 1e-6)
+            receiver_height_m = max(float(payload.get("receiver_height_m", 1.5)), 0.1)
+            logd = torch.log1p(distance_map_tensor * distance_scale)
+            density_small, height_small = local_features[0]
+            density_large, height_large = local_features[-1]
+            nlos_small = los_features[0]
+            nlos_large = los_features[-1]
+            sigma_feature = _compute_a2g_shadow_sigma_db(
+                image_size=prior_db.shape[-1],
+                antenna_height_m=float(antenna_height_m),
+                receiver_height_m=receiver_height_m,
+                meters_per_pixel=meters_per_pixel,
+                los_tensor=los_tensor,
+            ).to(dtype=prior_db.dtype)
+            ground_distance_m = distance_map_tensor * distance_scale
+            theta_deg = torch.rad2deg(
+                torch.atan2(
+                    (float(antenna_height_m) - receiver_height_m) * torch.ones_like(ground_distance_m),
+                    ground_distance_m.clamp(min=1.0),
+                )
+            )
+            theta_norm = (theta_deg / 90.0).clamp(0.0, 1.0).to(dtype=prior_db.dtype)
+            features = [
+                prior_db * prior_db,
+                prior_db,
+                logd,
+                density_small,
+                density_large,
+                height_small / height_scale,
+                height_large / height_scale,
+                density_large * logd,
+                nlos_small,
+                nlos_large,
+                nlos_large * logd,
+                sigma_feature,
+                theta_norm,
+                nlos_large * theta_norm,
+            ]
+            out = torch.full_like(prior_db, bias)
+            for w, feat in zip(weights, features):
+                out = out + float(w) * feat
+            return out
+
+        los_pred = obstruction_pred("LoS")
+        nlos_pred = obstruction_pred("NLoS")
+        if los_tensor is None:
+            calibrated = 0.5 * (los_pred + nlos_pred)
+        else:
+            los_prob = los_tensor.clamp(0.0, 1.0).to(dtype=prior_db.dtype)
+            calibrated = los_prob * los_pred + (1.0 - los_prob) * nlos_pred
+        return calibrated.clamp(min=float(clip_min), max=float(clip_max))
+
+    def coeffs_for(los_label: str) -> Tuple[float, float, float]:
         candidates = [
             f"{city_type}|{los_label}|{ant_bin}",
             f"{city_type}|{los_label}|mid_ant",
@@ -1241,54 +1392,15 @@ def _apply_formula_regime_calibration(
         for key in candidates:
             payload = coeff_map.get(key)
             if payload:
-                return dict(payload)
-        return None
+                poly = list(payload.get("poly2", [0.0, 1.0, 0.0]))
+                if len(poly) == 3:
+                    return float(poly[0]), float(poly[1]), float(poly[2])
+        return 0.0, 1.0, 0.0
 
-    def calibrated_for(los_label: str) -> torch.Tensor:
-        payload = payload_for(los_label)
-        if not payload:
-            return prior_db
-        poly = list(payload.get("poly2", []))
-        if len(poly) == 3:
-            return float(poly[0]) * prior_db * prior_db + float(poly[1]) * prior_db + float(poly[2])
-
-        weights = payload.get("weights")
-        if weights is None:
-            return prior_db
-        if topology_tensor is None or distance_map_tensor is None or los_tensor is None:
-            return prior_db
-
-        local_kernel_sizes = list(calibration.get("local_kernel_sizes", [15, 41]))
-        small_kernel = int(local_kernel_sizes[0]) if local_kernel_sizes else 15
-        large_kernel = int(local_kernel_sizes[-1]) if local_kernel_sizes else 41
-        topo = topology_tensor.squeeze(0) if topology_tensor.ndim == 3 else topology_tensor
-        los_map = los_tensor.squeeze(0) if los_tensor.ndim == 3 else los_tensor
-        dist = distance_map_tensor.squeeze(0) if distance_map_tensor.ndim == 3 else distance_map_tensor
-        local_density_small, local_height_small = _obstruction_local_features(topo, small_kernel)
-        local_density_large, local_height_large = _obstruction_local_features(topo, large_kernel)
-        nlos_support_small = _obstruction_local_features((los_map <= 0.5).to(torch.float32), small_kernel)[0]
-        nlos_support_large = _obstruction_local_features((los_map <= 0.5).to(torch.float32), large_kernel)[0]
-        shadow_sigma_db = _sigma_map(dist, antenna_height_m, los_map)
-        theta_norm = _theta_norm_map(dist, antenna_height_m)
-        feature_map = _obstruction_feature_matrix(
-            prior_db,
-            dist,
-            local_density_small,
-            local_density_large,
-            local_height_small,
-            local_height_large,
-            nlos_support_small,
-            nlos_support_large,
-            shadow_sigma_db,
-            theta_norm,
-        )
-        w = torch.tensor([float(v) for v in weights], dtype=feature_map.dtype, device=feature_map.device)
-        bias = float(payload.get("bias", 0.0))
-        return torch.tensordot(feature_map, w, dims=([-1], [0])) + bias
-
-    los_pred = calibrated_for("LoS")
-    nlos_pred = calibrated_for("NLoS")
-
+    los_a2, los_a1, los_a0 = coeffs_for("LoS")
+    nlos_a2, nlos_a1, nlos_a0 = coeffs_for("NLoS")
+    los_pred = los_a2 * prior_db * prior_db + los_a1 * prior_db + los_a0
+    nlos_pred = nlos_a2 * prior_db * prior_db + nlos_a1 * prior_db + nlos_a0
     if los_tensor is None:
         calibrated = 0.5 * (los_pred + nlos_pred)
     else:
@@ -1898,6 +2010,7 @@ class CKMHDF5Dataset(Dataset):
                     los_tensor=los_formula_tensor,
                     topology_tensor=raw_topology_tensor,
                     distance_map_tensor=distance_map_tensor,
+                    non_ground_threshold=float(self.non_ground_threshold),
                     clip_min=float(path_meta.get('clip_min', path_meta.get('offset', 0.0))),
                     clip_max=float(path_meta.get('clip_max', float(path_meta.get('offset', 0.0)) + float(path_meta.get('scale', 180.0)))),
                 )
