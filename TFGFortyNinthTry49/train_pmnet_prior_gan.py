@@ -265,7 +265,7 @@ def _build_refiner_from_cfg(cfg: Dict[str, Any], in_channels: int) -> nn.Module:
     if arch == "unet":
         return UNetResidualRefiner(
             in_channels=in_channels,
-            out_channels=int(cfg["model"]["out_channels"]),
+            out_channels=int(sep_cfg.get("refiner_out_channels", cfg["model"]["out_channels"])),
             base_channels=int(sep_cfg.get("refiner_base_channels", 48)),
             norm_type=str(cfg["model"].get("norm_type", "group")),
             dropout=float(cfg["model"].get("dropout", 0.0)),
@@ -287,6 +287,59 @@ def _load_generator_weights(module: nn.Module, checkpoint_path: Path, device: ob
     module.load_state_dict(_checkpoint_model_state(state), strict=True)
 
 
+def _scalar_feature_names(cfg: Dict[str, Any]) -> list[str]:
+    names = list(cfg["data"].get("scalar_feature_columns", []))
+    names.extend(list(dict(cfg["data"].get("constant_scalar_features", {})).keys()))
+    return names
+
+
+def _extract_scalar_input_channel(input_batch: torch.Tensor, cfg: Dict[str, Any], name: str) -> Optional[torch.Tensor]:
+    if not bool(cfg.get("model", {}).get("use_scalar_channels", False)):
+        return None
+    scalar_names = _scalar_feature_names(cfg)
+    if not scalar_names or name not in scalar_names:
+        return None
+    scalar_count = len(scalar_names)
+    total_channels = int(compute_input_channels(cfg))
+    prefix_channels = max(total_channels - scalar_count, 0)
+    idx = prefix_channels + scalar_names.index(name)
+    if idx < 0 or idx >= input_batch.shape[1]:
+        return None
+    return input_batch[:, idx : idx + 1]
+
+
+def _compose_residual_prediction_with_aux(
+    trainable_generator: nn.Module,
+    x: torch.Tensor,
+    scalar_cond: Optional[torch.Tensor],
+    prior: torch.Tensor,
+    *,
+    separated_mode: bool,
+    base_generator: Optional[nn.Module],
+    use_gate: bool = False,
+) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    if not separated_mode:
+        residual = forward_cgan_generator(trainable_generator, x, scalar_cond)
+        return residual, None, None
+    if base_generator is None:
+        raise RuntimeError("Separated mode enabled but base_generator is missing")
+    with torch.no_grad():
+        base_residual = forward_cgan_generator(base_generator, x, scalar_cond)
+    base_pred = prior + base_residual
+    refiner_in = torch.cat([x, base_pred, base_residual], dim=1)
+    refiner_out = forward_cgan_generator(trainable_generator, refiner_in, None)
+    if use_gate:
+        if refiner_out.shape[1] < 2:
+            raise ValueError("separated_refiner.use_gate=true requires refiner_out_channels >= 2")
+        delta_raw = refiner_out[:, :1]
+        gate_logits = refiner_out[:, 1:2]
+        delta = delta_raw * torch.sigmoid(gate_logits)
+    else:
+        delta = refiner_out[:, :1]
+        gate_logits = None
+    return base_residual + delta, gate_logits, base_residual
+
+
 def _compose_residual_prediction(
     trainable_generator: nn.Module,
     x: torch.Tensor,
@@ -295,17 +348,64 @@ def _compose_residual_prediction(
     *,
     separated_mode: bool,
     base_generator: Optional[nn.Module],
+    use_gate: bool = False,
 ) -> torch.Tensor:
-    if not separated_mode:
-        return forward_cgan_generator(trainable_generator, x, scalar_cond)
-    if base_generator is None:
-        raise RuntimeError("Separated mode enabled but base_generator is missing")
-    with torch.no_grad():
-        base_residual = forward_cgan_generator(base_generator, x, scalar_cond)
-    base_pred = prior + base_residual
-    refiner_in = torch.cat([x, base_pred, base_residual], dim=1)
-    delta = forward_cgan_generator(trainable_generator, refiner_in, None)
-    return base_residual + delta
+    residual_pred, _, _ = _compose_residual_prediction_with_aux(
+        trainable_generator,
+        x,
+        scalar_cond,
+        prior,
+        separated_mode=separated_mode,
+        base_generator=base_generator,
+        use_gate=use_gate,
+    )
+    return residual_pred
+
+
+def _tail_focus_weights(
+    stage1_error: torch.Tensor,
+    x: torch.Tensor,
+    cfg: Dict[str, Any],
+    meta: Dict[str, Any],
+) -> torch.Tensor:
+    sep_cfg = dict(cfg.get("separated_refiner", {}))
+    tail_cfg = dict(sep_cfg.get("tail_focus", {}))
+    if not bool(tail_cfg.get("enabled", False)):
+        return torch.ones_like(stage1_error)
+
+    scale = max(float(meta.get("scale", 180.0)), 1e-6)
+    threshold_db = float(tail_cfg.get("threshold_db", 6.0))
+    temperature_db = max(float(tail_cfg.get("temperature_db", 2.5)), 1e-3)
+    alpha = max(float(tail_cfg.get("alpha", 1.0)), 0.0)
+    nlos_boost = max(float(tail_cfg.get("nlos_boost", 0.0)), 0.0)
+    antenna_boost = max(float(tail_cfg.get("antenna_boost", 0.0)), 0.0)
+    max_weight = max(float(tail_cfg.get("max_weight", 5.0)), 1.0)
+
+    hard_score = torch.sigmoid((stage1_error.abs() - (threshold_db / scale)) / max(temperature_db / scale, 1e-6))
+    weight = 1.0 + alpha * hard_score
+
+    if nlos_boost > 0.0 and cfg["data"].get("los_input_column"):
+        los_idx = 1
+        if x.shape[1] > los_idx:
+            nlos = (1.0 - x[:, los_idx : los_idx + 1].clamp(0.0, 1.0)).clamp(0.0, 1.0)
+            weight = weight * (1.0 + nlos_boost * nlos)
+
+    if antenna_boost > 0.0:
+        antenna_channel = _extract_scalar_input_channel(x, cfg, "antenna_height_m")
+        if antenna_channel is not None:
+            low_antenna = (1.0 - antenna_channel.clamp(0.0, 1.0)).clamp(0.0, 1.0)
+            weight = weight * (1.0 + antenna_boost * low_antenna)
+
+    return weight.clamp(1.0, max_weight)
+
+
+def _gate_target_from_error(stage1_error: torch.Tensor, cfg: Dict[str, Any], meta: Dict[str, Any]) -> torch.Tensor:
+    sep_cfg = dict(cfg.get("separated_refiner", {}))
+    gate_cfg = dict(sep_cfg.get("gate_target", {}))
+    scale = max(float(meta.get("scale", 180.0)), 1e-6)
+    threshold_db = float(gate_cfg.get("threshold_db", 6.0))
+    temperature_db = max(float(gate_cfg.get("temperature_db", 2.0)), 1e-3)
+    return torch.sigmoid((stage1_error.abs() - (threshold_db / scale)) / max(temperature_db / scale, 1e-6))
 
 
 class RegimeAnnotator:
@@ -567,12 +667,12 @@ def write_validation_json(out_dir: Path, epoch: int, summary: dict[str, Any], *,
 
 def train_one_epoch(
     generator: nn.Module,
-    discriminator: nn.Module,
+    discriminator: Optional[nn.Module],
     loader: DataLoader,
     optimizer_g: torch.optim.Optimizer,
-    optimizer_d: torch.optim.Optimizer,
+    optimizer_d: Optional[torch.optim.Optimizer],
     scaler_g: amp.GradScaler,
-    scaler_d: amp.GradScaler,
+    scaler_d: Optional[amp.GradScaler],
     device: object,
     cfg: Dict[str, Any],
     amp_enabled: bool,
@@ -584,16 +684,20 @@ def train_one_epoch(
     meta = dict(cfg["target_metadata"]["path_loss"])
     loss_cfg = dict(cfg["loss"])
     residual_cfg = dict(cfg.get("prior_residual_path_loss", {}))
+    sep_cfg = dict(cfg.get("separated_refiner", {}))
     clamp_final = bool(residual_cfg.get("clamp_final_output", True))
     optimize_residual_only = bool(residual_cfg.get("optimize_residual_only", False))
+    use_gate = bool(sep_cfg.get("use_gate", False))
+    gate_loss_weight = float(sep_cfg.get("gate_loss_weight", 0.0))
     clip_grad = float(cfg["training"].get("clip_grad_norm", 0.0))
     lambda_gan = float(loss_cfg.get("lambda_gan", 0.0))
     lambda_recon = float(loss_cfg.get("lambda_recon", 1.0))
     adv_criterion = build_adversarial_loss(str(loss_cfg.get("adversarial_loss", "bce"))).to(device)
-    use_gan = lambda_gan > 0.0
+    use_gan = lambda_gan > 0.0 and discriminator is not None and optimizer_d is not None and scaler_d is not None
 
     generator.train()
-    discriminator.train()
+    if discriminator is not None:
+        discriminator.train()
     running_g = 0.0
     running_d = 0.0
     steps = 0
@@ -613,12 +717,15 @@ def train_one_epoch(
                     prior,
                     separated_mode=separated_mode,
                     base_generator=base_generator,
+                    use_gate=use_gate,
                 )
                 fake_det = prior + residual_fake_det
                 if clamp_final:
                     fake_det = clip_to_target_range(fake_det, meta)
 
         if use_gan:
+            if discriminator is None or optimizer_d is None or scaler_d is None:
+                raise RuntimeError("use_gan=true requires discriminator, optimizer_d, and scaler_d")
             set_requires_grad(discriminator, True)
             optimizer_d.zero_grad(set_to_none=True)
             with amp.autocast(device_type="cuda", enabled=amp_enabled):
@@ -638,37 +745,52 @@ def train_one_epoch(
         else:
             d_loss = torch.zeros((), device=target.device)
 
-        set_requires_grad(discriminator, False)
+        if discriminator is not None:
+            set_requires_grad(discriminator, False)
         optimizer_g.zero_grad(set_to_none=True)
         with amp.autocast(device_type="cuda", enabled=amp_enabled):
-            residual_pred = _compose_residual_prediction(
+            residual_pred, gate_logits, base_residual = _compose_residual_prediction_with_aux(
                 generator,
                 x,
                 scalar_cond,
                 prior,
                 separated_mode=separated_mode,
                 base_generator=base_generator,
+                use_gate=use_gate,
             )
             pred = prior + residual_pred
             if clamp_final:
                 pred = clip_to_target_range(pred, meta)
 
+            weighted_mask = mask
+            gate_target = None
+            gate_loss = torch.zeros((), device=target.device)
+            if separated_mode and base_residual is not None:
+                stage1_error = residual_target - base_residual
+                weighted_mask = mask * _tail_focus_weights(stage1_error, x, cfg, meta)
+                if use_gate:
+                    gate_target = _gate_target_from_error(stage1_error, cfg, meta)
+
             final_loss = masked_mse_l1_loss(
                 pred,
                 target,
-                mask,
+                weighted_mask,
                 mse_weight=float(loss_cfg.get("mse_weight", 1.0)),
                 l1_weight=float(loss_cfg.get("l1_weight", 0.0)),
             )
             residual_loss = masked_mse_l1_loss(
                 residual_pred,
                 residual_target,
-                mask,
+                weighted_mask,
                 mse_weight=float(residual_cfg.get("mse_weight", 1.0)),
                 l1_weight=float(residual_cfg.get("l1_weight", 0.0)),
             )
             multiscale_loss = compute_multiscale_path_loss_loss(pred, target, mask, meta, cfg)
-            if use_gan:
+            if use_gate and gate_logits is not None and gate_target is not None:
+                gate_loss_map = F.binary_cross_entropy_with_logits(gate_logits, gate_target, reduction="none")
+                gate_loss = (gate_loss_map * weighted_mask).sum() / weighted_mask.sum().clamp_min(1.0)
+
+            if use_gan and discriminator is not None:
                 fake_logits_for_g = discriminator(x, pred)
                 gan_loss = adv_criterion(fake_logits_for_g, torch.ones_like(fake_logits_for_g))
             else:
@@ -683,6 +805,9 @@ def train_one_epoch(
                     + multiscale_loss
                     + lambda_gan * gan_loss
                 )
+
+            if gate_loss_weight > 0.0:
+                g_loss = g_loss + gate_loss_weight * gate_loss
 
         scaler_g.scale(g_loss).backward()
         if clip_grad > 0.0:
@@ -699,7 +824,7 @@ def train_one_epoch(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train Try 48 PMNet prior+residual path-loss model with light PatchGAN")
+    parser = argparse.ArgumentParser(description="Train Try 49 PMNet prior+residual path-loss model with light PatchGAN")
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
 

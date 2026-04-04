@@ -53,11 +53,11 @@ data:
   prefetch_factor: 8
 
 model:
-  base_channels: 120
+  base_channels: 96
   disc_base_channels: 40
   disc_norm_type: group
   disc_input_downsample_factor: 1
-  encoder_blocks: [3, 3, 4, 4]
+  encoder_blocks: [2, 2, 2, 2]
   context_dilations: [1, 2, 4, 8]
   dropout: 0.05
   gradient_checkpointing: true
@@ -127,8 +127,15 @@ augmentation:
 
 runtime:
   device: cuda
-  output_dir: outputs/fortyeighthtry48_pmnet_prior_gan_fastbatch
+  output_dir: outputs/fortyeighthtry48_pmnet_prior_stage2_widen96_refine_chainA
   resume_checkpoint: null
+
+separated_refiner:
+  enabled: true
+  base_checkpoint: outputs/fortyeighthtry48_pmnet_prior_stage1_warmstart_try42_widen96_cont_t48_stage1_w96_chainA_4gpu/best_cgan.pt
+  refiner_arch: unet
+  refiner_base_channels: 48
+  refiner_resume_checkpoint: null
 
 target_columns:
   - path_loss

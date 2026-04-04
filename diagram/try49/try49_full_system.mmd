@@ -1,0 +1,62 @@
+%%{init: {'flowchart': {'nodeSpacing': 26, 'rankSpacing': 34}} }%%
+flowchart TB
+    subgraph PRIOR[Inputs and prior summary]
+      direction TB
+      I1[Topology + LoS + distance + antenna scalar]
+      I2[Formula prior + confidence channel]
+      I3[X base -> X conf]
+      I1 --> I2 --> I3
+    end
+
+    subgraph S1[Stage 1: PMNet residual training]
+      direction TB
+      B1[PMNetResidualRegressor\nbase_channels = 112]
+      B2[pred_stage1 = prior + residual]
+      B3[best_cgan.pt checkpoint]
+      B4[scripts/export_stage1_outputs_hdf5.py]
+      B1 --> B2 --> B3 --> B4
+    end
+
+    subgraph EX[Stage 1 HDF5 export]
+      direction TB
+      E1[stage1_pred_norm_f16]
+      E2[stage1_pred_db_f16]
+      E3[stage1_error_db_f16]
+      E4[stage1_abs_error_db_f16]
+      E1 --> E2 --> E3 --> E4
+    end
+
+    subgraph S2[Stage 2: HDF5-backed tail refiner]
+      direction TB
+      C1[Stage1OutputDataset]
+      C2[UNetResidualRefiner]
+      C3[Residual delta + gate]
+      C4[final_pred = stage1_pred + delta]
+      C1 --> C2 --> C3 --> C4
+    end
+
+    subgraph QUEUE[Queued follow-up jobs]
+      direction TB
+      Q1[Stage2 job 1]
+      Q2[Stage2 job 2]
+      Q3[Stage1 job 1]
+      Q4[Stage1 job 2]
+      Q1 --> Q2 --> Q3 --> Q4
+    end
+
+    I3 --> B1
+    B4 --> E1
+    E4 --> C1
+    C4 --> Q1
+
+    classDef prior fill:#d6f0ff,stroke:#0077aa,stroke-width:1px,color:#003344;
+    classDef stage1 fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+    classDef export fill:#eef2ff,stroke:#4f46e5,stroke-width:1px,color:#1e1b4b;
+    classDef stage2 fill:#ffe8c7,stroke:#b16b00,stroke-width:1px,color:#5a3300;
+    classDef queue fill:#f0e2ff,stroke:#7a3db5,stroke-width:1px,color:#38185c;
+
+    class I1,I2,I3 prior;
+    class B1,B2,B3,B4 stage1;
+    class E1,E2,E3,E4 export;
+    class C1,C2,C3,C4 stage2;
+    class Q1,Q2,Q3,Q4 queue;

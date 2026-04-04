@@ -98,7 +98,7 @@ training:
 
 loss:
   lambda_recon: 0.0
-  lambda_gan: 0.015
+  lambda_gan: 0.0
   mse_weight: 1.0
   l1_weight: 0.1
   adversarial_loss: bce
@@ -113,7 +113,7 @@ multiscale_path_loss:
 prior_residual_path_loss:
   enabled: true
   use_formula_input_channel: true
-  optimize_residual_only: false
+  optimize_residual_only: true
   clamp_final_output: true
   loss_weight: 1.0
   mse_weight: 1.0
@@ -127,7 +127,7 @@ augmentation:
 
 runtime:
   device: cuda
-  output_dir: outputs/fortyeighthtry48_pmnet_prior_gan_fastbatch
+  output_dir: outputs/fortyeighthtry48_pmnet_prior_stage1
   resume_checkpoint: null
 
 target_columns:

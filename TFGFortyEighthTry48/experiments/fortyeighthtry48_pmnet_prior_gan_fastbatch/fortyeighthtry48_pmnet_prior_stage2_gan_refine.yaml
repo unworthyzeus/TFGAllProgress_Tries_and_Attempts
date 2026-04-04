@@ -127,8 +127,15 @@ augmentation:
 
 runtime:
   device: cuda
-  output_dir: outputs/fortyeighthtry48_pmnet_prior_gan_fastbatch
+  output_dir: outputs/fortyeighthtry48_pmnet_prior_stage2
   resume_checkpoint: null
+
+separated_refiner:
+  enabled: true
+  base_checkpoint: outputs/fortyeighthtry48_pmnet_prior_stage1_t48_stage1_sep_base_4gpu/best_cgan.pt
+  refiner_arch: unet
+  refiner_base_channels: 48
+  refiner_resume_checkpoint: null
 
 target_columns:
   - path_loss

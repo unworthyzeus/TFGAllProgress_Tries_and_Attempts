@@ -1,0 +1,47 @@
+%%{init: {'flowchart': {'nodeSpacing': 22, 'rankSpacing': 30}} }%%
+flowchart TB
+            subgraph TOP[Inputs and prior]
+                  direction LR
+                  IN["Input tensor x<br/>6 channels"] --> PRIOR["Calibrated physical prior map"]
+            end
+
+            subgraph STEM[Stem and encoder]
+                  direction TB
+                  S0["ConvNormAct 5x5 to 112"] --> S1["ResidualBlock 112"] --> E1["EncoderStage 1<br/>2 blocks, 112, stride 1"] --> E2["EncoderStage 2<br/>2 blocks, 224, stride 2"] --> E3["EncoderStage 3<br/>2 blocks, 448, stride 2"] --> E4["EncoderStage 4<br/>2 blocks, 896, stride 2"]
+            end
+
+            subgraph CTX[Dilated context]
+                  direction LR
+                  C1["DilatedContextBlock<br/>branches 1 / 2 / 4 / 8"] --> C2["Project back to 896"]
+            end
+
+            subgraph FPN[Top-down fusion]
+                  direction TB
+                  P4["lat4 896 to 448"] --> P3["lat3 + upsampled p4 to 448"] --> P2["lat2 + upsampled p3 to 224"] --> P1["lat1 + upsampled p2 to 112"] --> F["Concat p1 + upsampled p2 + upsampled p3"]
+            end
+
+            subgraph HEAD[Residual head]
+                  direction LR
+                  H1["ConvNormAct to 224"] --> H2["ResidualBlock 224"] --> H3["1x1 conv to 1 residual channel"] --> OUT["Residual output"]
+            end
+
+            ADD["prior + residual = stage1 prediction"]
+
+            IN --> S0
+            PRIOR --> ADD
+            E4 --> C1
+            C2 --> P4
+            F --> H1
+            OUT --> ADD
+
+      classDef in fill:#d6f0ff,stroke:#0077aa,stroke-width:1px,color:#003344;
+      classDef stem fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+      classDef ctx fill:#eef2ff,stroke:#4f46e5,stroke-width:1px,color:#1e1b4b;
+      classDef head fill:#fff1e6,stroke:#c2410c,stroke-width:1px,color:#431407;
+      classDef add fill:#f0e2ff,stroke:#7a3db5,stroke-width:1px,color:#38185c;
+
+      class IN,PRIOR in;
+      class S0,S1,E1,E2,E3,E4 stem;
+      class C1,C2,P4,P3,P2,P1,F ctx;
+      class H1,H2,H3,OUT head;
+      class ADD add;

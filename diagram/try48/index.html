@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Try48 Diagrams</title>
+  <style>
+    :root {
+      --bg: #f2f7f4;
+      --card: #ffffff;
+      --ink: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+    }
+    body { margin: 0; font-family: "Segoe UI", Tahoma, sans-serif; background: radial-gradient(circle at top right, #e6fffa, var(--bg)); color: var(--ink); }
+    .wrap { max-width: 1320px; margin: 20px auto; padding: 0 16px 24px; }
+    h1 { margin: 0 0 8px; color: #134e4a; }
+    .subtitle { margin: 0 0 16px; color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 16px; box-shadow: 0 8px 20px rgba(2,6,23,0.08); }
+    h2 { margin: 0 0 8px; font-size: 1.05rem; color: #0f172a; }
+    p { margin: 0 0 10px; color: var(--muted); font-size: 0.93rem; }
+    pre.mermaid { margin: 0; overflow-x: auto; background: #fcfffd; border-radius: 8px; padding: 8px; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, theme: "default", securityLevel: "loose" });
+  </script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Try48 Diagram Collection</h1>
+    <p class="subtitle">Unified page with all Try48 diagrams rendered directly from Mermaid source.</p>
+
+    <div class="card">
+      <h2>1. Full System Overview</h2>
+      <p>High-level end-to-end flow from inputs and prior through Stage1, Stage2, and chain execution.</p>
+      <pre class="mermaid">flowchart TB
+    %% Inputs
+    subgraph IN[Input Construction]
+      A1[Topology map]
+      A2[LoS mask]
+      A3[Distance map]
+      A4[Formula prior channel]
+      A5[Antenna height scalar channel]
+      AX[X tensor: 5 channels]
+      A1 --> AX
+      A2 --> AX
+      A3 --> AX
+      A4 --> AX
+      A5 --> AX
+    end
+
+    P[Physical prior map]
+
+    %% Stage 1
+    subgraph S1[Stage 1: PMNet Residual Training]
+      B1[PMNetResidualRegressor
+base_channels=96
+out=1 residual]
+      B2[pred_stage1 = prior + residual]
+      B3[best_cgan.pt checkpoint]
+      AX --> B1 --> B2 --> B3
+      P --> B2
+    end
+
+    %% Stage 2
+    subgraph S2[Stage 2: Separated Refiner + GAN]
+      C1[Frozen base PMNet
+loaded from Stage1 checkpoint]
+      C2[base_residual]
+      C3[base_pred = prior + base_residual]
+      C4[Refiner input concat
+X + base_pred + base_residual
+7 channels]
+      C5[UNetResidualRefiner
+out=1 delta residual]
+      C6[final_residual = base_residual + delta]
+      C7[final_pred = prior + final_residual]
+
+      D1[PatchDiscriminator
+condition: X 5ch plus target 1ch]
+      D2[GAN loss backprop to refiner]
+
+      AX --> C1 --> C2 --> C3 --> C4 --> C5 --> C6 --> C7
+      AX --> C4
+      P --> C3
+      P --> C7
+      AX --> D1
+      C7 --> D1 --> D2
+      D2 --> C5
+    end
+
+    %% Chains
+    subgraph CH[Execution Chains Current 4 jobs]
+      E1[Job1 ChainA Stage1 96ch]
+      E2[Job2 ChainA Stage2 UNet+GAN]
+      E3[Job3 ChainB Stage1 96ch]
+      E4[Job4 ChainB Stage2 UNet+GAN]
+      E1 --> E2 --> E3 --> E4
+    end
+
+    B3 --> E1
+
+    C7 --> M[Metrics
+RMSE, MAE, LoS/NLoS, regimes]
+
+    classDef input fill:#d6f0ff,stroke:#0077aa,stroke-width:1px,color:#003344;
+    classDef stage1 fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+    classDef stage2 fill:#ffe8c7,stroke:#b16b00,stroke-width:1px,color:#5a3300;
+    classDef chain fill:#f0e2ff,stroke:#7a3db5,stroke-width:1px,color:#38185c;
+    classDef metric fill:#ffe1e1,stroke:#b53939,stroke-width:1px,color:#4f1515;
+
+    class A1,A2,A3,A4,A5,AX,P input;
+    class B1,B2,B3 stage1;
+    class C1,C2,C3,C4,C5,C6,C7,D1,D2 stage2;
+    class E1,E2,E3,E4 chain;
+    class M metric;</pre>
+    </div>
+
+    <div class="card">
+      <h2>2. Combined Training and Inference Flow</h2>
+      <p>Stage1 to Stage2 training progression and how inference composes base and refiner outputs.</p>
+      <pre class="mermaid">flowchart TB
+    subgraph ST1[Stage1 Train PMNet 96]
+      S1A[Inputs 5 channels plus prior]
+      S1B[PMNet predicts residual]
+      S1C[Prediction prior plus residual]
+      S1D[Loss MSE and L1 residual path]
+      S1E[Save best stage1 checkpoint]
+      S1A --> S1B --> S1C --> S1D --> S1E
+    end
+
+    subgraph ST2[Stage2 Train UNet plus GAN]
+      S2A[Load stage1 checkpoint as frozen base]
+      S2B[Build refiner input from X and base pred and base residual]
+      S2C[UNet predicts delta residual]
+      S2D[Compose final prediction]
+      S2E[Patch discriminator scores fake and real]
+      S2F[Generator losses recon and adversarial]
+      S2G[Discriminator loss real fake]
+      S2H[Save best stage2 checkpoint]
+      S2A --> S2B --> S2C --> S2D --> S2E
+      S2D --> S2F --> S2H
+      S2E --> S2F
+      S2E --> S2G
+    end
+
+    subgraph INF[Inference Combination]
+      I1[Run PMNet base residual]
+      I2[Build refiner input 7 channels]
+      I3[Run UNet delta residual]
+      I4[Final residual base plus delta]
+      I5[Final prediction prior plus final residual]
+      I1 --> I2 --> I3 --> I4 --> I5
+    end
+
+    S1E --> S2A
+    S2H --> I1
+
+    subgraph EXEC[Current Scheduled Chains]
+      A1[ChainA stage1]
+      A2[ChainA stage2]
+      B1[ChainB stage1]
+      B2[ChainB stage2]
+      A1 --> A2 --> B1 --> B2
+    end
+
+    ST1 --> ST2 --> INF --> EXEC
+
+    classDef stage1 fill:#dcfce7,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef stage2 fill:#ffedd5,stroke:#c2410c,stroke-width:1px,color:#431407;
+    classDef infer fill:#dbeafe,stroke:#1d4ed8,stroke-width:1px,color:#172554;
+    classDef exec fill:#f3e8ff,stroke:#7e22ce,stroke-width:1px,color:#3b0764;
+
+    class S1A,S1B,S1C,S1D,S1E,ST1 stage1;
+    class S2A,S2B,S2C,S2D,S2E,S2F,S2G,S2H,ST2 stage2;
+    class I1,I2,I3,I4,I5,INF infer;
+    class A1,A2,B1,B2,EXEC exec;</pre>
+    </div>
+
+    <div class="card">
+      <h2>3. PMNet Detailed</h2>
+      <p>Encoder, context module, top-down fusion, and residual head.</p>
+      <pre class="mermaid">flowchart TB
+    IN[Input tensor 5 channels]
+
+    subgraph ENC[PMNet Encoder]
+      direction LR
+      S0[Stem conv 5x5 to 96]
+      S1[Residual block 96]
+      E1[Stage1 blocks 2 stride 1 width 96]
+      E2[Stage2 blocks 2 stride 2 width 192]
+      E3[Stage3 blocks 2 stride 2 width 384]
+      E4[Stage4 blocks 2 stride 2 width 768]
+
+      S0 --> S1 --> E1 --> E2 --> E3 --> E4
+    end
+
+    subgraph CTX[Dilated Context]
+      CSET[Parallel dilated branches 1 and 2 and 4 and 8]
+      CP[Concat and project]
+      CS[Context residual add]
+      CSET --> CP
+      CP --> CS
+    end
+
+    subgraph FPN[Top Down Fusion]
+      L4[Lat from context to 384]
+      L3[Lat from E3 to 384]
+      P3[P3 smooth 384]
+
+      T32[Map P3 to 192]
+      L2[Lat from E2 to 192]
+      P2[P2 smooth 192]
+
+      T21[Map P2 to 96]
+      L1[Lat from E1 to 96]
+      P1[P1 smooth 96]
+
+      FU[Upsample P2 and P3 to P1 size]
+      FC[Fuse concat 96 and 192 and 384]
+
+      L4 --> P3
+      L3 --> P3
+      P3 --> T32 --> P2
+      L2 --> P2
+      P2 --> T21 --> P1
+      L1 --> P1
+      P1 --> FU --> FC
+    end
+
+    subgraph HEAD[Prediction Head]
+      direction LR
+      H1[Conv block to 192]
+      H2[Residual block 192]
+      H3[Conv 1x1 to 1]
+      OUT[Residual output 1 channel]
+      H1 --> H2 --> H3 --> OUT
+    end
+
+    IN --> S0
+    E4 --> CSET
+    CS --> L4
+    E3 --> L3
+    E2 --> L2
+    E1 --> L1
+    FC --> H1
+
+    classDef block fill:#e6f4ff,stroke:#1d4ed8,stroke-width:1px,color:#0f172a;
+    classDef stage fill:#e9fbe9,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef out fill:#fff1e6,stroke:#c2410c,stroke-width:1px,color:#431407;
+
+    class IN,S0,S1,E1,E2,E3,E4,CSET,CP,CS,L4,L3,P3,T32,L2,P2,T21,L1,P1,FU,FC block;
+    class ENC,CTX,FPN stage;
+    class H1,H2,H3,OUT,HEAD out;</pre>
+    </div>
+
+    <div class="card">
+      <h2>4. UNet Plus GAN Detailed</h2>
+      <p>Frozen base PMNet, UNet refiner path, discriminator path, and losses.</p>
+      <pre class="mermaid">flowchart TB
+    X[Input tensor X 5 channels]
+    PR[Physical prior map 1 channel]
+    YR[Ground truth target 1 channel]
+
+    subgraph BASE[Frozen Base Generator]
+      B0[PMNet base from stage1 checkpoint]
+      BR[Base residual 1 channel]
+      BP[Base prediction prior plus base residual]
+      B0 --> BR --> BP
+    end
+
+    subgraph REF[UNet Refiner Generator]
+      RI[Refiner input 7 channels]
+      E1[Enc level1 width 48]
+      E2[Enc level2 width 96]
+      E3[Enc level3 width 192]
+      E4[Enc level4 width 384]
+      BN[Bottleneck width 768]
+      D4[Dec level4 with skip]
+      D3[Dec level3 with skip]
+      D2[Dec level2 with skip]
+      D1[Dec level1 with skip]
+      DO[Delta residual output 1 channel]
+      FR[Final residual base plus delta]
+      FP[Final prediction prior plus final residual]
+
+      RI --> E1 --> E2 --> E3 --> E4 --> BN --> D4 --> D3 --> D2 --> D1 --> DO --> FR --> FP
+    end
+
+    subgraph DIS[Patch Discriminator]
+      DI[Discriminator input 6 channels]
+      C1[Conv block 40]
+      C2[Conv block 80]
+      C3[Conv block 160]
+      C4[Conv block 320]
+      LO[Patch logits map]
+      C1 --> C2 --> C3 --> C4 --> LO
+    end
+
+    X --> B0
+    PR --> BP
+
+    X --> RI
+    BP --> RI
+    BR --> RI
+    BR --> FR
+    PR --> FP
+
+    X --> DI
+    FP --> DI
+
+    subgraph LOSSES[Training Signals]
+      L1[Recon loss MSE and L1 on final prediction]
+      L2[Adv loss from discriminator]
+      L3[Discriminator real fake BCE]
+    end
+
+    FP --> L1
+    YR --> L1
+    LO --> L2
+    LO --> L3
+    YR --> L3
+
+    L1 --> D1
+    L2 --> D1
+
+    classDef base fill:#e0f2fe,stroke:#0369a1,stroke-width:1px,color:#082f49;
+    classDef ref fill:#dcfce7,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef dis fill:#f3e8ff,stroke:#7e22ce,stroke-width:1px,color:#3b0764;
+    classDef loss fill:#fee2e2,stroke:#b91c1c,stroke-width:1px,color:#450a0a;
+
+    class X,PR,YR,B0,BR,BP base;
+    class RI,E1,E2,E3,E4,BN,D4,D3,D2,D1,DO,FR,FP ref;
+    class DI,C1,C2,C3,C4,LO dis;
+    class L1,L2,L3,LOSSES loss;</pre>
+    </div>
+
+    <div class="card">
+      <h2>5. Prior Detailed (Mathematical Flow)</h2>
+      <p>Geometry, physical prior, regime calibration, and residual composition usage.</p>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 36}} }%%
+flowchart TB
+    subgraph INPUTS[Inputs and Constants]
+      I0[Topology plus obstruction map]
+      I1[LoS map or p_los]
+      I2[Geometry x y and tx origin]
+      I3[h_tx and h_rx where h_tx is per sample from antenna_height_m or uav_height]
+      I4[f_ghz plus normalization and clip limits]
+      I0 --> I1 --> I2 --> I3 --> I4
+    end
+
+    subgraph GEO[Per Pixel Geometry]
+      G1[d2d from delta_x and delta_y]
+      G2[d3d_los from d2d and h_tx minus h_rx]
+      G3[d3d_ref from d2d and h_tx plus h_rx]
+      G1 --> G2 --> G3
+    end
+
+    subgraph PHY[Hybrid Physical Prior]
+      P1[FSPL_los from f_mhz and d3d_los_km]
+      P2[Two ray coherent LoS term]
+      P3[NLoS term via COST231 A2G branch]
+      P4[raw_prior_db from LoS and NLoS hybrid]
+      P1 --> P2
+      P2 --> P4
+      P3 --> P4
+    end
+
+    subgraph CAL[Regime Calibration]
+      C1[Detect regime from LoS and obstruction]
+      C2[Per regime polynomial y equals a2 x squared plus a1 x plus a0]
+      C3[y_los and y_nlos from raw_prior_db]
+      C4[prior_cal_db equals p_los y_los plus one minus p_los y_nlos]
+      C5[Clip prior_cal_db to min and max]
+      C1 --> C2 --> C3 --> C4 --> C5
+    end
+
+    subgraph USE[Residual Learning Usage]
+      U1[x_prior equals normalize prior_cal_db]
+      U2[r_star equals y_true_db minus prior_cal_db]
+      U3[Network predicts residual r_hat]
+      U4[y_hat_db equals prior_cal_db plus r_hat]
+      U1 --> U2 --> U3 --> U4
+    end
+
+    INPUTS --> GEO --> PHY --> CAL --> USE
+
+    I0 --> C1
+    I1 --> C1
+    I1 --> C4
+    G2 --> P1
+    G3 --> P2
+    P4 --> C3
+    C5 --> U1
+    C5 --> U4
+
+    classDef in fill:#e0f2fe,stroke:#0369a1,stroke-width:1px,color:#082f49;
+    classDef geo fill:#e8f5e9,stroke:#2e7d32,stroke-width:1px,color:#1b4332;
+    classDef phy fill:#dcfce7,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef cal fill:#ffedd5,stroke:#c2410c,stroke-width:1px,color:#431407;
+    classDef out fill:#ede9fe,stroke:#6d28d9,stroke-width:1px,color:#2e1065;
+
+    class I0,I1,I2,I3,I4,INPUTS in;
+    class G1,G2,G3,GEO geo;
+    class P1,P2,P3,P4,PHY phy;
+    class C1,C2,C3,C4,C5,CAL cal;
+    class U1,U2,U3,U4,USE out;</pre>
+    </div>
+  </div>
+</body>
+</html>

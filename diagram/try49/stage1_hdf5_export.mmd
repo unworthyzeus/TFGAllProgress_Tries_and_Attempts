@@ -1,0 +1,35 @@
+%%{init: {'flowchart': {'nodeSpacing': 26, 'rankSpacing': 30}} }%%
+flowchart TB
+    subgraph TRAIN[Stage 1 Training]
+      direction TB
+      T1[train_pmnet_prior_gan.py]
+      T2[prior_residual_path_loss\noptimize_residual_only = true]
+      T3[PMNetResidualRegressor\nbase_channels = 112]
+      T4[best_cgan.pt checkpoint]
+      T1 --> T2 --> T3 --> T4
+    end
+
+    subgraph EXPORT[Stage 1 export job]
+      direction TB
+      E1[scripts/export_stage1_outputs_hdf5.py]
+      E2[load best checkpoint]
+      E3[infer train and val splits]
+      E4[write stage1_pred_norm_f16]
+      E5[write stage1_pred_db_f16]
+      E6[write stage1_error_db_f16]
+      E7[write stage1_abs_error_db_f16]
+      E1 --> E2 --> E3 --> E4 --> E5 --> E6 --> E7
+    end
+
+    OUT[stage1_outputs_train.h5\nstage1_outputs_val.h5]
+
+    T4 --> E1
+    E7 --> OUT
+
+    classDef train fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+    classDef export fill:#eef2ff,stroke:#4f46e5,stroke-width:1px,color:#1e1b4b;
+    classDef hdf5 fill:#fff7ed,stroke:#c2410c,stroke-width:1px,color:#431407;
+
+    class T1,T2,T3,T4,TRAIN train;
+    class E1,E2,E3,E4,E5,E6,E7 export;
+    class OUT hdf5;

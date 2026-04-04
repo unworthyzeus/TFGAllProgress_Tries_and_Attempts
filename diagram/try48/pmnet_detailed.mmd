@@ -1,0 +1,72 @@
+flowchart TB
+    IN[Input tensor 5 channels]
+
+    subgraph ENC[PMNet Encoder]
+      direction LR
+      S0[Stem conv 5x5 to 96]
+      S1[Residual block 96]
+      E1[Stage1 blocks 2 stride 1 width 96]
+      E2[Stage2 blocks 2 stride 2 width 192]
+      E3[Stage3 blocks 2 stride 2 width 384]
+      E4[Stage4 blocks 2 stride 2 width 768]
+
+      S0 --> S1 --> E1 --> E2 --> E3 --> E4
+    end
+
+    subgraph CTX[Dilated Context]
+      CSET[Parallel dilated branches 1 and 2 and 4 and 8]
+      CP[Concat and project]
+      CS[Context residual add]
+      CSET --> CP
+      CP --> CS
+    end
+
+    subgraph FPN[Top Down Fusion]
+      L4[Lat from context to 384]
+      L3[Lat from E3 to 384]
+      P3[P3 smooth 384]
+
+      T32[Map P3 to 192]
+      L2[Lat from E2 to 192]
+      P2[P2 smooth 192]
+
+      T21[Map P2 to 96]
+      L1[Lat from E1 to 96]
+      P1[P1 smooth 96]
+
+      FU[Upsample P2 and P3 to P1 size]
+      FC[Fuse concat 96 and 192 and 384]
+
+      L4 --> P3
+      L3 --> P3
+      P3 --> T32 --> P2
+      L2 --> P2
+      P2 --> T21 --> P1
+      L1 --> P1
+      P1 --> FU --> FC
+    end
+
+    subgraph HEAD[Prediction Head]
+      direction LR
+      H1[Conv block to 192]
+      H2[Residual block 192]
+      H3[Conv 1x1 to 1]
+      OUT[Residual output 1 channel]
+      H1 --> H2 --> H3 --> OUT
+    end
+
+    IN --> S0
+    E4 --> CSET
+    CS --> L4
+    E3 --> L3
+    E2 --> L2
+    E1 --> L1
+    FC --> H1
+
+    classDef block fill:#e6f4ff,stroke:#1d4ed8,stroke-width:1px,color:#0f172a;
+    classDef stage fill:#e9fbe9,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef out fill:#fff1e6,stroke:#c2410c,stroke-width:1px,color:#431407;
+
+    class IN,S0,S1,E1,E2,E3,E4,CSET,CP,CS,L4,L3,P3,T32,L2,P2,T21,L1,P1,FU,FC block;
+    class ENC,CTX,FPN stage;
+    class H1,H2,H3,OUT,HEAD out;

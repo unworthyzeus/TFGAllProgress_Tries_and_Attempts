@@ -1,0 +1,76 @@
+flowchart TB
+    X[Input tensor X 5 channels]
+    PR[Physical prior map 1 channel]
+    YR[Ground truth target 1 channel]
+
+    subgraph BASE[Frozen Base Generator]
+      B0[PMNet base from stage1 checkpoint]
+      BR[Base residual 1 channel]
+      BP[Base prediction prior plus base residual]
+      B0 --> BR --> BP
+    end
+
+    subgraph REF[UNet Refiner Generator]
+      RI[Refiner input 7 channels]
+      E1[Enc level1 width 48]
+      E2[Enc level2 width 96]
+      E3[Enc level3 width 192]
+      E4[Enc level4 width 384]
+      BN[Bottleneck width 768]
+      D4[Dec level4 with skip]
+      D3[Dec level3 with skip]
+      D2[Dec level2 with skip]
+      D1[Dec level1 with skip]
+      DO[Delta residual output 1 channel]
+      FR[Final residual base plus delta]
+      FP[Final prediction prior plus final residual]
+
+      RI --> E1 --> E2 --> E3 --> E4 --> BN --> D4 --> D3 --> D2 --> D1 --> DO --> FR --> FP
+    end
+
+    subgraph DIS[Patch Discriminator]
+      DI[Discriminator input 6 channels]
+      C1[Conv block 40]
+      C2[Conv block 80]
+      C3[Conv block 160]
+      C4[Conv block 320]
+      LO[Patch logits map]
+      C1 --> C2 --> C3 --> C4 --> LO
+    end
+
+    X --> B0
+    PR --> BP
+
+    X --> RI
+    BP --> RI
+    BR --> RI
+    BR --> FR
+    PR --> FP
+
+    X --> DI
+    FP --> DI
+
+    subgraph LOSSES[Training Signals]
+      L1[Recon loss MSE and L1 on final prediction]
+      L2[Adv loss from discriminator]
+      L3[Discriminator real fake BCE]
+    end
+
+    FP --> L1
+    YR --> L1
+    LO --> L2
+    LO --> L3
+    YR --> L3
+
+    L1 --> D1
+    L2 --> D1
+
+    classDef base fill:#e0f2fe,stroke:#0369a1,stroke-width:1px,color:#082f49;
+    classDef ref fill:#dcfce7,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef dis fill:#f3e8ff,stroke:#7e22ce,stroke-width:1px,color:#3b0764;
+    classDef loss fill:#fee2e2,stroke:#b91c1c,stroke-width:1px,color:#450a0a;
+
+    class X,PR,YR,B0,BR,BP base;
+    class RI,E1,E2,E3,E4,BN,D4,D3,D2,D1,DO,FR,FP ref;
+    class DI,C1,C2,C3,C4,LO dis;
+    class L1,L2,L3,LOSSES loss;

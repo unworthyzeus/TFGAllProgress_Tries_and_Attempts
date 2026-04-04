@@ -1,0 +1,45 @@
+%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 34}} }%%
+flowchart TB
+    subgraph DATA[Frozen Stage 1 Outputs]
+      D1[stage1_outputs_train.h5]
+      D2[stage1_outputs_val.h5]
+      D3[Stage1OutputDataset]
+      D4[Distributed weighted sampler]
+      D5[stage1_abs_error_db_f16]
+      D1 --> D3
+      D2 --> D3
+      D3 --> D4
+      D3 --> D5
+    end
+
+    subgraph REF[Stage 2 Tail Refiner]
+      R1[Base inputs plus stage1 prediction channel]
+      R2[UNetResidualRefiner base_channels = 96]
+      R3[Residual delta]
+      R4[Gate head optional]
+      R5[final_pred = stage1_pred + delta]
+      D3 --> R1 --> R2 --> R3 --> R5
+      R2 --> R4
+      R4 --> R5
+    end
+
+    subgraph LOSS[Training Signals]
+      L1[Tail focus weights]
+      L2[Gate target from abs error]
+      L3[Residual loss]
+      L4[Final loss]
+      L5[Validation RMSE and MAE and tail metrics]
+      D4 --> L1
+      D5 --> L2
+      L1 --> L3
+      L2 --> L4
+      R5 --> L4 --> L5
+    end
+
+    classDef data fill:#e0f2fe,stroke:#0369a1,stroke-width:1px,color:#082f49;
+    classDef ref fill:#ffe8c7,stroke:#b16b00,stroke-width:1px,color:#5a3300;
+    classDef loss fill:#fce7f3,stroke:#be185d,stroke-width:1px,color:#831843;
+
+    class D1,D2,D3,D4,D5,DATA data;
+    class R1,R2,R3,R4,R5,REF ref;
+    class L1,L2,L3,L4,L5,LOSS loss;

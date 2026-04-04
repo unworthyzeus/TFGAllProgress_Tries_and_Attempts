@@ -1,0 +1,44 @@
+%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 36}} }%%
+flowchart TB
+    subgraph PRI[Prior Inputs]
+      I1[Formula prior normalized]
+      I2[LoS probability from mask]
+      I3[Distance map normalized]
+      I4[Obstruction density local mean]
+      I5[Antenna height scalar normalized]
+    end
+
+    subgraph CONF[Confidence Heuristic]
+      C1[conf_los = clamp p_los]
+      C2[conf_dist = exp minus alpha times distance]
+      C3[conf_obs = 1 minus obstruction density]
+      C4[confidence = weighted blend]
+      C5[confidence clipped to 0 to 1]
+      I2 --> C1 --> C4
+      I3 --> C2 --> C4
+      I4 --> C3 --> C4
+      C4 --> C5
+    end
+
+    subgraph STACK[Stage 1 Input Stack]
+      S1[X base = topology + LoS + distance + prior + antenna scalar]
+      S2[X conf = X base + confidence channel]
+      S3[Stage1 PMNet residual predictor]
+      S4[pred_stage1 = prior + residual]
+      I1 --> S1
+      I5 --> S1
+      C5 --> S2
+      S1 --> S3
+      S2 --> S3
+      S3 --> S4
+    end
+
+    PRI --> CONF --> STACK
+
+    classDef pri fill:#e0f2fe,stroke:#0369a1,stroke-width:1px,color:#082f49;
+    classDef conf fill:#ffedd5,stroke:#c2410c,stroke-width:1px,color:#431407;
+    classDef stack fill:#dcfce7,stroke:#15803d,stroke-width:1px,color:#052e16;
+
+    class I1,I2,I3,I4,I5,PRI pri;
+    class C1,C2,C3,C4,C5,CONF conf;
+    class S1,S2,S3,S4,STACK stack;

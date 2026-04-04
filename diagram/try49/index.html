@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Try49 Diagrams</title>
+  <style>
+    :root {
+      --bg: #f2f7f4;
+      --card: #ffffff;
+      --ink: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+      --accent: #0f766e;
+    }
+    body { margin: 0; font-family: "Segoe UI", Tahoma, sans-serif; background: radial-gradient(circle at top right, #e6fffa, var(--bg)); color: var(--ink); }
+    .wrap { max-width: 1320px; margin: 20px auto; padding: 0 16px 24px; }
+    h1 { margin: 0 0 8px; color: #134e4a; }
+    .subtitle { margin: 0 0 16px; color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 16px; box-shadow: 0 8px 20px rgba(2,6,23,0.08); }
+    h2 { margin: 0 0 8px; font-size: 1.05rem; color: #0f172a; }
+    p { margin: 0 0 10px; color: var(--muted); font-size: 0.93rem; }
+    pre.mermaid { margin: 0 auto; overflow-x: auto; background: #fcfffd; border-radius: 8px; padding: 8px; }
+    pre.mermaid svg { display: block; margin: 0 auto; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, theme: "default", securityLevel: "loose" });
+  </script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Try49 Diagram Collection</h1>
+    <p class="subtitle">Prior, stage1 export, stage2 refiner, and the stage-level model diagrams for Try49.</p>
+
+    <div class="card">
+      <h2>1. Complete Try49 Pipeline</h2>
+      <p>Shows the serialized queue: stage1, HDF5 export, stage2 refiner, then the two follow-up stage1 jobs.</p>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 26, 'rankSpacing': 34}} }%%
+flowchart TB
+    subgraph PRIOR[Inputs and prior summary]
+      direction TB
+      I1[Topology + LoS + distance + antenna scalar]
+      I2[Formula prior + confidence channel]
+      I3[X base -> X conf]
+      I1 --> I2 --> I3
+    end
+
+    subgraph S1[Stage 1: PMNet residual training]
+      direction TB
+      B1[PMNetResidualRegressor\nbase_channels = 112]
+      B2[pred_stage1 = prior + residual]
+      B3[best_cgan.pt checkpoint]
+      B4[scripts/export_stage1_outputs_hdf5.py]
+      B1 --> B2 --> B3 --> B4
+    end
+
+    subgraph EX[Stage 1 HDF5 export]
+      direction TB
+      E1[stage1_pred_norm_f16]
+      E2[stage1_pred_db_f16]
+      E3[stage1_error_db_f16]
+      E4[stage1_abs_error_db_f16]
+      E1 --> E2 --> E3 --> E4
+    end
+
+    subgraph S2[Stage 2: HDF5-backed tail refiner]
+      direction TB
+      C1[Stage1OutputDataset]
+      C2[UNetResidualRefiner]
+      C3[Residual delta + gate]
+      C4[final_pred = stage1_pred + delta]
+      C1 --> C2 --> C3 --> C4
+    end
+
+    subgraph QUEUE[Queued follow-up jobs]
+      direction TB
+      Q1[Stage2 job 1]
+      Q2[Stage2 job 2]
+      Q3[Stage1 job 1]
+      Q4[Stage1 job 2]
+      Q1 --> Q2 --> Q3 --> Q4
+    end
+
+    I3 --> B1
+    B4 --> E1
+    E4 --> C1
+    C4 --> Q1</pre>
+    </div>
+
+    <div class="card">
+      <h2>2. Prior Confidence Flow</h2>
+      <p>How LoS, distance, and obstruction features produce the confidence channel used by stage1.</p>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 36}} }%%
+flowchart TB
+    subgraph PRI[Prior Inputs]
+      I1[Formula prior normalized]
+      I2[LoS probability from mask]
+      I3[Distance map normalized]
+      I4[Obstruction density local mean]
+      I5[Antenna height scalar normalized]
+    end
+
+    subgraph CONF[Confidence Heuristic]
+      C1[conf_los = clamp p_los]
+      C2[conf_dist = exp minus alpha times distance]
+      C3[conf_obs = 1 minus obstruction density]
+      C4[confidence = weighted blend]
+      C5[confidence clipped to 0 to 1]
+      I2 --> C1 --> C4
+      I3 --> C2 --> C4
+      I4 --> C3 --> C4
+      C4 --> C5
+    end
+
+    subgraph STACK[Stage 1 Input Stack]
+      S1[X base = topology + LoS + distance + prior + antenna scalar]
+      S2[X conf = X base + confidence channel]
+      S3[Stage1 PMNet residual predictor]
+      S4[pred_stage1 = prior + residual]
+      I1 --> S1
+      I5 --> S1
+      C5 --> S2
+      S1 --> S3
+      S2 --> S3
+      S3 --> S4
+    end
+
+    PRI --> CONF --> STACK</pre>
+    </div>
+
+    <div class="card">
+      <h2>3. Stage 1 HDF5 Export</h2>
+      <p>Exports frozen stage1 predictions so stage2 can train without keeping stage1 in VRAM.</p>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 26, 'rankSpacing': 30}} }%%
+flowchart TB
+    subgraph TRAIN[Stage 1 Training]
+      direction TB
+      T1[train_pmnet_prior_gan.py]
+      T2[prior_residual_path_loss\noptimize_residual_only = true]
+      T3[PMNetResidualRegressor\nbase_channels = 112]
+      T4[best_cgan.pt checkpoint]
+      T1 --> T2 --> T3 --> T4
+    end
+
+    subgraph EXPORT[Stage 1 export job]
+      direction TB
+      E1[scripts/export_stage1_outputs_hdf5.py]
+      E2[load best checkpoint]
+      E3[infer train and val splits]
+      E4[write stage1_pred_norm_f16]
+      E5[write stage1_pred_db_f16]
+      E6[write stage1_error_db_f16]
+      E7[write stage1_abs_error_db_f16]
+      E1 --> E2 --> E3 --> E4 --> E5 --> E6 --> E7
+    end
+
+    OUT[stage1_outputs_train.h5\nstage1_outputs_val.h5]
+
+    T4 --> E1
+    E7 --> OUT</pre>
+    </div>
+
+    <div class="card">
+      <h2>4. Stage 2 Tail Refiner</h2>
+      <p>Consumes frozen HDF5 outputs and focuses on the error tail with residual correction and a gate.</p>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 34}} }%%
+flowchart TB
+    subgraph DATA[Frozen Stage 1 Outputs]
+      D1[stage1_outputs_train.h5]
+      D2[stage1_outputs_val.h5]
+      D3[Stage1OutputDataset]
+      D4[Distributed weighted sampler]
+      D5[stage1_abs_error_db_f16]
+      D1 --> D3
+      D2 --> D3
+      D3 --> D4
+      D3 --> D5
+    end
+
+    subgraph REF[Stage 2 Tail Refiner]
+      R1[Base inputs plus stage1 prediction channel]
+      R2[UNetResidualRefiner base_channels = 96]
+      R3[Residual delta]
+      R4[Gate head optional]
+      R5[final_pred = stage1_pred + delta]
+      D3 --> R1 --> R2 --> R3 --> R5
+      R2 --> R4
+      R4 --> R5
+    end
+
+    subgraph LOSS[Training Signals]
+      L1[Tail focus weights]
+      L2[Gate target from abs error]
+      L3[Residual loss]
+      L4[Final loss]
+      L5[Validation RMSE and MAE and tail metrics]
+      D4 --> L1
+      D5 --> L2
+      L1 --> L3
+      L2 --> L4
+      R5 --> L4 --> L5
+    end</pre>
+    </div>
+
+    <div class="card">
+      <h2>5. Stage 1 PMNet Model</h2>
+      <p>Stem conv, residual encoder, dilated context, FPN fusion, and residual prediction head.</p>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 22, 'rankSpacing': 30}} }%%
+flowchart TB
+    subgraph TOP[Inputs and prior]
+      direction LR
+      IN["Input tensor x<br/>6 channels"] --> PRIOR["Calibrated physical prior map"]
+    end
+
+    subgraph STEM[Stem and encoder]
+      direction TB
+      S0["ConvNormAct 5x5 to 112"] --> S1["ResidualBlock 112"] --> E1["EncoderStage 1<br/>2 blocks, 112, stride 1"] --> E2["EncoderStage 2<br/>2 blocks, 224, stride 2"] --> E3["EncoderStage 3<br/>2 blocks, 448, stride 2"] --> E4["EncoderStage 4<br/>2 blocks, 896, stride 2"]
+    end
+
+    subgraph CTX[Dilated context]
+      direction LR
+      C1["DilatedContextBlock<br/>branches 1 / 2 / 4 / 8"] --> C2["Project back to 896"]
+    end
+
+    subgraph FPN[Top-down fusion]
+      direction TB
+      P4["lat4 896 to 448"] --> P3["lat3 + upsampled p4 to 448"] --> P2["lat2 + upsampled p3 to 224"] --> P1["lat1 + upsampled p2 to 112"] --> F["Concat p1 + upsampled p2 + upsampled p3"]
+    end
+
+    subgraph HEAD[Residual head]
+      direction LR
+      H1["ConvNormAct to 224"] --> H2["ResidualBlock 224"] --> H3["1x1 conv to 1 residual channel"] --> OUT["Residual output"]
+    end
+
+    ADD["prior + residual = stage1 prediction"]
+
+    IN --> S0
+    PRIOR --> ADD
+    E4 --> C1
+    C2 --> P4
+    F --> H1
+    OUT --> ADD</pre>
+    </div>
+
+    <div class="card">
+      <h2>6. Stage 2 Tail Refiner Model</h2>
+      <p>Frozen stage1 base, HDF5-backed refiner input, U-Net delta and gate, and the tail-focused loss path.</p>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 22, 'rankSpacing': 30}} }%%
+flowchart TB
+    subgraph DATA[Frozen stage1 outputs]
+      direction LR
+      INPUT["Stage1OutputDataset batch<br/>base inputs + stage1 prediction"] --> ABSERR["stage1_abs_error_db_f16"]
+    end
+
+    subgraph BASEPIPE[Frozen stage1 base]
+      direction TB
+      BASE["PMNetResidualRegressor<br/>base_channels = 112"] --> BASERES["base_residual"] --> BASEPRED["base_pred = prior + base_residual"]
+    end
+
+    PRIOR["Calibrated prior map"]
+    REFIN["Refiner input concat<br/>x + base_pred + base_residual"]
+
+    subgraph UNET[UNetResidualRefiner]
+      direction TB
+      E1["Enc1 96"] --> E2["Enc2 192 stride 2"] --> E3["Enc3 384 stride 2"] --> BN["Bottleneck 768 stride 2"] --> D3["Up3 + skip"] --> D2["Up2 + skip"] --> D1["Up1 + skip"] --> O["delta_raw + gate_logits"]
+    end
+
+    DELTA["delta = delta_raw * sigmoid(gate_logits)"]
+    FINALRES["final_residual = base_residual + delta"]
+    FINALPRED["final_pred = prior + final_residual"]
+
+    subgraph SIGNALS[Tail signals]
+      direction LR
+      GATE["gate target from abs error"] --> LOSS["Residual + gate + final losses"]
+      WEIGHT["tail focus weights"] --> LOSS
+    end
+
+    INPUT --> BASE
+    INPUT --> ABSERR
+    BASE --> BASERES
+    BASERES --> BASEPRED
+    PRIOR --> BASEPRED
+    INPUT --> REFIN
+    BASEPRED --> REFIN
+    BASERES --> REFIN
+    REFIN --> E1
+    O --> DELTA
+    DELTA --> FINALRES
+    BASERES --> FINALRES
+    PRIOR --> FINALPRED
+    FINALRES --> FINALPRED
+    ABSERR --> GATE
+    ABSERR --> WEIGHT
+    FINALPRED --> LOSS</pre>
+    </div>
+  </div>
+</body>
+</html>

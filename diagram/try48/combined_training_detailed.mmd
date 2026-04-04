@@ -1,0 +1,56 @@
+flowchart TB
+    subgraph ST1[Stage1 Train PMNet 96]
+      S1A[Inputs 5 channels plus prior]
+      S1B[PMNet predicts residual]
+      S1C[Prediction prior plus residual]
+      S1D[Loss MSE and L1 residual path]
+      S1E[Save best stage1 checkpoint]
+      S1A --> S1B --> S1C --> S1D --> S1E
+    end
+
+    subgraph ST2[Stage2 Train UNet plus GAN]
+      S2A[Load stage1 checkpoint as frozen base]
+      S2B[Build refiner input from X and base pred and base residual]
+      S2C[UNet predicts delta residual]
+      S2D[Compose final prediction]
+      S2E[Patch discriminator scores fake and real]
+      S2F[Generator losses recon and adversarial]
+      S2G[Discriminator loss real fake]
+      S2H[Save best stage2 checkpoint]
+      S2A --> S2B --> S2C --> S2D --> S2E
+      S2D --> S2F --> S2H
+      S2E --> S2F
+      S2E --> S2G
+    end
+
+    subgraph INF[Inference Combination]
+      I1[Run PMNet base residual]
+      I2[Build refiner input 7 channels]
+      I3[Run UNet delta residual]
+      I4[Final residual base plus delta]
+      I5[Final prediction prior plus final residual]
+      I1 --> I2 --> I3 --> I4 --> I5
+    end
+
+    S1E --> S2A
+    S2H --> I1
+
+    subgraph EXEC[Current Scheduled Chains]
+      A1[ChainA stage1]
+      A2[ChainA stage2]
+      B1[ChainB stage1]
+      B2[ChainB stage2]
+      A1 --> A2 --> B1 --> B2
+    end
+
+    ST1 --> ST2 --> INF --> EXEC
+
+    classDef stage1 fill:#dcfce7,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef stage2 fill:#ffedd5,stroke:#c2410c,stroke-width:1px,color:#431407;
+    classDef infer fill:#dbeafe,stroke:#1d4ed8,stroke-width:1px,color:#172554;
+    classDef exec fill:#f3e8ff,stroke:#7e22ce,stroke-width:1px,color:#3b0764;
+
+    class S1A,S1B,S1C,S1D,S1E,ST1 stage1;
+    class S2A,S2B,S2C,S2D,S2E,S2F,S2G,S2H,ST2 stage2;
+    class I1,I2,I3,I4,I5,INF infer;
+    class A1,A2,B1,B2,EXEC exec;

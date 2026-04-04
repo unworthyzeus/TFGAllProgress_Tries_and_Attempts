@@ -53,11 +53,11 @@ data:
   prefetch_factor: 8
 
 model:
-  base_channels: 120
+  base_channels: 72
   disc_base_channels: 40
   disc_norm_type: group
   disc_input_downsample_factor: 1
-  encoder_blocks: [3, 3, 4, 4]
+  encoder_blocks: [2, 2, 2, 2]
   context_dilations: [1, 2, 4, 8]
   dropout: 0.05
   gradient_checkpointing: true
@@ -98,7 +98,7 @@ training:
 
 loss:
   lambda_recon: 0.0
-  lambda_gan: 0.015
+  lambda_gan: 0.0
   mse_weight: 1.0
   l1_weight: 0.1
   adversarial_loss: bce
@@ -113,7 +113,7 @@ multiscale_path_loss:
 prior_residual_path_loss:
   enabled: true
   use_formula_input_channel: true
-  optimize_residual_only: false
+  optimize_residual_only: true
   clamp_final_output: true
   loss_weight: 1.0
   mse_weight: 1.0
@@ -127,8 +127,8 @@ augmentation:
 
 runtime:
   device: cuda
-  output_dir: outputs/fortyeighthtry48_pmnet_prior_gan_fastbatch
-  resume_checkpoint: null
+  output_dir: outputs/fortyeighthtry48_pmnet_prior_stage1_warmstart_try42
+  resume_checkpoint: /scratch/nas/3/gmoreno/TFGpractice/TFGFortySecondTry42/outputs/fortysecondtry42_pmnet_prior_residual_t42_pmnet_prior_residual_1gpu/epoch_20_cgan.pt
 
 target_columns:
   - path_loss

@@ -1,15 +1,15 @@
 #!/bin/bash
-# Try 48 fast-batch variant: smaller PMNet + prior + light PatchGAN - 2 GPUs
-#SBATCH --job-name=ckm-t48-fast-2gpu
+# Try 48 fast-batch variant - 4 GPUs, bigger PMNet, batch_size=1
+#SBATCH --job-name=ckm-t48-fast-4gpu
 #SBATCH -A gpu
 #SBATCH -p gpu
 #SBATCH --qos=medium_gpu
-#SBATCH --gres=gpu:rtx2080:2
-#SBATCH --cpus-per-task=24
-#SBATCH --mem=96G
-#SBATCH --time=2-00:00:00
-#SBATCH --output=logs_train_fortyeighthtry48_pmnet_prior_gan_fastbatch_2gpu_%j.out
-#SBATCH --error=logs_train_fortyeighthtry48_pmnet_prior_gan_fastbatch_2gpu_%j.err
+#SBATCH --gres=gpu:rtx2080:4
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=120G
+#SBATCH --time=0-04:00:00
+#SBATCH --output=logs_train_fortyeighthtry48_pmnet_prior_gan_fastbatch_4gpu_%j.out
+#SBATCH --error=logs_train_fortyeighthtry48_pmnet_prior_gan_fastbatch_4gpu_%j.err
 
 set -euo pipefail
 
@@ -18,8 +18,8 @@ TRAIN_SCRIPT=${TRAIN_SCRIPT:-train_pmnet_prior_gan.py}
 PYTHON_BIN=${PYTHON_BIN:-python}
 TORCHRUN_BIN=${TORCHRUN_BIN:-torchrun}
 VENV_PATH=${VENV_PATH:-/scratch/nas/3/gmoreno/tf_env/bin/activate}
-OUTPUT_SUFFIX=${OUTPUT_SUFFIX:-t48_pmnet_prior_gan_fastbatch_2gpu}
-MASTER_PORT=${MASTER_PORT:-29620}
+OUTPUT_SUFFIX=${OUTPUT_SUFFIX:-t48_pmnet_prior_gan_fastbatch_4gpu_big}
+MASTER_PORT=${MASTER_PORT:-29621}
 HDF5_PATH=${HDF5_PATH:-/scratch/nas/3/gmoreno/TFGpractice/Datasets/CKM_Dataset_270326.h5}
 PRECOMPUTE_PRIOR_CACHE=${PRECOMPUTE_PRIOR_CACHE:-0}
 PRECOMPUTE_PRIOR_HDF5=${PRECOMPUTE_PRIOR_HDF5:-0}
@@ -28,7 +28,7 @@ PRECOMPUTE_SPLITS=${PRECOMPUTE_SPLITS:-train val}
 source "$VENV_PATH"
 cd "$SLURM_SUBMIT_DIR"
 
-runtime_config=$(mktemp "${SLURM_TMPDIR:-/tmp}/ckm_pmnet_gan_fast_XXXX.yaml")
+runtime_config=$(mktemp "${SLURM_TMPDIR:-/tmp}/ckm_pmnet_gan_fast_4gpu_XXXX.yaml")
 cleanup() { rm -f "$runtime_config"; }
 trap cleanup EXIT
 
@@ -49,5 +49,5 @@ if [ "$PRECOMPUTE_PRIOR_HDF5" = "1" ]; then
   "$PYTHON_BIN" cluster/precompute_prior_hdf5.py --config "$runtime_config" --splits $PRECOMPUTE_SPLITS --overwrite
 fi
 
-"$TORCHRUN_BIN" --standalone --nnodes=1 --nproc-per-node=2 --master-port "$MASTER_PORT" \
+"$TORCHRUN_BIN" --standalone --nnodes=1 --nproc-per-node=4 --master-port "$MASTER_PORT" \
   "$TRAIN_SCRIPT" --config "$runtime_config"

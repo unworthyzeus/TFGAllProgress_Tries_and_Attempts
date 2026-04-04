@@ -1,0 +1,79 @@
+# Try48 Full System Diagram
+
+```mermaid
+flowchart LR
+    %% Inputs
+    subgraph IN[Input Construction]
+      A1[Topology map]
+      A2[LoS mask]
+      A3[Distance map]
+      A4[Formula prior channel]
+      A5[Antenna height scalar channel]
+      AX[X tensor: 5 channels]
+      A1 --> AX
+      A2 --> AX
+      A3 --> AX
+      A4 --> AX
+      A5 --> AX
+    end
+
+    P[Physical prior map]
+
+    %% Stage 1
+    subgraph S1[Stage 1: PMNet Residual Training]
+      B1[PMNetResidualRegressor\nbase_channels=96\nout=1 residual]
+      B2[pred_stage1 = prior + residual]
+      B3[best_cgan.pt checkpoint]
+      AX --> B1 --> B2 --> B3
+      P --> B2
+    end
+
+    %% Stage 2
+    subgraph S2[Stage 2: Separated Refiner + GAN]
+      C1[Frozen base PMNet\nloaded from Stage1 checkpoint]
+      C2[base_residual]
+      C3[base_pred = prior + base_residual]
+      C4[Refiner input concat\nX + base_pred + base_residual\n7 channels]
+      C5[UNetResidualRefiner\nout=1 delta residual]
+      C6[final_residual = base_residual + delta]
+      C7[final_pred = prior + final_residual]
+
+      D1[PatchDiscriminator\ncondition: X 5ch plus target 1ch]
+      D2[GAN loss backprop to refiner]
+
+      AX --> C1 --> C2 --> C3 --> C4 --> C5 --> C6 --> C7
+      AX --> C4
+      P --> C3
+      P --> C7
+      AX --> D1
+      C7 --> D1 --> D2
+      D2 --> C5
+    end
+
+    %% Chains
+    subgraph CH[Execution Chains (Current 4 jobs)]
+      E1[Job1 ChainA Stage1 96ch]
+      E2[Job2 ChainA Stage2 UNet+GAN]
+      E3[Job3 ChainB Stage1 96ch]
+      E4[Job4 ChainB Stage2 UNet+GAN]
+      E1 --> E2
+      E3 --> E4
+    end
+
+    B3 --> E1
+    B3 --> E3
+
+    C7 --> M[Metrics\nRMSE, MAE, LoS/NLoS, regimes]
+
+    classDef input fill:#d6f0ff,stroke:#0077aa,stroke-width:1px,color:#003344;
+    classDef stage1 fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+    classDef stage2 fill:#ffe8c7,stroke:#b16b00,stroke-width:1px,color:#5a3300;
+    classDef chain fill:#f0e2ff,stroke:#7a3db5,stroke-width:1px,color:#38185c;
+    classDef metric fill:#ffe1e1,stroke:#b53939,stroke-width:1px,color:#4f1515;
+
+    class A1,A2,A3,A4,A5,AX,P input;
+    class B1,B2,B3 stage1;
+    class C1,C2,C3,C4,C5,C6,C7,D1,D2 stage2;
+    class E1,E2,E3,E4 chain;
+    class M metric;
+```

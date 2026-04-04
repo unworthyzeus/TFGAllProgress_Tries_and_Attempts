@@ -18,9 +18,11 @@ data:
     meters_per_pixel: 1.0
     frequency_ghz: 7.125
     receiver_height_m: 1.5
-    cache_version: try47_exact_port_v1
+    include_confidence_channel: true
+    confidence_kernel_size: 31
+    cache_version: try49_prior_conf_v1
     cache_enabled: false
-    cache_dir: prior_cache/try47_regime_obstruction_exact_port
+    cache_dir: prior_cache/try49_prior_conf_v1
     precomputed_hdf5: ""
   path_loss_obstruction_features:
     enabled: false
@@ -53,11 +55,11 @@ data:
   prefetch_factor: 8
 
 model:
-  base_channels: 120
+  base_channels: 112
   disc_base_channels: 40
   disc_norm_type: group
   disc_input_downsample_factor: 1
-  encoder_blocks: [3, 3, 4, 4]
+  encoder_blocks: [2, 2, 2, 2]
   context_dilations: [1, 2, 4, 8]
   dropout: 0.05
   gradient_checkpointing: true
@@ -98,7 +100,7 @@ training:
 
 loss:
   lambda_recon: 0.0
-  lambda_gan: 0.015
+  lambda_gan: 0.0
   mse_weight: 1.0
   l1_weight: 0.1
   adversarial_loss: bce
@@ -113,7 +115,7 @@ multiscale_path_loss:
 prior_residual_path_loss:
   enabled: true
   use_formula_input_channel: true
-  optimize_residual_only: false
+  optimize_residual_only: true
   clamp_final_output: true
   loss_weight: 1.0
   mse_weight: 1.0
@@ -127,8 +129,8 @@ augmentation:
 
 runtime:
   device: cuda
-  output_dir: outputs/fortyeighthtry48_pmnet_prior_gan_fastbatch
-  resume_checkpoint: null
+  output_dir: outputs/fortyninthtry49_pmnet_prior_stage1
+  resume_checkpoint: outputs/fortyninthtry49_pmnet_prior_stage1_t49_stage1_w112_4gpu/best_cgan.pt
 
 target_columns:
   - path_loss

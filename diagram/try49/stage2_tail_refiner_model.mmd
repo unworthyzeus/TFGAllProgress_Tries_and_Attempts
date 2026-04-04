@@ -1,0 +1,58 @@
+%%{init: {'flowchart': {'nodeSpacing': 22, 'rankSpacing': 30}} }%%
+flowchart TB
+    subgraph DATA[Frozen stage1 outputs]
+      direction LR
+      INPUT["Stage1OutputDataset batch<br/>base inputs + stage1 prediction"] --> ABSERR["stage1_abs_error_db_f16"]
+    end
+
+    subgraph BASEPIPE[Frozen stage1 base]
+      direction TB
+      BASE["PMNetResidualRegressor<br/>base_channels = 112"] --> BASERES["base_residual"] --> BASEPRED["base_pred = prior + base_residual"]
+    end
+
+    PRIOR["Calibrated prior map"]
+    REFIN["Refiner input concat<br/>x + base_pred + base_residual"]
+
+    subgraph UNET[UNetResidualRefiner]
+      direction TB
+      E1["Enc1 96"] --> E2["Enc2 192 stride 2"] --> E3["Enc3 384 stride 2"] --> BN["Bottleneck 768 stride 2"] --> D3["Up3 + skip"] --> D2["Up2 + skip"] --> D1["Up1 + skip"] --> O["delta_raw + gate_logits"]
+    end
+
+    DELTA["delta = delta_raw * sigmoid(gate_logits)"]
+    FINALRES["final_residual = base_residual + delta"]
+    FINALPRED["final_pred = prior + final_residual"]
+
+    subgraph SIGNALS[Tail signals]
+      direction LR
+      GATE["gate target from abs error"] --> LOSS["Residual + gate + final losses"]
+      WEIGHT["tail focus weights"] --> LOSS
+    end
+
+    INPUT --> BASE
+    INPUT --> ABSERR
+    BASE --> BASERES
+    BASERES --> BASEPRED
+    PRIOR --> BASEPRED
+    INPUT --> REFIN
+    BASEPRED --> REFIN
+    BASERES --> REFIN
+    REFIN --> E1
+    O --> DELTA
+    DELTA --> FINALRES
+    BASERES --> FINALRES
+    PRIOR --> FINALPRED
+    FINALRES --> FINALPRED
+    ABSERR --> GATE
+    ABSERR --> WEIGHT
+    FINALPRED --> LOSS
+
+    classDef data fill:#e0f2fe,stroke:#0369a1,stroke-width:1px,color:#082f49;
+    classDef base fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+    classDef ref fill:#ffe8c7,stroke:#b16b00,stroke-width:1px,color:#5a3300;
+    classDef aux fill:#f0e2ff,stroke:#7a3db5,stroke-width:1px,color:#38185c;
+    classDef loss fill:#fce7f3,stroke:#be185d,stroke-width:1px,color:#831843;
+
+    class INPUT,ABSERR data;
+    class BASE,BASERES,BASEPRED,PRIOR base;
+    class REFIN,E1,E2,E3,BN,D3,D2,D1,O,DELTA,FINALRES,FINALPRED ref;
+    class GATE,WEIGHT,LOSS aux;

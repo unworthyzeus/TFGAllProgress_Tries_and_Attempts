@@ -1,0 +1,67 @@
+%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 36}} }%%
+flowchart TB
+    subgraph INPUTS[Inputs and Constants]
+      I0[Topology plus obstruction map]
+      I1[LoS map or p_los]
+      I2[Geometry x y and tx origin]
+      I3[h_tx and h_rx where h_tx is per sample from antenna_height_m or uav_height]
+      I4[f_ghz plus normalization and clip limits]
+      I0 --> I1 --> I2 --> I3 --> I4
+    end
+
+    subgraph GEO[Per Pixel Geometry]
+      G1[d2d from delta_x and delta_y]
+      G2[d3d_los from d2d and h_tx minus h_rx]
+      G3[d3d_ref from d2d and h_tx plus h_rx]
+      G1 --> G2 --> G3
+    end
+
+    subgraph PHY[Hybrid Physical Prior]
+      P1[FSPL_los from f_mhz and d3d_los_km]
+      P2[Two ray coherent LoS term]
+      P3[NLoS term via COST231 A2G branch]
+      P4[raw_prior_db from LoS and NLoS hybrid]
+      P1 --> P2
+      P2 --> P4
+      P3 --> P4
+    end
+
+    subgraph CAL[Regime Calibration]
+      C1[Detect regime from LoS and obstruction]
+      C2[Per regime polynomial y equals a2 x squared plus a1 x plus a0]
+      C3[y_los and y_nlos from raw_prior_db]
+      C4[prior_cal_db equals p_los y_los plus one minus p_los y_nlos]
+      C5[Clip prior_cal_db to min and max]
+      C1 --> C2 --> C3 --> C4 --> C5
+    end
+
+    subgraph USE[Residual Learning Usage]
+      U1[x_prior equals normalize prior_cal_db]
+      U2[r_star equals y_true_db minus prior_cal_db]
+      U3[Network predicts residual r_hat]
+      U4[y_hat_db equals prior_cal_db plus r_hat]
+      U1 --> U2 --> U3 --> U4
+    end
+
+    INPUTS --> GEO --> PHY --> CAL --> USE
+
+    I0 --> C1
+    I1 --> C1
+    I1 --> C4
+    G2 --> P1
+    G3 --> P2
+    P4 --> C3
+    C5 --> U1
+    C5 --> U4
+
+    classDef in fill:#e0f2fe,stroke:#0369a1,stroke-width:1px,color:#082f49;
+    classDef geo fill:#e8f5e9,stroke:#2e7d32,stroke-width:1px,color:#1b4332;
+    classDef phy fill:#dcfce7,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef cal fill:#ffedd5,stroke:#c2410c,stroke-width:1px,color:#431407;
+    classDef out fill:#ede9fe,stroke:#6d28d9,stroke-width:1px,color:#2e1065;
+
+    class I0,I1,I2,I3,I4,INPUTS in;
+    class G1,G2,G3,GEO geo;
+    class P1,P2,P3,P4,PHY phy;
+    class C1,C2,C3,C4,C5,CAL cal;
+    class U1,U2,U3,U4,USE out;
