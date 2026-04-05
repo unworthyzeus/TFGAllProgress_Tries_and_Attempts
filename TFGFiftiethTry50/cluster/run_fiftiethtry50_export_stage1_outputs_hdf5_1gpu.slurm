@@ -1,0 +1,30 @@
+#!/bin/bash
+# Try 50 Stage1 export outputs HDF5 - 1 GPU
+#SBATCH --job-name=ckm-t50-stage1-export-hdf5-1gpu
+#SBATCH -A gpu
+#SBATCH -p gpu
+#SBATCH --qos=small_gpu
+#SBATCH --gres=gpu:rtx2080:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=0-04:00:00
+#SBATCH --output=logs_train_fiftiethtry50_stage1_export_hdf5_%j.out
+#SBATCH --error=logs_train_fiftiethtry50_stage1_export_hdf5_%j.err
+
+set -euo pipefail
+
+CONFIG_PATH=${CONFIG_PATH:-experiments/fiftiethtry50_pmnet_prior_gan_fastbatch/fiftiethtry50_pmnet_prior_stage1_widen112_resume.yaml}
+CHECKPOINT_PATH=${CHECKPOINT_PATH:-/scratch/nas/3/gmoreno/TFGpractice/TFGFortyNinthTry49/outputs/fortyninthtry49_pmnet_prior_stage1_t49_stage1_w112_4gpu/best_cgan.pt}
+OUTPUT_DIR=${OUTPUT_DIR:-outputs/fiftiethtry50_stage1_outputs_hdf5}
+PYTHON_BIN=${PYTHON_BIN:-python}
+VENV_PATH=${VENV_PATH:-/scratch/nas/3/gmoreno/tf_env/bin/activate}
+
+source "$VENV_PATH"
+cd "$SLURM_SUBMIT_DIR"
+
+"$PYTHON_BIN" scripts/export_stage1_outputs_hdf5.py \
+  --config "$CONFIG_PATH" \
+  --checkpoint "$CHECKPOINT_PATH" \
+  --output-dir "$OUTPUT_DIR" \
+  --splits train val \
+  --overwrite

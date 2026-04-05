@@ -225,6 +225,12 @@ The exported HDF5 files store:
 
 The stage2 refiner consumes the stage1 prediction and absolute error maps, then applies residual correction, uncertainty gating, and tail-focused weighting.
 
+## Why Augmentation Is Off
+- Try49 stage1 augmentation is disabled so the widened stage1 run produces a stable frozen prior and the exported HDF5 files remain reproducible.
+- Try49/Try50 stage2 augmentation is also disabled because the tail refiner appends frozen stage1 maps after the base sample; spatial augmentation would otherwise move the GT/input tensors but leave the stage1 maps out of sync.
+- A fixed seed only repeats the same random augmentation choices. It does not keep frozen HDF5 outputs aligned once the stage1 model or export settings change.
+- For this sequential chain, deterministic inputs are the safer default while debugging and rerunning the queue.
+
 ## Deprecated Try49 YAMLs
 - Removed the old top-level Try49 configs after switching to the widened 112-channel stage1 flow:
 	- `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_prior_gan_fastbatch/fortyninthtry49_pmnet_prior_stage1.yaml`

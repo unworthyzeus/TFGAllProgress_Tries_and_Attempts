@@ -13,19 +13,19 @@ data:
   non_ground_threshold: 0.0
   path_loss_formula_input:
     enabled: true
-    formula: hybrid_two_ray_cost231_a2g_nlos
-    regime_calibration_json: prior_calibration/regime_obstruction_train_only_from_try47.json
+    formula: hybrid_damped_coherent_two_ray_deepshadow_vinogradov_nlos
+    regime_calibration_json: prior_calibration/regime_obstruction_train_only_deepshadow_directml_quick.json
     meters_per_pixel: 1.0
     frequency_ghz: 7.125
     receiver_height_m: 1.5
     include_confidence_channel: true
     confidence_kernel_size: 31
-    cache_version: try49_prior_conf_v1
+    cache_version: try50_prior_conf_v3
     cache_enabled: false
-    cache_dir: prior_cache/try49_prior_conf_v1
+    cache_dir: prior_cache/try50_prior_conf_v3
     precomputed_hdf5: ""
   path_loss_obstruction_features:
-    enabled: false
+    enabled: true
     precomputed_hdf5: ../TFGFortySeventhTry47/precomputed/obstruction_features_u8.h5
     meters_per_pixel: 1.0
     angle_bins: 720
@@ -129,8 +129,8 @@ augmentation:
 
 runtime:
   device: cuda
-  output_dir: outputs/fortyninthtry49_pmnet_prior_stage1
-  resume_checkpoint: outputs/fortyninthtry49_pmnet_prior_stage1_t49_stage1_w112_4gpu/reduced_try49_epoch30_128_to_112.pt
+  output_dir: outputs/fiftiethtry50_pmnet_prior_stage1
+  resume_checkpoint: outputs/fiftiethtry50_pmnet_prior_stage1_t50_stage1_w112_4gpu/best_cgan.pt
 
 target_columns:
   - path_loss
