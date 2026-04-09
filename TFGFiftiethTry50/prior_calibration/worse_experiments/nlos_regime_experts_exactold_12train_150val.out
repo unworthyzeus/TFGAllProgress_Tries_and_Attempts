@@ -1,0 +1,122 @@
+[nlos-experts] try=TFGFiftiethTry50 dataset=CKM_Dataset_270326.h5 sample_frac=0.120 train_subset=1359/11326 val_subset=150/2427
+[nlos-experts] train sample 25/1359 rows=51200
+[nlos-experts] train sample 50/1359 rows=102400
+[nlos-experts] train sample 75/1359 rows=153600
+[nlos-experts] train sample 100/1359 rows=204800
+[nlos-experts] train sample 125/1359 rows=254790
+[nlos-experts] train sample 150/1359 rows=296195
+[nlos-experts] train sample 175/1359 rows=347395
+[nlos-experts] train sample 200/1359 rows=398595
+[nlos-experts] train sample 225/1359 rows=449795
+[nlos-experts] train sample 250/1359 rows=500995
+[nlos-experts] train sample 275/1359 rows=552195
+[nlos-experts] train sample 300/1359 rows=603395
+[nlos-experts] train sample 325/1359 rows=654595
+[nlos-experts] train sample 350/1359 rows=705795
+[nlos-experts] train sample 375/1359 rows=756995
+[nlos-experts] train sample 400/1359 rows=808195
+[nlos-experts] train sample 425/1359 rows=859395
+[nlos-experts] train sample 450/1359 rows=910595
+[nlos-experts] train sample 475/1359 rows=961664
+[nlos-experts] train sample 500/1359 rows=1012864
+[nlos-experts] train sample 525/1359 rows=1064064
+[nlos-experts] train sample 550/1359 rows=1115264
+[nlos-experts] train sample 575/1359 rows=1166464
+[nlos-experts] train sample 600/1359 rows=1217664
+[nlos-experts] train sample 625/1359 rows=1268864
+[nlos-experts] train sample 650/1359 rows=1320064
+[nlos-experts] train sample 675/1359 rows=1371264
+[nlos-experts] train sample 700/1359 rows=1422464
+[nlos-experts] train sample 725/1359 rows=1473664
+[nlos-experts] train sample 750/1359 rows=1524148
+[nlos-experts] train sample 775/1359 rows=1575348
+[nlos-experts] train sample 800/1359 rows=1626548
+[nlos-experts] train sample 825/1359 rows=1677748
+[nlos-experts] train sample 850/1359 rows=1728948
+[nlos-experts] train sample 875/1359 rows=1780148
+[nlos-experts] train sample 900/1359 rows=1830281
+[nlos-experts] train sample 925/1359 rows=1881481
+[nlos-experts] train sample 950/1359 rows=1932452
+[nlos-experts] train sample 975/1359 rows=1983652
+[nlos-experts] train sample 1000/1359 rows=2032804
+[nlos-experts] train sample 1025/1359 rows=2084004
+[nlos-experts] train sample 1050/1359 rows=2134584
+[nlos-experts] train sample 1075/1359 rows=2185784
+[nlos-experts] train sample 1100/1359 rows=2236984
+[nlos-experts] train sample 1125/1359 rows=2288184
+[nlos-experts] train sample 1150/1359 rows=2339384
+[nlos-experts] train sample 1175/1359 rows=2390584
+[nlos-experts] train sample 1200/1359 rows=2441784
+[nlos-experts] train sample 1225/1359 rows=2492984
+[nlos-experts] train sample 1250/1359 rows=2544184
+[nlos-experts] train sample 1275/1359 rows=2595384
+[nlos-experts] train sample 1300/1359 rows=2646584
+[nlos-experts] train sample 1325/1359 rows=2697784
+[nlos-experts] train sample 1350/1359 rows=2748984
+[nlos-experts] train sample 1359/1359 rows=2767416
+[nlos-experts] fitting global fallback hgbr
+[nlos-experts] skipping expert shallow_transition rows=13351
+[nlos-experts] fitting expert deep_shadow_canyon rows=894935
+[nlos-experts] fitting expert high_blocker_rooftop rows=243503
+[nlos-experts] fitting expert dense_clutter rows=1615627
+[nlos-experts] starting validation samples=150
+[nlos-experts] val sample 25/150 overall_rmse=24.7812
+[nlos-experts] val sample 50/150 overall_rmse=23.3506
+[nlos-experts] val sample 75/150 overall_rmse=23.6296
+[nlos-experts] val sample 100/150 overall_rmse=24.0289
+[nlos-experts] val sample 125/150 overall_rmse=24.7386
+[nlos-experts] val sample 150/150 overall_rmse=24.3604
+{
+  "try_dir": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50",
+  "config": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50\\experiments\\fiftiethtry50_pmnet_prior_gan_fastbatch\\fiftiethtry50_pmnet_prior_stage1_widen112_initial.yaml",
+  "dataset": "C:\\TFG\\TFGpractice\\Datasets\\CKM_Dataset_270326.h5",
+  "train_samples": 1359,
+  "val_samples": 150,
+  "train_nlos_pixels": 2767416,
+  "thresholds": {
+    "shadow_shallow_max": 0.07,
+    "break_shallow_max": 0.1,
+    "blocker_h_shallow_max": 0.1,
+    "blocker_c_shallow_max": 0.08,
+    "blocker_h_rooftop_min": 0.12,
+    "blocker_c_rooftop_max": 0.18,
+    "shadow_rooftop_max": 0.18,
+    "break_rooftop_max": 0.22,
+    "shadow_canyon_min": 0.18,
+    "break_canyon_min": 0.22,
+    "delta_clip_max": 30.0
+  },
+  "regime_rows": {
+    "shallow_transition": 13351,
+    "deep_shadow_canyon": 894935,
+    "high_blocker_rooftop": 243503,
+    "dense_clutter": 1615627
+  },
+  "metrics": {
+    "overall": {
+      "count": 30369914,
+      "rmse_db": 24.360364390679578,
+      "mae_db": 13.919657941415611
+    },
+    "LoS": {
+      "count": 20563784,
+      "rmse_db": 3.7236890605026605,
+      "mae_db": 2.959377268822339
+    },
+    "NLoS": {
+      "count": 9806130,
+      "rmse_db": 42.52983978008124,
+      "mae_db": 36.903734670011175
+    }
+  },
+  "model": {
+    "global_model": "HistGradientBoostingRegressor",
+    "expert_model": "HistGradientBoostingRegressor",
+    "expert_min_rows": 20000,
+    "trained_experts": {
+      "deep_shadow_canyon": true,
+      "high_blocker_rooftop": true,
+      "dense_clutter": true
+    }
+  }
+}

@@ -723,10 +723,12 @@ def main() -> None:
         pin_memory=is_cuda_device(device),
         persistent_workers=int(cfg["data"].get("num_workers", 6)) > 0,
     )
+    val_sampler = DistributedSampler(val_dataset, shuffle=False) if distributed else None
     val_loader = DataLoader(
         val_dataset,
-        batch_size=1,
+        batch_size=int(cfg["data"].get("val_batch_size", 1)),
         shuffle=False,
+        sampler=val_sampler,
         num_workers=int(cfg["data"].get("val_num_workers", cfg["data"].get("num_workers", 6))),
         pin_memory=is_cuda_device(device),
         persistent_workers=bool(cfg["data"].get("val_persistent_workers", cfg["data"].get("persistent_workers", False)))
@@ -768,6 +770,25 @@ def main() -> None:
 
     amp_enabled = bool(cfg["training"].get("amp", True)) and is_cuda_device(device)
     selection_metric = next(iter(dict(cfg["training"].get("selection_metrics", {"path_loss.rmse_physical": 1.0})).keys()))
+    validate_only = bool(cfg.get("runtime", {}).get("validate_only", False))
+
+    if validate_only:
+        val_epoch = max(start_epoch - 1, 0)
+        val_summary = evaluate_validation(
+            model.module if isinstance(model, DistributedDataParallel) else model,
+            val_loader,
+            device,
+            cfg,
+            amp_enabled,
+            distributed=distributed,
+            rank=rank,
+            world_size=world_size,
+        )
+        if is_main_process(rank):
+            write_validation_json(out_dir, val_epoch, val_summary, best_epoch=best_epoch, best_score=best_score)
+            print(json.dumps({"validate_only": True, "epoch": val_epoch, **val_summary}))
+        cleanup_distributed(distributed)
+        return
 
     try:
         for epoch in range(start_epoch, int(cfg["training"]["epochs"]) + 1):
@@ -810,21 +831,24 @@ def main() -> None:
                     }
                     torch.save(best_payload, out_dir / "best_tail_refiner.pt")
 
-                if epoch % int(cfg["training"].get("save_every", 5)) == 0:
-                    target_model = model.module if isinstance(model, DistributedDataParallel) else model
-                    torch.save(
-                        {
-                            "epoch": epoch,
-                            "best_epoch": best_epoch,
-                            "best_score": best_score,
-                            "model": target_model.state_dict(),
-                            "optimizer": optimizer.state_dict(),
-                            "scheduler": scheduler.state_dict() if scheduler is not None else None,
-                            "scaler": scaler.state_dict(),
-                            "config_path": args.config,
-                        },
-                        out_dir / f"epoch_{epoch}_tail_refiner.pt",
-                    )
+                target_model = model.module if isinstance(model, DistributedDataParallel) else model
+                epoch_ckpt_path = out_dir / f"epoch_{epoch}_tail_refiner.pt"
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "best_epoch": best_epoch,
+                        "best_score": best_score,
+                        "model": target_model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict() if scheduler is not None else None,
+                        "scaler": scaler.state_dict(),
+                        "config_path": args.config,
+                    },
+                    epoch_ckpt_path,
+                )
+                prev_epoch_ckpt_path = out_dir / f"epoch_{epoch - 1}_tail_refiner.pt"
+                if prev_epoch_ckpt_path.exists():
+                    prev_epoch_ckpt_path.unlink()
 
                 write_validation_json(out_dir, epoch, val_summary, best_epoch=best_epoch, best_score=best_score)
                 print(json.dumps({"epoch": epoch, "tail_refiner_loss": train_loss, selection_metric: current_score}))

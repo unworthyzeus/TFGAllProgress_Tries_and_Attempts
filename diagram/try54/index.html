@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Try54 Diagrams</title>
+  <style>
+    :root {
+      --bg: #f2f7f4;
+      --card: #ffffff;
+      --ink: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+    }
+    body { margin: 0; font-family: "Segoe UI", Tahoma, sans-serif; background: radial-gradient(circle at top right, #e6fffa, var(--bg)); color: var(--ink); }
+    .wrap { max-width: 1320px; margin: 20px auto; padding: 0 16px 24px; }
+    h1 { margin: 0 0 8px; color: #134e4a; }
+    .subtitle { margin: 0 0 16px; color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 16px; box-shadow: 0 8px 20px rgba(2,6,23,0.08); }
+    h2 { margin: 0 0 8px; font-size: 1.05rem; color: #0f172a; }
+    p { margin: 0 0 10px; color: var(--muted); font-size: 0.93rem; }
+    .links { margin: 0 0 12px; font-size: 0.92rem; }
+    .links a { color: #0f766e; text-decoration: none; font-weight: 600; }
+    .links a:hover { text-decoration: underline; }
+    pre.mermaid { margin: 0 auto; overflow-x: auto; background: #fcfffd; border-radius: 8px; padding: 8px; }
+    pre.mermaid svg { display: block; margin: 0 auto; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, theme: "default", securityLevel: "loose" });
+  </script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Try54 Diagram Collection</h1>
+    <p class="subtitle">Topology routing, partitioned experts, and the PMHHNet expert family used by Try54.</p>
+
+    <div class="card">
+      <h2>1. Try54 Partitioned System</h2>
+      <p>Shows topology-class routing, six specialist experts, and the shared PMHHNet family with continuous height conditioning.</p>
+      <div class="links"><a href="try54_partitioned_system.mmd">Open try54_partitioned_system.mmd</a></div>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 26, 'rankSpacing': 34}} }%%
+flowchart TB
+    subgraph INPUTS["Inputs"]
+      direction TB
+      A1["Topology map + LoS mask + distance map"]
+      A2["Continuous antenna height scalar"]
+      A3["Calibrated Try47 prior"]
+    end
+
+    subgraph ROUTE["Topology routing"]
+      direction TB
+      B1["TinyTopologyClassifier"]
+      B2["6 topology classes"]
+      B3["Expert registry"]
+      B1 --> B2 --> B3
+    end
+
+    subgraph EXPERTS["Six topology experts"]
+      direction TB
+      C1["open_sparse_lowrise"]
+      C2["open_sparse_vertical"]
+      C3["mixed_compact_lowrise"]
+      C4["mixed_compact_midrise"]
+      C5["dense_block_midrise"]
+      C6["dense_block_highrise"]
+    end
+
+    subgraph MODEL["Shared expert family"]
+      direction TB
+      D1["PMHHNet"]
+      D2["High-frequency branch"]
+      D3["FiLM-style height conditioning"]
+      D4["Residual + no-data dual head"]
+      D5["Final path-loss map"]
+      D1 --> D2 --> D3 --> D4 --> D5
+    end
+
+    subgraph SUP["Supervision"]
+      direction TB
+      E1["Valid path-loss pixels"]
+      E2["No-data auxiliary mask"]
+      E3["Validation JSON: prior gains, no-data IoU, support counts"]
+      E1 --> E3
+      E2 --> E3
+    end
+
+    A1 --> B1
+    B3 --> C1
+    B3 --> C2
+    B3 --> C3
+    B3 --> C4
+    B3 --> C5
+    B3 --> C6
+    C1 --> D1
+    C2 --> D1
+    C3 --> D1
+    C4 --> D1
+    C5 --> D1
+    C6 --> D1
+    A2 --> D3
+    A3 --> D5
+    D4 --> E2
+    D5 --> E1
+
+    classDef input fill:#d6f0ff,stroke:#0077aa,stroke-width:1px,color:#003344;
+    classDef route fill:#f0e2ff,stroke:#7a3db5,stroke-width:1px,color:#38185c;
+    classDef expert fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+    classDef model fill:#ffe8c7,stroke:#b16b00,stroke-width:1px,color:#5a3300;
+    classDef sup fill:#fff4cc,stroke:#9a7b00,stroke-width:1px,color:#5b4300;
+
+    class A1,A2,A3 input;
+    class B1,B2,B3 route;
+    class C1,C2,C3,C4,C5,C6 expert;
+    class D1,D2,D3,D4,D5 model;
+    class E1,E2,E3 sup;</pre>
+    </div>
+
+    <div class="card">
+      <h2>2. Try54 PMHHNet Model</h2>
+      <p>Shows the PMNet backbone, high-frequency path, FiLM-style height conditioning, and residual head used by each expert.</p>
+      <div class="links"><a href="pmhhnet_model.mmd">Open pmhhnet_model.mmd</a></div>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 38, 'curve': 'basis'}} }%%
+flowchart LR
+    subgraph INPUTS["Inputs"]
+      direction TB
+      A1["Spatial input tensor x"]
+      A2["Normalized antenna-height scalar"]
+      A3["Calibrated prior map"]
+    end
+
+    subgraph BACKBONE["PMNet backbone"]
+      direction TB
+      B1["Stem"]
+      B2["Encoder stages"]
+      B3["Dilated context"]
+      B4["Top-down fusion"]
+      B1 --> B2 --> B3 --> B4
+    end
+
+    subgraph HF["High-frequency branch"]
+      direction TB
+      C1["Fixed Laplacian high-pass"]
+      C2["Learned HF projection"]
+      C1 --> C2
+    end
+
+    subgraph COND["Continuous height conditioning"]
+      direction TB
+      D1["Scalar MLP"]
+      D2["FiLM stem"]
+      D3["FiLM context"]
+      D4["FiLM HF branch"]
+      D5["FiLM fused features"]
+      D1 --> D2
+      D1 --> D3
+      D1 --> D4
+      D1 --> D5
+    end
+
+    subgraph HEAD["Dual-output prediction head"]
+      direction TB
+      E1["Fuse PMNet + HF features"]
+      E2["Residual channel"]
+      E3["No-data logit"]
+      E4["Prior + residual"]
+      E1 --> E2
+      E1 --> E3
+      E2 --> E4
+    end
+
+    subgraph TRAIN["Training supervision"]
+      direction TB
+      F1["Valid path-loss pixels only"]
+      F2["Auxiliary no-data target"]
+      F3["Residual / multiscale loss"]
+      F4["BCE no-data loss"]
+      F1 --> F3
+      F2 --> F4
+    end
+
+    A1 --> B1
+    A1 --> C1
+    A2 --> D1
+    B4 --> E1
+    C2 --> E1
+    D2 -.modulates.-> B1
+    D3 -.modulates.-> B2
+    D3 -.modulates.-> B3
+    D4 -.modulates.-> C1
+    D4 -.modulates.-> C2
+    D5 -.modulates.-> E1
+    A3 --> E4
+    E4 --> F3
+    E3 --> F4
+
+    classDef in fill:#d6f0ff,stroke:#0077aa,stroke-width:1px,color:#003344;
+    classDef bb fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+    classDef hf fill:#ffe8c7,stroke:#b16b00,stroke-width:1px,color:#5a3300;
+    classDef cond fill:#eef2ff,stroke:#4f46e5,stroke-width:1px,color:#1e1b4b;
+    classDef head fill:#f0e2ff,stroke:#7a3db5,stroke-width:1px,color:#38185c;
+    classDef train fill:#fff4cc,stroke:#9a7b00,stroke-width:1px,color:#5b4300;
+
+    class A1,A2,A3 in;
+    class B1,B2,B3,B4 bb;
+    class C1,C2 hf;
+    class D1,D2,D3,D4,D5 cond;
+    class E1,E2,E3,E4 head;
+    class F1,F2,F3,F4 train;</pre>
+    </div>
+  </div>
+</body>
+</html>

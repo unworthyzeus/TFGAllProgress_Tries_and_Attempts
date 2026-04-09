@@ -66,11 +66,13 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--local-kernel-sizes", type=int, nargs="+", default=[15, 41])
     p.add_argument("--sample-prob", type=float, default=0.02)
+    p.add_argument("--sample-frac", type=float, default=1.0)
     p.add_argument("--ridge", type=float, default=1e-3)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="cpu", help="cpu/cuda/directml")
     p.add_argument("--formula", default="hybrid_two_ray_cost231_a2g_nlos")
     p.add_argument("--a2g-params-json", default="")
+    p.add_argument("--log-every", type=int, default=50)
     return p.parse_args()
 
 
@@ -247,8 +249,28 @@ def main() -> None:
     def key_for(city_type: str, los_label: str, ant_bin: str) -> str:
         return f"{city_type}|{los_label}|{ant_bin}"
 
-    def update_split(dataset: Any, train_mode: bool) -> None:
-        for idx, (city, sample) in enumerate(dataset.sample_refs):
+    def selected_indices_for(dataset: Any) -> list[int]:
+        total = len(dataset.sample_refs)
+        frac = float(args.sample_frac)
+        if frac >= 0.999:
+            return list(range(total))
+        keep = max(1, int(round(total * max(min(frac, 1.0), 0.0))))
+        return sorted(rng.choice(total, size=keep, replace=False).tolist())
+
+    train_indices = selected_indices_for(train_ds)
+    val_indices = selected_indices_for(val_ds)
+    print(
+        f"[prior-calibration] sample_frac={float(args.sample_frac):.3f} "
+        f"train_subset={len(train_indices)}/{len(train_ds.sample_refs)} "
+        f"val_subset={len(val_indices)}/{len(val_ds.sample_refs)}",
+        flush=True,
+    )
+
+    def update_split(dataset: Any, train_mode: bool, indices: list[int]) -> None:
+        split_name = "train" if train_mode else "val"
+        total_sel = len(indices)
+        for pos, idx in enumerate(indices):
+            city, sample = dataset.sample_refs[idx]
             item = dataset[idx]
             x = item[0].to(device)
             y = item[1].to(device)
@@ -305,8 +327,10 @@ def main() -> None:
                     if key not in stats:
                         stats[key] = LinearStats(dim=feats.shape[1])
                     stats[key].update(feats, tgt)
+            if pos == 0 or (pos + 1) % max(int(args.log_every), 1) == 0 or pos + 1 == total_sel:
+                print(f"[prior-calibration] {split_name} {pos + 1}/{total_sel}", flush=True)
 
-    update_split(train_ds, True)
+    update_split(train_ds, True, train_indices)
 
     coeffs: Dict[str, Dict[str, Any]] = {}
     for key, ls in stats.items():
@@ -346,7 +370,9 @@ def main() -> None:
             out.copy_(torch.tensordot(feature_map[..., : weights.numel()], weights, dims=([-1], [0])) + bias)
         return torch.where(los_map > 0.5, pred_los, pred_nlos)
 
-    for idx, (city, sample) in enumerate(val_ds.sample_refs):
+    total_val = len(val_indices)
+    for pos, idx in enumerate(val_indices):
+        city, sample = val_ds.sample_refs[idx]
         item = val_ds[idx]
         x = item[0].to(device)
         y = item[1].to(device)
@@ -398,6 +424,8 @@ def main() -> None:
                 results[label]["count"] += int(sub.numel())
                 results[label]["sq"] += float(torch.sum(sub * sub).item())
                 results[label]["abs"] += float(torch.sum(torch.abs(sub)).item())
+        if pos == 0 or (pos + 1) % max(int(args.log_every), 1) == 0 or pos + 1 == total_val:
+            print(f"[prior-calibration] val {pos + 1}/{total_val}", flush=True)
 
     def finalize(stats_dict: Dict[str, float]) -> Dict[str, float]:
         count = max(int(stats_dict["count"]), 1)
@@ -478,7 +506,7 @@ def main() -> None:
     md_lines.append("- No city ID regression is used beyond the train-defined city-type grouping already present in the previous calibration.")
     md_lines.append("- This keeps the prior more structured while still aiming to generalize to unseen cities and a new dataset.")
     out_md.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
-    print(json.dumps(payload["val_results"], indent=2))
+    print(json.dumps(payload["val_results"], indent=2), flush=True)
 
 
 if __name__ == "__main__":

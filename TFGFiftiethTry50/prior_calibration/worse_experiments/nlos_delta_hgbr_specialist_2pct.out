@@ -1,0 +1,67 @@
+[nlos-hgbr] try=TFGFiftiethTry50 dataset=CKM_Dataset_270326.h5 sample_frac=0.020 train_subset=227/11326 val_subset=49/2427
+[nlos-hgbr] train sample 20/227 rows=74780
+[nlos-hgbr] train sample 40/227 rows=156700
+[nlos-hgbr] train sample 60/227 rows=238620
+[nlos-hgbr] train sample 80/227 rows=319512
+[nlos-hgbr] train sample 100/227 rows=401432
+[nlos-hgbr] train sample 120/227 rows=482259
+[nlos-hgbr] train sample 140/227 rows=564179
+[nlos-hgbr] train sample 160/227 rows=643051
+[nlos-hgbr] train sample 180/227 rows=723604
+[nlos-hgbr] train sample 200/227 rows=805524
+[nlos-hgbr] train sample 220/227 rows=887444
+[nlos-hgbr] train sample 227/227 rows=916116
+[nlos-hgbr] val sample 20/49 overall_rmse=19.2487
+[nlos-hgbr] val sample 40/49 overall_rmse=22.2054
+[nlos-hgbr] val sample 49/49 overall_rmse=22.3296
+{
+  "try_dir": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50",
+  "config": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50\\experiments\\fiftiethtry50_pmnet_prior_gan_fastbatch\\fiftiethtry50_pmnet_prior_stage1_widen112_initial.yaml",
+  "dataset": "C:\\TFG\\TFGpractice\\Datasets\\CKM_Dataset_270326.h5",
+  "train_samples": 227,
+  "val_samples": 49,
+  "train_nlos_pixels": 916116,
+  "metrics": {
+    "overall": {
+      "count": 10048789,
+      "rmse_db": 22.329582640205214,
+      "mae_db": 11.354898201800411
+    },
+    "LoS": {
+      "count": 7167656,
+      "rmse_db": 4.8082787501137,
+      "mae_db": 3.8750791182702624
+    },
+    "NLoS": {
+      "count": 2881133,
+      "rmse_db": 41.006483173784424,
+      "mae_db": 29.963122859592794
+    }
+  },
+  "model": {
+    "train_r2": 0.20486673324579152,
+    "max_depth": 8,
+    "learning_rate": 0.06,
+    "max_iter": 300,
+    "specialist_models": 9,
+    "specialist_min_rows": 25000
+  },
+  "feature_importance": {
+    "prior_delta": 0.0,
+    "shadow_depth": 0.0,
+    "distance_since_los_break": 0.0,
+    "max_blocker_height": 0.0,
+    "blocker_count": 0.0,
+    "distance_norm": 0.0,
+    "prior_confidence": 0.0,
+    "antenna_height_norm": 0.0,
+    "city_density": 0.0,
+    "city_height_norm": 0.0,
+    "city_type_code": 0.0,
+    "ant_bin_code": 0.0,
+    "prior_x_shadow": 0.0,
+    "prior_x_break": 0.0,
+    "shadow_x_blocker": 0.0,
+    "dist_x_ant": 0.0
+  }
+}

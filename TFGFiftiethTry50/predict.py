@@ -200,8 +200,8 @@ def build_model_input_from_images(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Predict with Try 42 PMNet-style prior+residual path-loss model")
-    parser.add_argument("--config", type=str, default="experiments/fortysecondtry42_pmnet_prior_residual/fortysecondtry42_pmnet_prior_residual.yaml")
+    parser = argparse.ArgumentParser(description="Predict with Try 50 PMNet-style prior-guided stage 1 model")
+    parser.add_argument("--config", type=str, default="experiments/fiftiethtry50_pmnet_prior_gan_fastbatch/fiftiethtry50_pmnet_prior_stage1_widen112_resume.yaml")
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--hdf5-city", type=str, default="")
     parser.add_argument("--hdf5-sample", type=str, default="")
@@ -289,7 +289,7 @@ def main() -> None:
             error_db = np.where(mask_np > 0, pred_db - target_db, np.nan)
             np.save(out_dir / "error_db.npy", error_db)
 
-    print(f"Try 42 prediction outputs saved to: {out_dir}")
+    print(f"Try 50 prediction outputs saved to: {out_dir}")
 
 
 if __name__ == "__main__":

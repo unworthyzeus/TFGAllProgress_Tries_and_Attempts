@@ -1,0 +1,61 @@
+%%{init: {'flowchart': {'nodeSpacing': 26, 'rankSpacing': 34}} }%%
+flowchart TB
+    subgraph INPUTS["Try 50 prior inputs"]
+      direction TB
+      A1["Topology map"]
+      A2["LoS / NLoS mask"]
+      A3["Distance map"]
+      A4["Antenna height scalar"]
+    end
+
+    subgraph LOS["LoS branch"]
+      direction TB
+      B1["Coherent two-ray"]
+      B2["Damped two-ray smoothing"]
+      B3["Shadowed ripple (strong in LoS)"]
+      B1 --> B2 --> B3
+    end
+
+    subgraph NLOS["NLoS branch"]
+      direction TB
+      C1["LoS break loss"]
+      C2["Shadow-depth loss"]
+      C3["Blocker severity loss"]
+      C4["Urban context loss"]
+      C5["Weaker NLoS ripple"]
+      C1 --> C2 --> C3 --> C4 --> C5
+    end
+
+    subgraph FINAL["Final prior"]
+      direction TB
+      D1["Exact LoS reference"]
+      D2["Structured NLoS delta"]
+      D3["Hard LoS / NLoS gate"]
+      D4["Confidence-aware formula channel"]
+      D1 --> D3 --> D4
+      D2 --> D3
+    end
+
+    A1 --> C3
+    A1 --> C4
+    A2 --> D3
+    A2 --> C1
+    A2 --> C2
+    A3 --> B1
+    A3 --> C1
+    A3 --> C2
+    A4 --> B1
+    A4 --> C1
+    A4 --> C4
+    B3 --> D1
+    C5 --> D2
+
+    classDef input fill:#d6f0ff,stroke:#0077aa,stroke-width:1px,color:#003344;
+    classDef los fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+    classDef nlos fill:#ffe8c7,stroke:#b16b00,stroke-width:1px,color:#5a3300;
+    classDef blend fill:#eef2ff,stroke:#4f46e5,stroke-width:1px,color:#1e1b4b;
+
+    class A1,A2,A3,A4 input;
+    class B1,B2,B3 los;
+    class C1,C2,C3,C4,C5 nlos;
+    class D1,D2,D3,D4 blend;

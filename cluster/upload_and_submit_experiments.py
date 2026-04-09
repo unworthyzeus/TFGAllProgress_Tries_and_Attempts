@@ -416,11 +416,12 @@ def main() -> None:
     parser.add_argument("--user", default=USER)
     parser.add_argument("--remote-base", default=REMOTE_BASE)
     parser.add_argument("--password-env", default="SSH_PASSWORD")
+    parser.add_argument("--ssh-key", default=None, help="Path to a private SSH key for passwordless login.")
     args = parser.parse_args()
 
     password = os.environ.get(args.password_env, "")
-    if not password:
-        raise SystemExit(f"Set environment variable {args.password_env}")
+    if not password and not args.ssh_key:
+        raise SystemExit(f"Set environment variable {args.password_env} or pass --ssh-key")
 
     preset = PRESETS.get(args.preset) if args.preset else None
     root = Path(__file__).resolve().parent.parent
@@ -434,7 +435,18 @@ def main() -> None:
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(args.host, username=args.user, password=password, timeout=30)
+    connect_kwargs = {
+        "hostname": args.host,
+        "username": args.user,
+        "timeout": 30,
+        "allow_agent": True,
+        "look_for_keys": True,
+    }
+    if password:
+        connect_kwargs["password"] = password
+    if args.ssh_key:
+        connect_kwargs["key_filename"] = args.ssh_key
+    client.connect(**connect_kwargs)
     udh.prepare_ssh_transport_for_large_uploads(client)
 
     try:

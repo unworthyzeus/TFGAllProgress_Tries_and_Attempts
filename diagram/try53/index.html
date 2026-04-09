@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Try53 Diagrams</title>
+  <style>
+    :root {
+      --bg: #f2f7f4;
+      --card: #ffffff;
+      --ink: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+    }
+    body { margin: 0; font-family: "Segoe UI", Tahoma, sans-serif; background: radial-gradient(circle at top right, #e6fffa, var(--bg)); color: var(--ink); }
+    .wrap { max-width: 1320px; margin: 20px auto; padding: 0 16px 24px; }
+    h1 { margin: 0 0 8px; color: #134e4a; }
+    .subtitle { margin: 0 0 16px; color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 16px; box-shadow: 0 8px 20px rgba(2,6,23,0.08); }
+    h2 { margin: 0 0 8px; font-size: 1.05rem; color: #0f172a; }
+    p { margin: 0 0 10px; color: var(--muted); font-size: 0.93rem; }
+    .links { margin: 0 0 12px; font-size: 0.92rem; }
+    .links a { color: #0f766e; text-decoration: none; font-weight: 600; }
+    .links a:hover { text-decoration: underline; }
+    pre.mermaid { margin: 0 auto; overflow-x: auto; background: #fcfffd; border-radius: 8px; padding: 8px; }
+    pre.mermaid svg { display: block; margin: 0 auto; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, theme: "default", securityLevel: "loose" });
+  </script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Try53 Diagram Collection</h1>
+    <p class="subtitle">Cyclic feedback between validation JSON, stage1 weighting, and the forward refinement chain in Try53.</p>
+
+    <div class="card">
+      <h2>1. Try53 Cyclic System</h2>
+      <p>Shows the bootstrap from Try51, the forward stage1-to-stage3 chain, and the metric-guided feedback loop that resumes stage1.</p>
+      <div class="links"><a href="try53_cyclic_system.mmd">Open try53_cyclic_system.mmd</a></div>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 26, 'rankSpacing': 34}} }%%
+flowchart TB
+    subgraph BOOT["Cycle bootstrap"]
+      direction TB
+      A1["Try51 best stage1 checkpoint"]
+      A2["Try53 stage1 bootstrap"]
+      A1 --> A2
+    end
+
+    subgraph FORWARD["Forward refinement chain"]
+      direction TB
+      B1["Stage1 prediction"]
+      B2["Stage2 teacher = stage1"]
+      B3["Stage2 tail refiner"]
+      B4["Stage3 teacher = stage2"]
+      B5["Stage3 NLoS global-context refiner"]
+      B1 --> B2 --> B3 --> B4 --> B5
+    end
+
+    subgraph FEEDBACK["Metric-guided feedback"]
+      direction TB
+      C1["Read latest stage2 / stage3 validation JSON"]
+      C2["Adjust stage1 regime weights"]
+      C3["Stage1 feedback resume"]
+      C1 --> C2 --> C3
+    end
+
+    subgraph LOOP["Cycle repeats"]
+      direction TB
+      D1["Stage2 retrains on updated stage1"]
+      D2["Stage3 retrains on updated stage2"]
+      D3["Next feedback cycle"]
+      D1 --> D2 --> D3
+    end
+
+    A2 --> B1
+    B5 --> C1
+    C3 --> D1
+    D3 --> C1
+
+    classDef boot fill:#d6f0ff,stroke:#0077aa,stroke-width:1px,color:#003344;
+    classDef forward fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+    classDef feedback fill:#f0e2ff,stroke:#7a3db5,stroke-width:1px,color:#38185c;
+    classDef loop fill:#ffe8c7,stroke:#b16b00,stroke-width:1px,color:#5a3300;
+
+    class A1,A2 boot;
+    class B1,B2,B3,B4,B5 forward;
+    class C1,C2,C3 feedback;
+    class D1,D2,D3 loop;</pre>
+    </div>
+  </div>
+</body>
+</html>

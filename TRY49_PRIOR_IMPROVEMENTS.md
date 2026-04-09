@@ -3,11 +3,30 @@
 ## Goal
 Improve prior-guided learning without touching Try48 by introducing prior confidence-aware conditioning and lightweight local-CUDA validation.
 
+## Current status note
+
+This note started as the original `Try 49` prior-improvement log, but the
+active branch has since been cleaned.
+
+Right now the active `Try 49` path is:
+
+- prior calibration:
+  - `TFGFortyNinthTry49/prior_calibration/regime_obstruction_train_only_from_try47.json`
+- stage1:
+  - `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_prior_gan_fastbatch/fortyninthtry49_pmnet_prior_stage1_widen112_initial_mae_dominant.yaml`
+  - `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_prior_gan_fastbatch/fortyninthtry49_pmnet_prior_stage1_widen112_resume_mae_dominant.yaml`
+- stage2:
+  - `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_tail_refiner_fastbatch/fortyninthtry49_pmnet_tail_refiner_stage2.yaml`
+
+Older prior-calibration files and superseded stage1 configs were moved to:
+
+- `TFGFortyNinthTry49/failed_experiments/`
+
 ## Scope
 - Base folder: `TFGFortyNinthTry49/` (clone of Try48).
 - Keep Try48 unchanged.
 
-## Implemented (v1)
+## Implemented
 1. Added optional prior confidence channel in `TFGFortyNinthTry49/data_utils.py`.
 2. Prior confidence is computed heuristically from:
 - LoS probability map
@@ -17,15 +36,19 @@ Improve prior-guided learning without touching Try48 by introducing prior confid
 - `data.path_loss_formula_input.include_confidence_channel: true|false`
 - `data.path_loss_formula_input.confidence_kernel_size: int`
 4. Updated input channel counting logic so model channels remain consistent.
-5. Added Try49 A/B Stage1 configs:
-- `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_prior_gan_fastbatch/fortyninthtry49_pmnet_prior_stage1_widen96_baseline.yaml`
-- `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_prior_gan_fastbatch/fortyninthtry49_pmnet_prior_stage1_widen96_priorconf.yaml`
-6. Added Try49 Stage1 4-GPU slurm launchers:
-- `TFGFortyNinthTry49/cluster/run_fortyninthtry49_pmnet_prior_stage1_baseline_4gpu.slurm`
-- `TFGFortyNinthTry49/cluster/run_fortyninthtry49_pmnet_prior_stage1_priorconf_4gpu.slurm`
-7. Added local prior smoke-test script:
+5. The current active stage 1 configs are the widened `112` channel
+   `mae_dominant` variants:
+- `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_prior_gan_fastbatch/fortyninthtry49_pmnet_prior_stage1_widen112_initial_mae_dominant.yaml`
+- `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_prior_gan_fastbatch/fortyninthtry49_pmnet_prior_stage1_widen112_resume_mae_dominant.yaml`
+6. Stage 1 is launched through:
+- `TFGFortyNinthTry49/cluster/run_fortyninthtry49_pmnet_prior_stage1_4gpu.slurm`
+- `TFGFortyNinthTry49/cluster/run_fortyninthtry49_pmnet_prior_stage1_resume_4gpu.slurm`
+7. Stage 2 is now a separate tail refiner that normally uses a frozen stage1
+   teacher on-the-fly instead of requiring an HDF5 export:
+- `TFGFortyNinthTry49/train_pmnet_tail_refiner.py`
+- `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_tail_refiner_fastbatch/fortyninthtry49_pmnet_tail_refiner_stage2.yaml`
+8. Added local prior smoke-test script:
 - `TFGFortyNinthTry49/scripts/smoke_test_prior_try49.py`
-8. See the end of this document for possible improvements that we'll need to check if are needed after stage 2.
 
 ## Intended Effect
 - Give model spatial awareness of prior reliability.
@@ -55,22 +78,30 @@ Improve prior-guided learning without touching Try48 by introducing prior confid
 	- Verified PMNet forward output shape `(1, 1, 513, 513)` with finite values.
 
 ## Current Try49 Status
-- Stage 1 has been moved to the widened 112-channel setup.
-- Current active chain:
-	- `10019544`: the old widened-128 run timed out.
-	- `10019545`: the old dependent resume run failed with DDP OOM.
-- The current replacement chain is the 112-channel stage1 flow.
-- The current 112-chain submission IDs are:
-	- `10019593` init job
-	- `10019594` first resume
-	- `10019595` second resume
+- Stage 1 has been moved to the widened `112` channel setup.
+- The currently active stage1 branch is the `mae_dominant` one:
+	- `mse_weight = 0.25`
+	- `l1_weight = 1.0`
 - The adapted checkpoint is stored at:
 	- `TFGFortyNinthTry49/outputs/fortyninthtry49_pmnet_prior_stage1_t49_stage1_w112_4gpu/reduced_try49_epoch30_128_to_112.pt`
-- The replacement job resumes from the latest saved checkpoint for the widened-128 run, which is the epoch-30 checkpoint; the run had validation metrics through epoch 32, but no epoch-32 checkpoint was saved.
-- The active model is still Try49-started, now reduced to 112 channels for the restart.
-- Stage 2 has been rewritten as a separate HDF5-backed tail refiner.
-- The old GAN-style stage2 path is no longer the default; stage1 predictions are exported first and stage2 trains from those frozen outputs.
-- The obsolete resume jobs `10019594` and `10019595` were cancelled once the new stage2 path was introduced.
+- The widened `112` stage 1 has already produced validation epochs `31-35`.
+- Best observed stage 1 validation RMSE in this branch is `18.874959 dB` at epoch `35`.
+- The prior stayed at `23.565668 dB`.
+- Stage 2 has been rewritten as a separate tail refiner.
+- The active stage2 branch now uses:
+	- on-the-fly frozen stage1 teacher
+	- validation `DistributedSampler`
+	- `teacher.predict_only()` in validation
+	- `val_batch_size = 1`
+	- refiner width reduced from `96` to `84`
+	- added high-frequency refinement loss:
+		- Laplacian `0.06`
+		- gradient `0.02`
+- The intended order is:
+	- stage 1 init
+	- stage 1 resume
+	- stage 2 tail refiner
+- Any queued chain that assumes HDF5 export is mandatory is now outdated.
 
 ## Prior Calibration Result
 - Completed calibration output for Try49:
@@ -210,20 +241,17 @@ I would not train them together unless there is a later need to test a tightly c
 The default should be sequential training: big base model first, then a second big model that specializes in the failures left behind by the first.
 
 ## Implemented Stage2 Hand-Off
-The current Try49 stage2 implementation follows the sequential plan instead of the old GAN path:
-- Export stage1 predictions and error maps to HDF5 with `TFGFortyNinthTry49/scripts/export_stage1_outputs_hdf5.py`.
-- Train the stage2 tail refiner from those frozen stage1 outputs with `TFGFortyNinthTry49/train_pmnet_tail_refiner.py`.
-- Keep the stage2 model separate from stage1 so the first model does not need to remain resident in VRAM during stage2 training.
-- Use the dedicated non-GAN stage2 config `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_tail_refiner_fastbatch/fortyninthtry49_pmnet_tail_refiner_stage2.yaml`.
-- Launch the flow with the new HDF5 export job and 4-GPU stage2 slurm script in `TFGFortyNinthTry49/cluster/`.
+The current Try49 stage2 implementation follows the sequential plan instead of
+the old GAN path:
+- Load a frozen stage1 teacher inside `TFGFortyNinthTry49/train_pmnet_tail_refiner.py`.
+- Run the teacher on-the-fly per batch.
+- Keep stage2 separate from stage1 so the second model stays a correction model.
+- Use the dedicated non-GAN stage2 config
+  `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_tail_refiner_fastbatch/fortyninthtry49_pmnet_tail_refiner_stage2.yaml`.
 
-The exported HDF5 files store:
-- `stage1_pred_norm_f16`
-- `stage1_pred_db_f16`
-- `stage1_error_db_f16`
-- `stage1_abs_error_db_f16`
-
-The stage2 refiner consumes the stage1 prediction and absolute error maps, then applies residual correction, uncertainty gating, and tail-focused weighting.
+The old HDF5 export route still exists for experimentation, but it is not the
+current operational path because large exports caused quota and workflow
+friction.
 
 ## Why Augmentation Is Off
 - Try49 stage1 augmentation is disabled so the widened stage1 run produces a stable frozen prior and the exported HDF5 files remain reproducible.
@@ -239,9 +267,9 @@ The stage2 refiner consumes the stage1 prediction and absolute error maps, then 
 	- `TFGFortyNinthTry49/cluster/run_fortyninthtry49_pmnet_prior_stage1_baseline_4gpu.slurm`
 	- `TFGFortyNinthTry49/cluster/run_fortyninthtry49_pmnet_prior_stage1_priorconf_4gpu.slurm`
 	- `TFGFortyNinthTry49/cluster/run_fortyninthtry49_pmnet_prior_stage2_4gpu.slurm`
-- The active configs are now the reduced stage1 pair:
-	- `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_prior_gan_fastbatch/fortyninthtry49_pmnet_prior_stage1_widen112_initial.yaml`
-	- `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_prior_gan_fastbatch/fortyninthtry49_pmnet_prior_stage1_widen112_resume.yaml`
+- The active configs are now the robust-loss stage1 pair:
+	- `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_prior_gan_fastbatch/fortyninthtry49_pmnet_prior_stage1_widen112_initial_mae_dominant.yaml`
+	- `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_prior_gan_fastbatch/fortyninthtry49_pmnet_prior_stage1_widen112_resume_mae_dominant.yaml`
 - The new non-GAN stage2 config replaces the old stage2 YAML:
 	- `TFGFortyNinthTry49/experiments/fortyninthtry49_pmnet_tail_refiner_fastbatch/fortyninthtry49_pmnet_tail_refiner_stage2.yaml`
 

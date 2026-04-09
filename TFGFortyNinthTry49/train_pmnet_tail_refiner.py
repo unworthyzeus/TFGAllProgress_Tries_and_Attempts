@@ -152,6 +152,59 @@ def compute_multiscale_path_loss_loss(
     return loss_weight * (total / total_weight)
 
 
+def _masked_gradient_l1_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    pred_dx = pred[:, :, :, 1:] - pred[:, :, :, :-1]
+    target_dx = target[:, :, :, 1:] - target[:, :, :, :-1]
+    mask_dx = mask[:, :, :, 1:] * mask[:, :, :, :-1]
+    pred_dy = pred[:, :, 1:, :] - pred[:, :, :-1, :]
+    target_dy = target[:, :, 1:, :] - target[:, :, :-1, :]
+    mask_dy = mask[:, :, 1:, :] * mask[:, :, :-1, :]
+    denom = (mask_dx.sum() + mask_dy.sum()).clamp_min(1.0)
+    loss_dx = (torch.abs(pred_dx - target_dx) * mask_dx).sum()
+    loss_dy = (torch.abs(pred_dy - target_dy) * mask_dy).sum()
+    return (loss_dx + loss_dy) / denom
+
+
+def _masked_laplacian_l1_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    kernel = torch.tensor(
+        [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]],
+        dtype=pred.dtype,
+        device=pred.device,
+    ).view(1, 1, 3, 3)
+    pred_lap = F.conv2d(pred, kernel, padding=1)
+    target_lap = F.conv2d(target, kernel, padding=1)
+    valid = (F.conv2d(mask, torch.ones_like(kernel), padding=1) >= 5.0).to(dtype=pred.dtype)
+    denom = valid.sum().clamp_min(1.0)
+    return (torch.abs(pred_lap - target_lap) * valid).sum() / denom
+
+
+def compute_high_frequency_path_loss_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    cfg: Dict[str, Any],
+) -> torch.Tensor:
+    hf_cfg = dict(cfg.get("tail_refiner", {}).get("high_frequency_loss", {}))
+    if not bool(hf_cfg.get("enabled", False)):
+        return torch.tensor(0.0, device=pred.device)
+    lap_w = float(hf_cfg.get("laplacian_weight", 0.0))
+    grad_w = float(hf_cfg.get("gradient_weight", 0.0))
+    total = torch.tensor(0.0, device=pred.device)
+    if lap_w > 0.0:
+        total = total + lap_w * _masked_laplacian_l1_loss(pred, target, mask)
+    if grad_w > 0.0:
+        total = total + grad_w * _masked_gradient_l1_loss(pred, target, mask)
+    return total
+
+
 def formula_channel_index(cfg: Dict[str, Any]) -> int:
     idx = 1
     if cfg["data"].get("los_input_column"):
@@ -229,54 +282,63 @@ def _gate_target_from_error(abs_error_db: torch.Tensor, cfg: Dict[str, Any]) -> 
     return torch.sigmoid((abs_error_db - threshold_db) / temperature_db)
 
 
-class Stage1OutputDataset(Dataset):
-    def __init__(
-        self,
-        base_dataset: Dataset,
-        stage1_hdf5_path: str,
-        *,
-        prediction_key: str = "stage1_pred_norm_f16",
-        abs_error_key: str = "stage1_abs_error_db_f16",
-    ) -> None:
+class BaseTailRefinerDataset(Dataset):
+    def __init__(self, base_dataset: Dataset) -> None:
         self.base_dataset = base_dataset
         self.sample_refs = list(getattr(base_dataset, "sample_refs", []))
-        self.stage1_hdf5_path = Path(stage1_hdf5_path)
-        self.prediction_key = prediction_key
-        self.abs_error_key = abs_error_key
-        self._handle: Optional[h5py.File] = None
-        if not self.stage1_hdf5_path.exists():
-            raise FileNotFoundError(f"Missing stage1 HDF5 outputs: {self.stage1_hdf5_path}")
 
     def __len__(self) -> int:
         return len(self.base_dataset)
 
-    def _get_handle(self) -> h5py.File:
-        if self._handle is None:
-            self._handle = h5py.File(self.stage1_hdf5_path, "r")
-        return self._handle
-
-    def _read_stage1_maps(self, city: str, sample: str) -> tuple[torch.Tensor, torch.Tensor]:
-        handle = self._get_handle()
-        grp = handle[city][sample]
-        pred_arr = np.asarray(grp[self.prediction_key][...], dtype=np.float32)
-        abs_error_arr = np.asarray(grp[self.abs_error_key][...], dtype=np.float32) if self.abs_error_key in grp else np.zeros_like(pred_arr, dtype=np.float32)
-        if pred_arr.ndim == 2:
-            pred_arr = pred_arr[None, ...]
-        if abs_error_arr.ndim == 2:
-            abs_error_arr = abs_error_arr[None, ...]
-        pred = torch.from_numpy(pred_arr.astype(np.float32, copy=False))
-        abs_error = torch.from_numpy(abs_error_arr.astype(np.float32, copy=False))
-        return pred, abs_error
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         item = self.base_dataset[idx]
         if len(item) == 4:
             raise ValueError("Tail refiner expects scalar channels, not FiLM vectors.")
         x, y, m = item
-        city, sample = self.sample_refs[idx]
-        stage1_pred, abs_error = self._read_stage1_maps(city, sample)
-        x = torch.cat([x, stage1_pred], dim=0)
-        return x, y, m, abs_error
+        return x, y, m
+
+
+class Stage1Teacher:
+    def __init__(self, cfg: Dict[str, Any], stage1_cfg: Dict[str, Any], checkpoint_path: str, device: object) -> None:
+        self.cfg = cfg
+        self.stage1_cfg = stage1_cfg
+        self.device = device
+        self.meta = dict(cfg["target_metadata"]["path_loss"])
+        self.formula_idx = formula_channel_index(stage1_cfg)
+        in_channels = compute_input_channels(stage1_cfg)
+        self.model = PMNetResidualRegressor(
+            in_channels=in_channels,
+            out_channels=int(stage1_cfg["model"].get("out_channels", 1)),
+            base_channels=int(stage1_cfg["model"].get("base_channels", 64)),
+            encoder_blocks=tuple(stage1_cfg["model"].get("encoder_blocks", [2, 2, 2, 2])),
+            context_dilations=tuple(stage1_cfg["model"].get("context_dilations", [1, 2, 4, 8])),
+            norm_type=str(stage1_cfg["model"].get("norm_type", "group")),
+            dropout=float(stage1_cfg["model"].get("dropout", 0.0)),
+            gradient_checkpointing=bool(stage1_cfg["model"].get("gradient_checkpointing", False)),
+        ).to(device)
+        state = load_torch_checkpoint(Path(checkpoint_path), device)
+        model_state = state.get("model", state.get("generator", state))
+        self.model.load_state_dict(model_state)
+        self.model.eval()
+        for p in self.model.parameters():
+            p.requires_grad_(False)
+
+    def infer(self, x: torch.Tensor, target: torch.Tensor, amp_enabled: bool) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        prior = x[:, self.formula_idx : self.formula_idx + 1]
+        with torch.no_grad():
+            with amp.autocast(device_type="cuda", enabled=amp_enabled):
+                residual = self.model(x)
+                pred = clip_to_target_range(prior + residual[:, :1], self.meta)
+        abs_error_db = (denormalize(pred, self.meta) - denormalize(target, self.meta)).abs()
+        return pred, abs_error_db, prior
+
+    def predict_only(self, x: torch.Tensor, amp_enabled: bool) -> tuple[torch.Tensor, torch.Tensor]:
+        prior = x[:, self.formula_idx : self.formula_idx + 1]
+        with torch.no_grad():
+            with amp.autocast(device_type="cuda", enabled=amp_enabled):
+                residual = self.model(x)
+                pred = clip_to_target_range(prior + residual[:, :1], self.meta)
+        return pred, prior
 
 
 class DistributedWeightedSampler(Sampler[int]):
@@ -441,25 +503,48 @@ def build_tail_refiner_model(cfg: Dict[str, Any], in_channels: int) -> nn.Module
     raise ValueError(f"Unsupported tail_refiner.refiner_arch '{refiner_arch}'")
 
 
-def build_sample_weights(dataset: Stage1OutputDataset, cfg: Dict[str, Any]) -> torch.Tensor:
+def build_sample_weights(dataset: BaseTailRefinerDataset, cfg: Dict[str, Any]) -> torch.Tensor:
     tail_cfg = dict(cfg.get("tail_refiner", {}))
     oversample_cfg = dict(tail_cfg.get("oversample", {}))
     if not bool(oversample_cfg.get("enabled", False)):
         return torch.ones(len(dataset), dtype=torch.double)
 
-    threshold_db = max(float(oversample_cfg.get("threshold_db", 6.0)), 1e-3)
-    temperature_db = max(float(oversample_cfg.get("temperature_db", 2.5)), 1e-3)
-    alpha = max(float(oversample_cfg.get("alpha", 1.0)), 0.0)
     nlos_boost = max(float(oversample_cfg.get("nlos_boost", 0.0)), 0.0)
     antenna_boost = max(float(oversample_cfg.get("antenna_boost", 0.0)), 0.0)
     weights: list[float] = []
 
+    base_dataset = getattr(dataset, "base_dataset", None)
+    sample_refs = list(getattr(dataset, "sample_refs", []))
+    hdf5_path = getattr(base_dataset, "hdf5_path", None)
+    antenna_norm = float(dict(cfg.get("data", {}).get("scalar_feature_norms", {})).get("antenna_height_m", 120.0))
+    los_field = str(cfg.get("data", {}).get("los_input_column", "los_mask"))
+
+    if hdf5_path is not None and sample_refs:
+        with h5py.File(str(hdf5_path), "r") as handle:
+            for city, sample in sample_refs:
+                grp = handle[city][sample]
+                weight = 1.0
+
+                if nlos_boost > 0.0 and los_field in grp:
+                    los_map = np.asarray(grp[los_field][...], dtype=np.float32)
+                    if los_map.size > 0:
+                        max_val = float(np.max(los_map))
+                        if max_val > 1.0:
+                            los_map = los_map / max(max_val, 1.0)
+                        nlos_frac = float(np.mean(los_map <= 0.5))
+                        weight *= 1.0 + nlos_boost * nlos_frac
+
+                if antenna_boost > 0.0 and "uav_height" in grp:
+                    ant = float(np.asarray(grp["uav_height"][...]).reshape(-1)[0])
+                    low_antenna = float(np.clip(1.0 - (ant / max(antenna_norm, 1e-6)), 0.0, 1.0))
+                    weight *= 1.0 + antenna_boost * low_antenna
+
+                weights.append(max(weight, 1e-6))
+        return torch.tensor(weights, dtype=torch.double)
+
     for index in range(len(dataset)):
-        x, _, m, abs_error = dataset[index]
-        valid = (m[:, :1] > 0.0).to(dtype=torch.float32)
-        denom = float(valid.sum().item()) if float(valid.sum().item()) > 0 else float(abs_error.numel())
-        mean_error = float((abs_error * valid).sum().item()) / max(denom, 1.0)
-        weight = 1.0 + alpha * float(torch.sigmoid(torch.tensor((mean_error - threshold_db) / temperature_db)).item())
+        x, _, _ = dataset[index]
+        weight = 1.0
 
         if nlos_boost > 0.0 and cfg["data"].get("los_input_column"):
             los_idx = 1
@@ -480,6 +565,7 @@ def build_sample_weights(dataset: Stage1OutputDataset, cfg: Dict[str, Any]) -> t
 
 def train_one_epoch(
     model: nn.Module,
+    stage1_teacher: Stage1Teacher,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     scaler: amp.GradScaler,
@@ -502,23 +588,23 @@ def train_one_epoch(
     running_loss = 0.0
     steps = 0
     for batch in tqdm(loader, desc="train", leave=False):
-        x, y, m, abs_error_db = batch
+        x, y, m = batch
         x = x.to(device)
         y = y.to(device)
         m = m.to(device)
-        abs_error_db = abs_error_db.to(device)
 
         target = y[:, :1]
         mask = m[:, :1]
-        stage1_pred = x[:, -1:]
+        stage1_pred, abs_error_db, _ = stage1_teacher.infer(x, target, amp_enabled)
+        x_aug = torch.cat([x, stage1_pred], dim=1)
         residual_target = target - stage1_pred
 
-        weighted_mask = mask * _tail_focus_weights(abs_error_db, x, cfg)
+        weighted_mask = mask * _tail_focus_weights(abs_error_db, x_aug, cfg)
         gate_target = _gate_target_from_error(abs_error_db, cfg) if use_gate else None
 
         optimizer.zero_grad(set_to_none=True)
         with amp.autocast(device_type="cuda", enabled=amp_enabled):
-            refiner_out = model(x)
+            refiner_out = model(x_aug)
             if use_gate:
                 if refiner_out.shape[1] < 2:
                     raise ValueError("tail_refiner.use_gate=true requires model.out_channels >= 2")
@@ -532,7 +618,8 @@ def train_one_epoch(
             final_loss = masked_mse_l1_loss(final_pred, target, weighted_mask, mse_weight=mse_weight, l1_weight=l1_weight)
             residual_loss = masked_mse_l1_loss(delta, residual_target, weighted_mask, mse_weight=mse_weight, l1_weight=l1_weight)
             multiscale_loss = compute_multiscale_path_loss_loss(final_pred, target, weighted_mask, meta, cfg)
-            total_loss = residual_weight * residual_loss + final_weight * final_loss + multiscale_loss
+            high_frequency_loss = compute_high_frequency_path_loss_loss(final_pred, target, weighted_mask, cfg)
+            total_loss = residual_weight * residual_loss + final_weight * final_loss + multiscale_loss + high_frequency_loss
 
             if use_gate and gate_logits is not None and gate_target is not None:
                 gate_loss_map = F.binary_cross_entropy_with_logits(gate_logits, gate_target, reduction="none")
@@ -554,6 +641,7 @@ def train_one_epoch(
 
 def evaluate_validation(
     model: nn.Module,
+    stage1_teacher: Stage1Teacher,
     loader: DataLoader,
     device: object,
     cfg: Dict[str, Any],
@@ -575,16 +663,16 @@ def evaluate_validation(
     model.eval()
     with torch.no_grad():
         for batch in tqdm(loader, desc="val", leave=False, disable=distributed and not is_main_process(rank)):
-            x, y, m, abs_error_db = batch
+            x, y, m = batch
             x = x.to(device)
             y = y.to(device)
             m = m.to(device)
-            abs_error_db = abs_error_db.to(device)
             target = y[:, :1]
             mask = m[:, :1]
-            stage1_pred = x[:, -1:]
+            stage1_pred, _ = stage1_teacher.predict_only(x, amp_enabled)
+            x_aug = torch.cat([x, stage1_pred], dim=1)
             with amp.autocast(device_type="cuda", enabled=amp_enabled):
-                refiner_out = model(x)
+                refiner_out = model(x_aug)
                 if use_gate:
                     delta = refiner_out[:, :1] * torch.sigmoid(refiner_out[:, 1:2])
                 else:
@@ -599,8 +687,8 @@ def evaluate_validation(
             update_metric_total(totals, (pred_phys - target_phys)[valid_mask])
             update_metric_total(stage1_totals, (stage1_phys - target_phys)[valid_mask])
 
-            if cfg["data"].get("los_input_column") and x.shape[1] > 1:
-                los = x[:, 1:2]
+            if cfg["data"].get("los_input_column") and x_aug.shape[1] > 1:
+                los = x_aug[:, 1:2]
                 los_valid = valid_mask & (los > 0.5)
                 nlos_valid = valid_mask & (los <= 0.5)
                 update_metric_total(los_totals, (pred_phys - target_phys)[los_valid])
@@ -675,32 +763,55 @@ def main() -> None:
     out_dir = ensure_output_dir(cfg["runtime"]["output_dir"])
     if is_main_process(rank):
         print(json.dumps({"output_dir": str(out_dir), "world_size": world_size}))
+        print("[stage2] building dataset splits", flush=True)
 
     splits = build_dataset_splits_from_config(cfg)
+    if is_main_process(rank):
+        print(
+            json.dumps(
+                {
+                    "stage2_train_samples": len(splits["train"]),
+                    "stage2_val_samples": len(splits["val"]),
+                }
+            ),
+            flush=True,
+        )
     tail_cfg = dict(cfg.get("tail_refiner", {}))
-    train_hdf5 = str(tail_cfg.get("stage1_outputs_train_hdf5", "")).strip()
-    val_hdf5 = str(tail_cfg.get("stage1_outputs_val_hdf5", "")).strip()
-    if not train_hdf5 or not val_hdf5:
-        raise ValueError("tail_refiner.stage1_outputs_train_hdf5 and tail_refiner.stage1_outputs_val_hdf5 are required")
+    stage1_config_raw = str(tail_cfg.get("stage1_config", "")).strip()
+    stage1_checkpoint_raw = str(tail_cfg.get("stage1_checkpoint", "")).strip()
+    if not stage1_config_raw or not stage1_checkpoint_raw:
+        raise ValueError("tail_refiner.stage1_config and tail_refiner.stage1_checkpoint are required for on-the-fly stage1 inference")
+    try_root = Path(__file__).resolve().parent
+    stage1_config_path = Path(stage1_config_raw)
+    if not stage1_config_path.is_absolute():
+        stage1_config_path = (try_root / stage1_config_raw).resolve()
+    if not stage1_config_path.exists():
+        raise FileNotFoundError(f"Stage1 config not found: {stage1_config_raw}")
+    stage1_cfg = load_config(str(stage1_config_path))
+    anchor_data_paths_to_config_file(stage1_cfg, str(stage1_config_path))
+    stage1_checkpoint_path = Path(stage1_checkpoint_raw)
+    if not stage1_checkpoint_path.is_absolute():
+        stage1_checkpoint_path = (try_root / stage1_checkpoint_raw).resolve()
+    if not stage1_checkpoint_path.exists():
+        raise FileNotFoundError(f"Stage1 checkpoint not found: {stage1_checkpoint_raw}")
 
-    train_dataset = Stage1OutputDataset(
-        splits["train"],
-        train_hdf5,
-        prediction_key=str(tail_cfg.get("prediction_key", "stage1_pred_norm_f16")),
-        abs_error_key=str(tail_cfg.get("abs_error_key", "stage1_abs_error_db_f16")),
-    )
-    val_dataset = Stage1OutputDataset(
-        splits["val"],
-        val_hdf5,
-        prediction_key=str(tail_cfg.get("prediction_key", "stage1_pred_norm_f16")),
-        abs_error_key=str(tail_cfg.get("abs_error_key", "stage1_abs_error_db_f16")),
-    )
+    train_dataset = BaseTailRefinerDataset(splits["train"])
+    val_dataset = BaseTailRefinerDataset(splits["val"])
+    if is_main_process(rank):
+        print("[stage2] building stage1 teacher", flush=True)
 
     input_channels = compute_input_channels(cfg) + 1
     model = build_tail_refiner_model(cfg, input_channels).to(device)
+    stage1_teacher = Stage1Teacher(cfg, stage1_cfg, str(stage1_checkpoint_path), device)
+    if is_main_process(rank):
+        print("[stage2] stage1 teacher ready", flush=True)
 
     if bool(tail_cfg.get("oversample", {}).get("enabled", False)):
+        if is_main_process(rank):
+            print("[stage2] building oversample weights", flush=True)
         sample_weights = build_sample_weights(train_dataset, cfg)
+        if is_main_process(rank):
+            print("[stage2] oversample weights ready", flush=True)
         if distributed:
             train_sampler = DistributedWeightedSampler(
                 sample_weights,
@@ -723,10 +834,14 @@ def main() -> None:
         pin_memory=is_cuda_device(device),
         persistent_workers=int(cfg["data"].get("num_workers", 6)) > 0,
     )
+    if is_main_process(rank):
+        print("[stage2] dataloaders ready", flush=True)
+    val_sampler = DistributedSampler(val_dataset, shuffle=False) if distributed else None
     val_loader = DataLoader(
         val_dataset,
-        batch_size=1,
+        batch_size=int(cfg["data"].get("val_batch_size", 1)),
         shuffle=False,
+        sampler=val_sampler,
         num_workers=int(cfg["data"].get("val_num_workers", cfg["data"].get("num_workers", 6))),
         pin_memory=is_cuda_device(device),
         persistent_workers=bool(cfg["data"].get("val_persistent_workers", cfg["data"].get("persistent_workers", False)))
@@ -768,17 +883,38 @@ def main() -> None:
 
     amp_enabled = bool(cfg["training"].get("amp", True)) and is_cuda_device(device)
     selection_metric = next(iter(dict(cfg["training"].get("selection_metrics", {"path_loss.rmse_physical": 1.0})).keys()))
+    validate_only = bool(cfg.get("runtime", {}).get("validate_only", False))
+
+    if validate_only:
+        val_epoch = max(start_epoch - 1, 0)
+        val_summary = evaluate_validation(
+            model.module if isinstance(model, DistributedDataParallel) else model,
+            stage1_teacher,
+            val_loader,
+            device,
+            cfg,
+            amp_enabled,
+            distributed=distributed,
+            rank=rank,
+            world_size=world_size,
+        )
+        if is_main_process(rank):
+            write_validation_json(out_dir, val_epoch, val_summary, best_epoch=best_epoch, best_score=best_score)
+            print(json.dumps({"validate_only": True, "epoch": val_epoch, **val_summary}))
+        cleanup_distributed(distributed)
+        return
 
     try:
         for epoch in range(start_epoch, int(cfg["training"]["epochs"]) + 1):
             if isinstance(train_sampler, (DistributedSampler, DistributedWeightedSampler)):
                 train_sampler.set_epoch(epoch)
 
-            train_loss = train_one_epoch(model, train_loader, optimizer, scaler, device, cfg, amp_enabled)
+            train_loss = train_one_epoch(model, stage1_teacher, train_loader, optimizer, scaler, device, cfg, amp_enabled)
             barrier_if_distributed(distributed)
 
             val_summary = evaluate_validation(
                 model.module if isinstance(model, DistributedDataParallel) else model,
+                stage1_teacher,
                 val_loader,
                 device,
                 cfg,
@@ -810,21 +946,24 @@ def main() -> None:
                     }
                     torch.save(best_payload, out_dir / "best_tail_refiner.pt")
 
-                if epoch % int(cfg["training"].get("save_every", 5)) == 0:
-                    target_model = model.module if isinstance(model, DistributedDataParallel) else model
-                    torch.save(
-                        {
-                            "epoch": epoch,
-                            "best_epoch": best_epoch,
-                            "best_score": best_score,
-                            "model": target_model.state_dict(),
-                            "optimizer": optimizer.state_dict(),
-                            "scheduler": scheduler.state_dict() if scheduler is not None else None,
-                            "scaler": scaler.state_dict(),
-                            "config_path": args.config,
-                        },
-                        out_dir / f"epoch_{epoch}_tail_refiner.pt",
-                    )
+                target_model = model.module if isinstance(model, DistributedDataParallel) else model
+                epoch_ckpt_path = out_dir / f"epoch_{epoch}_tail_refiner.pt"
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "best_epoch": best_epoch,
+                        "best_score": best_score,
+                        "model": target_model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict() if scheduler is not None else None,
+                        "scaler": scaler.state_dict(),
+                        "config_path": args.config,
+                    },
+                    epoch_ckpt_path,
+                )
+                prev_epoch_ckpt_path = out_dir / f"epoch_{epoch - 1}_tail_refiner.pt"
+                if prev_epoch_ckpt_path.exists():
+                    prev_epoch_ckpt_path.unlink()
 
                 write_validation_json(out_dir, epoch, val_summary, best_epoch=best_epoch, best_score=best_score)
                 print(json.dumps({"epoch": epoch, "tail_refiner_loss": train_loss, selection_metric: current_score}))

@@ -26,6 +26,16 @@ def _resolve_path(root_dir: Path, rel_path: str) -> Path:
     return root_dir / rel_path.replace('\\', '/').replace('\r', '').replace('\n', '')
 
 
+def _augmentation_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    aug_cfg = dict(cfg.get('augmentation', {}))
+    return {
+        'augment': bool(aug_cfg.get('enable', False)),
+        'hflip_prob': float(aug_cfg.get('hflip_prob', 0.5)),
+        'vflip_prob': float(aug_cfg.get('vflip_prob', 0.5)),
+        'rot90_prob': float(aug_cfg.get('rot90_prob', 0.4)),
+    }
+
+
 def _normalize_array(arr: np.ndarray, metadata: Optional[Dict[str, Any]]) -> np.ndarray:
     if metadata is None:
         return arr.astype(np.float32, copy=False)
@@ -2409,6 +2419,7 @@ def build_dataset_splits_from_config(cfg: Dict[str, Any]) -> Dict[str, Dataset]:
     data_cfg = cfg['data']
     target_columns = list(cfg['target_columns'])
     dataset_format = str(data_cfg.get('format', 'manifest')).lower()
+    train_aug = _augmentation_kwargs(cfg)
 
     if dataset_format == 'manifest':
         common = dict(
@@ -2425,10 +2436,7 @@ def build_dataset_splits_from_config(cfg: Dict[str, Any]) -> Dict[str, Dataset]:
         splits: Dict[str, Dataset] = {
             'train': CKMDataset(
                 manifest_csv=data_cfg['train_manifest'],
-                augment=bool(cfg['augmentation']['enable']),
-                hflip_prob=float(cfg['augmentation']['hflip_prob']),
-                vflip_prob=float(cfg['augmentation']['vflip_prob']),
-                rot90_prob=float(cfg['augmentation']['rot90_prob']),
+                **train_aug,
                 **common,
             ),
             'val': CKMDataset(
@@ -2500,10 +2508,7 @@ def build_dataset_splits_from_config(cfg: Dict[str, Any]) -> Dict[str, Dataset]:
     splits = {
         'train': CKMHDF5Dataset(
             sample_refs=train_refs,
-            augment=bool(cfg['augmentation']['enable']),
-            hflip_prob=float(cfg['augmentation']['hflip_prob']),
-            vflip_prob=float(cfg['augmentation']['vflip_prob']),
-            rot90_prob=float(cfg['augmentation']['rot90_prob']),
+            **train_aug,
             **common_hdf5,
         ),
         'val': CKMHDF5Dataset(
@@ -2530,6 +2535,7 @@ def build_cross_validation_datasets_from_config(cfg: Dict[str, Any]) -> Tuple[Da
     data_cfg = cfg['data']
     target_columns = list(cfg['target_columns'])
     dataset_format = str(data_cfg.get('format', 'manifest')).lower()
+    train_aug = _augmentation_kwargs(cfg)
 
     if dataset_format == 'manifest':
         common = dict(
@@ -2549,18 +2555,12 @@ def build_cross_validation_datasets_from_config(cfg: Dict[str, Any]) -> Tuple[Da
             [
                 CKMDataset(
                     manifest_csv=train_manifest,
-                    augment=bool(cfg['augmentation']['enable']),
-                    hflip_prob=float(cfg['augmentation']['hflip_prob']),
-                    vflip_prob=float(cfg['augmentation']['vflip_prob']),
-                    rot90_prob=float(cfg['augmentation']['rot90_prob']),
+                    **train_aug,
                     **common,
                 ),
                 CKMDataset(
                     manifest_csv=val_manifest,
-                    augment=bool(cfg['augmentation']['enable']),
-                    hflip_prob=float(cfg['augmentation']['hflip_prob']),
-                    vflip_prob=float(cfg['augmentation']['vflip_prob']),
-                    rot90_prob=float(cfg['augmentation']['rot90_prob']),
+                    **train_aug,
                     **common,
                 ),
             ]
@@ -2614,10 +2614,7 @@ def build_cross_validation_datasets_from_config(cfg: Dict[str, Any]) -> Tuple[Da
     )
     dev_train = CKMHDF5Dataset(
         sample_refs=dev_refs,
-        augment=bool(cfg['augmentation']['enable']),
-        hflip_prob=float(cfg['augmentation']['hflip_prob']),
-        vflip_prob=float(cfg['augmentation']['vflip_prob']),
-        rot90_prob=float(cfg['augmentation']['rot90_prob']),
+        **train_aug,
         **common_hdf5,
     )
     dev_eval = CKMHDF5Dataset(

@@ -1,0 +1,75 @@
+%%{init: {'flowchart': {'nodeSpacing': 26, 'rankSpacing': 34}} }%%
+flowchart TB
+    subgraph INPUTS["Inputs"]
+      direction TB
+      A1["Topology map + LoS mask + distance map"]
+      A2["Continuous antenna height scalar"]
+      A3["Calibrated Try47 prior"]
+    end
+
+    subgraph ROUTE["Topology routing"]
+      direction TB
+      B1["TinyTopologyClassifier"]
+      B2["6 topology classes"]
+      B3["Expert registry"]
+      B1 --> B2 --> B3
+    end
+
+    subgraph EXPERTS["Six topology experts"]
+      direction TB
+      C1["open_sparse_lowrise"]
+      C2["open_sparse_vertical"]
+      C3["mixed_compact_lowrise"]
+      C4["mixed_compact_midrise"]
+      C5["dense_block_midrise"]
+      C6["dense_block_highrise"]
+    end
+
+    subgraph MODEL["Shared expert family"]
+      direction TB
+      D1["PMHHNet"]
+      D2["High-frequency branch"]
+      D3["FiLM-style height conditioning"]
+      D4["Residual + no-data dual head"]
+      D5["Final path-loss map"]
+      D1 --> D2 --> D3 --> D4 --> D5
+    end
+
+    subgraph SUP["Supervision"]
+      direction TB
+      E1["Valid path-loss pixels"]
+      E2["No-data auxiliary mask"]
+      E3["Validation JSON: prior gains, no-data IoU, support counts"]
+      E1 --> E3
+      E2 --> E3
+    end
+
+    A1 --> B1
+    B3 --> C1
+    B3 --> C2
+    B3 --> C3
+    B3 --> C4
+    B3 --> C5
+    B3 --> C6
+    C1 --> D1
+    C2 --> D1
+    C3 --> D1
+    C4 --> D1
+    C5 --> D1
+    C6 --> D1
+    A2 --> D3
+    A3 --> D5
+    D4 --> E2
+    D5 --> E1
+
+    classDef input fill:#d6f0ff,stroke:#0077aa,stroke-width:1px,color:#003344;
+    classDef route fill:#f0e2ff,stroke:#7a3db5,stroke-width:1px,color:#38185c;
+    classDef expert fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+    classDef model fill:#ffe8c7,stroke:#b16b00,stroke-width:1px,color:#5a3300;
+    classDef sup fill:#fff4cc,stroke:#9a7b00,stroke-width:1px,color:#5b4300;
+
+    class A1,A2,A3 input;
+    class B1,B2,B3 route;
+    class C1,C2,C3,C4,C5,C6 expert;
+    class D1,D2,D3,D4 model;
+    class E1,E2,E3 sup;

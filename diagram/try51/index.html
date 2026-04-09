@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Try51 Diagrams</title>
+  <style>
+    :root {
+      --bg: #f2f7f4;
+      --card: #ffffff;
+      --ink: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+    }
+    body { margin: 0; font-family: "Segoe UI", Tahoma, sans-serif; background: radial-gradient(circle at top right, #e6fffa, var(--bg)); color: var(--ink); }
+    .wrap { max-width: 1320px; margin: 20px auto; padding: 0 16px 24px; }
+    h1 { margin: 0 0 8px; color: #134e4a; }
+    .subtitle { margin: 0 0 16px; color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 16px; box-shadow: 0 8px 20px rgba(2,6,23,0.08); }
+    h2 { margin: 0 0 8px; font-size: 1.05rem; color: #0f172a; }
+    p { margin: 0 0 10px; color: var(--muted); font-size: 0.93rem; }
+    .links { margin: 0 0 12px; font-size: 0.92rem; }
+    .links a { color: #0f766e; text-decoration: none; font-weight: 600; }
+    .links a:hover { text-decoration: underline; }
+    pre.mermaid { margin: 0 auto; overflow-x: auto; background: #fcfffd; border-radius: 8px; padding: 8px; }
+    pre.mermaid svg { display: block; margin: 0 auto; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, theme: "default", securityLevel: "loose" });
+  </script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Try51 Diagram Collection</h1>
+    <p class="subtitle">Supervised PMNet baseline, regime-aware weighting, and residual refinement for Try51.</p>
+
+    <div class="card">
+      <h2>1. Try51 Full System</h2>
+      <p>Shows the supervised PMNet stage 1, regime-aware weighting, and the residual tail refiner used in the new literature-aligned branch.</p>
+      <div class="links"><a href="try51_full_system.mmd">Open try51_full_system.mmd</a></div>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 26, 'rankSpacing': 34}} }%%
+flowchart TB
+    subgraph INPUTS["Inputs and calibrated prior"]
+      direction TB
+      A1["Topology map + LoS mask + distance map"]
+      A2["Antenna height scalar"]
+      A3["Calibrated Try47 prior"]
+      A4["Automatic city type from density + height"]
+      A1 --> A3
+      A2 --> A3
+      A1 --> A4
+    end
+
+    subgraph S1["Stage 1: supervised PMNet"]
+      direction TB
+      B1["PMNetResidualRegressor<br/>112 channels"]
+      B2["MSE-dominant residual learning"]
+      B3["city_holdout validation"]
+      B4["best stage1 checkpoint"]
+      B1 --> B2 --> B3 --> B4
+    end
+
+    subgraph RW["Regime-aware weighting"]
+      direction TB
+      C1["Boost NLoS"]
+      C2["Boost low antenna"]
+      C3["Boost dense_highrise"]
+      C1 --> C2 --> C3
+    end
+
+    subgraph S2["Stage 2: residual tail refiner"]
+      direction TB
+      D1["Frozen stage1 teacher"]
+      D2["UNet residual refiner"]
+      D3["Residual correction on top of stage1"]
+      D1 --> D2 --> D3
+    end
+
+    A3 --> B1
+    A4 --> RW
+    RW --> B2
+    B4 --> D1
+
+    classDef input fill:#d6f0ff,stroke:#0077aa,stroke-width:1px,color:#003344;
+    classDef stage1 fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+    classDef regime fill:#f0e2ff,stroke:#7a3db5,stroke-width:1px,color:#38185c;
+    classDef stage2 fill:#ffe8c7,stroke:#b16b00,stroke-width:1px,color:#5a3300;
+
+    class A1,A2,A3,A4 input;
+    class B1,B2,B3,B4 stage1;
+    class C1,C2,C3 regime;
+    class D1,D2,D3 stage2;</pre>
+    </div>
+  </div>
+</body>
+</html>

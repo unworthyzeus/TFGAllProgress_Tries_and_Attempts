@@ -1,0 +1,54 @@
+{
+  "try_dir": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50",
+  "config": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50\\experiments\\fiftiethtry50_pmnet_prior_gan_fastbatch\\fiftiethtry50_pmnet_prior_stage1_widen112_initial.yaml",
+  "dataset": "C:\\TFG\\TFGpractice\\Datasets\\CKM_Dataset_270326.h5",
+  "train_samples": 1359,
+  "val_samples": 150,
+  "train_nlos_pixels": 2767416,
+  "thresholds": {
+    "shadow_shallow_max": 0.07,
+    "break_shallow_max": 0.1,
+    "blocker_h_shallow_max": 0.1,
+    "blocker_c_shallow_max": 0.08,
+    "blocker_h_rooftop_min": 0.12,
+    "blocker_c_rooftop_max": 0.18,
+    "shadow_rooftop_max": 0.18,
+    "break_rooftop_max": 0.22,
+    "shadow_canyon_min": 0.18,
+    "break_canyon_min": 0.22,
+    "delta_clip_max": 30.0
+  },
+  "regime_rows": {
+    "shallow_transition": 13351,
+    "deep_shadow_canyon": 894935,
+    "high_blocker_rooftop": 243503,
+    "dense_clutter": 1615627
+  },
+  "metrics": {
+    "overall": {
+      "count": 30369914,
+      "rmse_db": 24.360364390679578,
+      "mae_db": 13.919657941415611
+    },
+    "LoS": {
+      "count": 20563784,
+      "rmse_db": 3.7236890605026605,
+      "mae_db": 2.959377268822339
+    },
+    "NLoS": {
+      "count": 9806130,
+      "rmse_db": 42.52983978008124,
+      "mae_db": 36.903734670011175
+    }
+  },
+  "model": {
+    "global_model": "HistGradientBoostingRegressor",
+    "expert_model": "HistGradientBoostingRegressor",
+    "expert_min_rows": 20000,
+    "trained_experts": {
+      "deep_shadow_canyon": true,
+      "high_blocker_rooftop": true,
+      "dense_clutter": true
+    }
+  }
+}

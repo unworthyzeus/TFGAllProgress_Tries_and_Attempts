@@ -100,7 +100,7 @@ def should_download(rel_path: str, mode: str) -> bool:
         if name.endswith(".json"):
             return True
         if name.endswith(".pt"):
-            return (name == "best_cgan.pt" or name == "best_model.pt")
+            return (name == "best_cgan.pt" or name == "best_model.pt" or name == "best_tail_refiner.pt")
         return False
     return True
 

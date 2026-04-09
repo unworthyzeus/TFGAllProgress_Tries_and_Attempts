@@ -1,0 +1,87 @@
+[nlos-experts] try=TFGFiftiethTry50 dataset=CKM_Dataset_270326.h5 sample_frac=0.050 train_subset=566/11326 val_subset=150/2427
+[nlos-experts] train sample 25/566 rows=51200
+[nlos-experts] train sample 50/566 rows=99967
+[nlos-experts] train sample 75/566 rows=148969
+[nlos-experts] train sample 100/566 rows=200169
+[nlos-experts] train sample 125/566 rows=251369
+[nlos-experts] train sample 150/566 rows=302569
+[nlos-experts] train sample 175/566 rows=353769
+[nlos-experts] train sample 200/566 rows=404969
+[nlos-experts] train sample 225/566 rows=456169
+[nlos-experts] train sample 250/566 rows=507369
+[nlos-experts] train sample 275/566 rows=558569
+[nlos-experts] train sample 300/566 rows=609769
+[nlos-experts] train sample 325/566 rows=660969
+[nlos-experts] train sample 350/566 rows=712169
+[nlos-experts] train sample 375/566 rows=762302
+[nlos-experts] train sample 400/566 rows=813502
+[nlos-experts] train sample 425/566 rows=862654
+[nlos-experts] train sample 450/566 rows=913854
+[nlos-experts] train sample 475/566 rows=965054
+[nlos-experts] train sample 500/566 rows=1016254
+[nlos-experts] train sample 525/566 rows=1067454
+[nlos-experts] train sample 550/566 rows=1118654
+[nlos-experts] train sample 566/566 rows=1151422
+[nlos-experts] fitting global fallback hgbr
+[nlos-experts] skipping expert shallow_transition rows=5754
+[nlos-experts] fitting expert deep_shadow_canyon rows=362857
+[nlos-experts] skipping expert high_blocker_rooftop rows=0
+[nlos-experts] fitting expert dense_clutter rows=782811
+[nlos-experts] starting validation samples=150
+[nlos-experts] val sample 25/150 overall_rmse=24.7835
+[nlos-experts] val sample 50/150 overall_rmse=23.3313
+[nlos-experts] val sample 75/150 overall_rmse=23.6360
+[nlos-experts] val sample 100/150 overall_rmse=24.0385
+[nlos-experts] val sample 125/150 overall_rmse=24.7599
+[nlos-experts] val sample 150/150 overall_rmse=24.3896
+{
+  "try_dir": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50",
+  "config": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50\\experiments\\fiftiethtry50_pmnet_prior_gan_fastbatch\\fiftiethtry50_pmnet_prior_stage1_widen112_initial.yaml",
+  "dataset": "C:\\TFG\\TFGpractice\\Datasets\\CKM_Dataset_270326.h5",
+  "train_samples": 566,
+  "val_samples": 150,
+  "train_nlos_pixels": 1151422,
+  "thresholds": {
+    "shadow_shallow_max": 0.07,
+    "break_shallow_max": 0.1,
+    "blocker_h_shallow_max": 0.1,
+    "blocker_c_shallow_max": 0.08,
+    "blocker_h_rooftop_min": 0.18,
+    "blocker_c_rooftop_max": 0.12,
+    "shadow_canyon_min": 0.18,
+    "break_canyon_min": 0.22,
+    "delta_clip_max": 30.0
+  },
+  "regime_rows": {
+    "shallow_transition": 5754,
+    "deep_shadow_canyon": 362857,
+    "high_blocker_rooftop": 0,
+    "dense_clutter": 782811
+  },
+  "metrics": {
+    "overall": {
+      "count": 30369914,
+      "rmse_db": 24.389617336609756,
+      "mae_db": 13.938291112693303
+    },
+    "LoS": {
+      "count": 20563784,
+      "rmse_db": 3.7236890605026605,
+      "mae_db": 2.959377268822339
+    },
+    "NLoS": {
+      "count": 9806130,
+      "rmse_db": 42.581731894988096,
+      "mae_db": 36.96144222735037
+    }
+  },
+  "model": {
+    "global_model": "HistGradientBoostingRegressor",
+    "expert_model": "HistGradientBoostingRegressor",
+    "expert_min_rows": 30000,
+    "trained_experts": {
+      "deep_shadow_canyon": true,
+      "dense_clutter": true
+    }
+  }
+}

@@ -1,0 +1,98 @@
+[nlos-hgbr] try=TFGFiftiethTry50 dataset=CKM_Dataset_270326.h5 sample_frac=0.050 train_subset=566/11326 val_subset=150/2427
+[nlos-hgbr] train sample 25/566 rows=51200
+[nlos-hgbr] train sample 50/566 rows=99967
+[nlos-hgbr] train sample 75/566 rows=148969
+[nlos-hgbr] train sample 100/566 rows=200169
+[nlos-hgbr] train sample 125/566 rows=251369
+[nlos-hgbr] train sample 150/566 rows=302569
+[nlos-hgbr] train sample 175/566 rows=353769
+[nlos-hgbr] train sample 200/566 rows=404969
+[nlos-hgbr] train sample 225/566 rows=456169
+[nlos-hgbr] train sample 250/566 rows=507369
+[nlos-hgbr] train sample 275/566 rows=558569
+[nlos-hgbr] train sample 300/566 rows=609769
+[nlos-hgbr] train sample 325/566 rows=660969
+[nlos-hgbr] train sample 350/566 rows=712169
+[nlos-hgbr] train sample 375/566 rows=762302
+[nlos-hgbr] train sample 400/566 rows=813502
+[nlos-hgbr] train sample 425/566 rows=862654
+[nlos-hgbr] train sample 450/566 rows=913854
+[nlos-hgbr] train sample 475/566 rows=965054
+[nlos-hgbr] train sample 500/566 rows=1016254
+[nlos-hgbr] train sample 525/566 rows=1067454
+[nlos-hgbr] train sample 550/566 rows=1118654
+[nlos-hgbr] train sample 566/566 rows=1151422
+[nlos-hgbr] fitting global hgbr
+[nlos-hgbr] fitting specialist 1/9 regime=0 rows=52706
+[nlos-hgbr] fitting specialist 2/9 regime=1 rows=57344
+[nlos-hgbr] fitting specialist 3/9 regime=2 rows=44547
+[nlos-hgbr] fitting specialist 4/9 regime=3 rows=73728
+[nlos-hgbr] fitting specialist 5/9 regime=4 rows=76677
+[nlos-hgbr] fitting specialist 6/9 regime=5 rows=86612
+[nlos-hgbr] fitting specialist 7/9 regime=6 rows=260096
+[nlos-hgbr] fitting specialist 8/9 regime=7 rows=247808
+[nlos-hgbr] fitting specialist 9/9 regime=8 rows=251904
+[nlos-hgbr] starting validation samples=150
+[nlos-hgbr] val sample 25/150 overall_rmse=24.7173
+[nlos-hgbr] val sample 50/150 overall_rmse=23.2823
+[nlos-hgbr] val sample 75/150 overall_rmse=23.6093
+[nlos-hgbr] val sample 100/150 overall_rmse=24.0066
+[nlos-hgbr] val sample 125/150 overall_rmse=24.7176
+[nlos-hgbr] val sample 150/150 overall_rmse=24.3536
+{
+  "try_dir": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50",
+  "config": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50\\experiments\\fiftiethtry50_pmnet_prior_gan_fastbatch\\fiftiethtry50_pmnet_prior_stage1_widen112_initial.yaml",
+  "dataset": "C:\\TFG\\TFGpractice\\Datasets\\CKM_Dataset_270326.h5",
+  "train_samples": 566,
+  "val_samples": 150,
+  "train_nlos_pixels": 1151422,
+  "metrics": {
+    "overall": {
+      "count": 30369914,
+      "rmse_db": 24.35364367076083,
+      "mae_db": 13.890923135974163
+    },
+    "LoS": {
+      "count": 20563784,
+      "rmse_db": 3.7236890605026605,
+      "mae_db": 2.959377268822339
+    },
+    "NLoS": {
+      "count": 9806130,
+      "rmse_db": 42.51791768147229,
+      "mae_db": 36.814742012350756
+    }
+  },
+  "model": {
+    "train_r2": 0.025530015466471268,
+    "max_depth": 10,
+    "learning_rate": 0.05,
+    "max_iter": 420,
+    "delta_clip_max": 30.0,
+    "use_torch_mlp": false,
+    "mlp_max_rows": 0,
+    "mlp_best_epoch": 0,
+    "mlp_device": "disabled",
+    "specialist_models": 9,
+    "specialist_min_rows": 30000
+  },
+  "feature_importance": {
+    "current_minus_old_prior": 0.0,
+    "shadow_depth": 0.0,
+    "distance_since_los_break": 0.0,
+    "max_blocker_height": 0.0,
+    "blocker_count": 0.0,
+    "distance_norm": 0.0,
+    "prior_confidence": 0.0,
+    "old_prior_abs": 0.0,
+    "antenna_height_norm": 0.0,
+    "city_density": 0.0,
+    "city_height_norm": 0.0,
+    "city_type_code": 0.0,
+    "ant_bin_code": 0.0,
+    "prior_x_shadow": 0.0,
+    "prior_x_break": 0.0,
+    "shadow_x_blocker": 0.0,
+    "dist_x_ant": 0.0
+  }
+}

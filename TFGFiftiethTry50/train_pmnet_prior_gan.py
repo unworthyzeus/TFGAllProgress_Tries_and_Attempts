@@ -86,7 +86,7 @@ def formula_channel_index(cfg: Dict[str, Any]) -> int:
         idx += 1
     formula_cfg = dict(cfg["data"].get("path_loss_formula_input", {}))
     if not bool(formula_cfg.get("enabled", False)):
-        raise ValueError("Try 42 requires data.path_loss_formula_input.enabled = true")
+        raise ValueError("Try 50 stage 1 requires data.path_loss_formula_input.enabled = true")
     return idx
 
 
@@ -845,7 +845,7 @@ def main() -> None:
     train_dataset = splits["train"]
     val_dataset = splits["val"]
     if return_scalar_cond_from_config(cfg):
-        raise ValueError("Try 42 expects scalar channels, not scalar FiLM vectors.")
+        raise ValueError("Try 50 expects scalar channels, not scalar FiLM vectors.")
 
     pin_memory = is_cuda_device(device)
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if distributed else None
@@ -1023,24 +1023,27 @@ def main() -> None:
                     }
                     torch.save(best_payload, out_dir / "best_cgan.pt")
 
-                if epoch % int(cfg["training"].get("save_every", 5)) == 0:
-                    torch.save(
-                        {
-                            "epoch": epoch,
-                            "best_epoch": best_epoch,
-                            "best_score": best_score,
-                            "model": generator.state_dict(),
-                            "generator": generator.state_dict(),
-                            "discriminator": discriminator.state_dict(),
-                            "optimizer_g": optimizer_g.state_dict(),
-                            "optimizer_d": optimizer_d.state_dict(),
-                            "scheduler_g": scheduler_g.state_dict() if scheduler_g is not None else None,
-                            "scaler_g": scaler_g.state_dict(),
-                            "scaler_d": scaler_d.state_dict(),
-                            "config_path": args.config,
-                        },
-                        out_dir / f"epoch_{epoch}_cgan.pt",
-                    )
+                epoch_ckpt_path = out_dir / f"epoch_{epoch}_cgan.pt"
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "best_epoch": best_epoch,
+                        "best_score": best_score,
+                        "model": generator.state_dict(),
+                        "generator": generator.state_dict(),
+                        "discriminator": discriminator.state_dict(),
+                        "optimizer_g": optimizer_g.state_dict(),
+                        "optimizer_d": optimizer_d.state_dict(),
+                        "scheduler_g": scheduler_g.state_dict() if scheduler_g is not None else None,
+                        "scaler_g": scaler_g.state_dict(),
+                        "scaler_d": scaler_d.state_dict(),
+                        "config_path": args.config,
+                    },
+                    epoch_ckpt_path,
+                )
+                prev_epoch_ckpt_path = out_dir / f"epoch_{epoch - 1}_cgan.pt"
+                if prev_epoch_ckpt_path.exists():
+                    prev_epoch_ckpt_path.unlink()
 
                 write_validation_json(out_dir, epoch, val_summary, best_epoch=best_epoch, best_score=best_score)
                 print(json.dumps({"epoch": epoch, "generator_loss": train_g_loss, "discriminator_loss": train_d_loss, selection_metric: current_score}))

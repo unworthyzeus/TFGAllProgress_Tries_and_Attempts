@@ -31,11 +31,11 @@
 <body>
   <div class="wrap">
     <h1>Try49 Diagram Collection</h1>
-    <p class="subtitle">Prior, stage1 export, stage2 refiner, and the stage-level model diagrams for Try49.</p>
+    <p class="subtitle">Prior, stage1 export, stage2 refiner, and the intended serialized job order for Try49.</p>
 
     <div class="card">
       <h2>1. Complete Try49 Pipeline</h2>
-      <p>Shows the serialized queue: stage1, HDF5 export, stage2 refiner, then the two follow-up stage1 jobs.</p>
+      <p>Shows the intended serialized queue: stage1 init, stage1 resume, HDF5 export, then stage2 tail refiner.</p>
       <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 26, 'rankSpacing': 34}} }%%
 flowchart TB
     subgraph PRIOR[Inputs and prior summary]
@@ -73,19 +73,19 @@ flowchart TB
       C1 --> C2 --> C3 --> C4
     end
 
-    subgraph QUEUE[Queued follow-up jobs]
+    subgraph QUEUE[Intended job order]
       direction TB
-      Q1[Stage2 job 1]
-      Q2[Stage2 job 2]
-      Q3[Stage1 job 1]
-      Q4[Stage1 job 2]
+      Q1[Stage1 init job]
+      Q2[Stage1 resume job]
+      Q3[Export HDF5 job]
+      Q4[Stage2 tail-refiner job]
       Q1 --> Q2 --> Q3 --> Q4
     end
 
     I3 --> B1
     B4 --> E1
     E4 --> C1
-    C4 --> Q1</pre>
+    C4 --> Q4</pre>
     </div>
 
     <div class="card">

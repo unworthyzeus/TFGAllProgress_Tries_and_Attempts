@@ -12,8 +12,8 @@ from train_pmnet_residual import evaluate_validation
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate Try 42 PMNet residual model")
-    parser.add_argument("--config", type=str, default="experiments/fortysecondtry42_pmnet_prior_residual/fortysecondtry42_pmnet_prior_residual.yaml")
+    parser = argparse.ArgumentParser(description="Evaluate Try 50 PMNet prior-guided stage 1 model")
+    parser.add_argument("--config", type=str, default="experiments/fiftiethtry50_pmnet_prior_gan_fastbatch/fiftiethtry50_pmnet_prior_stage1_widen112_resume.yaml")
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--split", choices=["train", "val", "test"], default="val")
     args = parser.parse_args()

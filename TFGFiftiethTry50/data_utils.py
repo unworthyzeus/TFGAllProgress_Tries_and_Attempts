@@ -26,6 +26,16 @@ def _resolve_path(root_dir: Path, rel_path: str) -> Path:
     return root_dir / rel_path.replace('\\', '/').replace('\r', '').replace('\n', '')
 
 
+def _augmentation_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    aug_cfg = dict(cfg.get('augmentation', {}))
+    return {
+        'augment': bool(aug_cfg.get('enable', False)),
+        'hflip_prob': float(aug_cfg.get('hflip_prob', 0.5)),
+        'vflip_prob': float(aug_cfg.get('vflip_prob', 0.5)),
+        'rot90_prob': float(aug_cfg.get('rot90_prob', 0.4)),
+    }
+
+
 def _normalize_array(arr: np.ndarray, metadata: Optional[Dict[str, Any]]) -> np.ndarray:
     if metadata is None:
         return arr.astype(np.float32, copy=False)
@@ -81,6 +91,8 @@ def _resize_array(arr: np.ndarray, image_size: int, metadata: Optional[Dict[str,
     normalized = _normalize_array(np.asarray(arr), metadata)
     if normalized.ndim != 2:
         raise ValueError(f"Expected a 2D array, got shape {normalized.shape}")
+    if normalized.shape == (image_size, image_size):
+        return torch.from_numpy(normalized).unsqueeze(0)
     tensor = torch.from_numpy(normalized).unsqueeze(0)
     return TF.resize(
         tensor,
@@ -97,6 +109,8 @@ def _path_loss_db_to_linear_normalized(arr: np.ndarray, image_size: int) -> torc
     linear = np.clip(linear, 1e-18, 1.0)
     log_linear = np.log10(linear)
     normalized = (log_linear + 18.0) / 18.0
+    if normalized.shape == (image_size, image_size):
+        return torch.from_numpy(normalized.astype(np.float32, copy=False)).unsqueeze(0)
     tensor = torch.from_numpy(normalized.astype(np.float32)).unsqueeze(0)
     return TF.resize(
         tensor,
@@ -432,6 +446,29 @@ def _vinogradov_height_nlos_mean_path_loss_db_relaxed(
     p = params.get(city_type, params["mixed_midrise"])
     n_h = p["n_inf"] + (p["n0"] - p["n_inf"]) * math.exp(-max(h_tx, 1.0) / p["h0"])
     return lambda0_db + 10.0 * n_h * torch.log10(d3d_m.clamp(min=1.0))
+
+
+def _cih7_height_nlos_mean_path_loss_db(
+    d3d_m: torch.Tensor,
+    h_tx: float,
+    freq_ghz: float,
+    city_type: str,
+) -> torch.Tensor:
+    freq_mhz = max(float(freq_ghz), 0.1) * 1000.0
+    lambda0_db = 32.45 + 20.0 * math.log10(freq_mhz) - 60.0
+
+    # Coarse CIH-style parameters for roughly 7 GHz urban A2G. The structure is
+    # informed by the 7 GHz urban CI/NLoS slopes and by height-dependent A2G
+    # mmWave large-scale models: the useful change comes from reducing the
+    # large-scale NLoS slope at higher altitudes rather than from fine tuning.
+    params = {
+        "open_lowrise": {"n0": 3.10, "n_inf": 2.58, "h0": 55.0, "bias": 0.0},
+        "mixed_midrise": {"n0": 3.28, "n_inf": 2.72, "h0": 72.0, "bias": 0.8},
+        "dense_highrise": {"n0": 3.48, "n_inf": 2.88, "h0": 110.0, "bias": 1.6},
+    }
+    p = params.get(city_type, params["mixed_midrise"])
+    n_h = p["n_inf"] + (p["n0"] - p["n_inf"]) * math.exp(-max(h_tx, 1.0) / p["h0"])
+    return lambda0_db + float(p["bias"]) + 10.0 * n_h * torch.log10(d3d_m.clamp(min=1.0))
 
 
 def _vinogradov_height_nlos_path_loss_db(
@@ -976,6 +1013,284 @@ def _compute_directional_ripple_nlos_obstruction_db(
     return obstruction_db.clamp(min=0.0, max=max_obstruction_db), shadow_depth_m, near_occ
 
 
+def _compute_structured_nlos_delta_db(
+    d2d_m: torch.Tensor,
+    topology_tensor: Optional[torch.Tensor],
+    los_tensor: Optional[torch.Tensor],
+    *,
+    h_tx: float,
+    h_rx: float,
+    freq_ghz: float,
+    city_type: str,
+    meters_per_pixel: float,
+    non_ground_threshold: float,
+    a2g_params: Optional[Dict[str, float]] = None,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    params = dict(a2g_params or {})
+    nlos_prob = 1.0 - los_tensor.clamp(0.0, 1.0) if los_tensor is not None else torch.ones_like(d2d_m)
+    sigma_theta = _nlos_shadow_sigma_proxy_db(d2d_m, h_tx, h_rx)
+    theta_deg = _elevation_angle_deg(d2d_m, h_tx, h_rx)
+    lambda0_db = 20.0 * math.log10((4.0 * math.pi * h_tx * freq_ghz * 1.0e9) / 299792458.0)
+    eq11_soft_db = torch.relu(
+        _a2g_nlos_excess_path_loss_db(
+            d2d_m,
+            h_tx,
+            h_rx,
+            freq_ghz,
+            bias_db=float(params.get("nlos_bias", -16.16)),
+            amp_db=float(params.get("nlos_amp", 12.0436)),
+            tau_deg=float(params.get("nlos_tau", 7.52)),
+        ) - lambda0_db
+    )
+    shadow_depth_m = (
+        _compute_radial_shadow_depth_m(
+            los_tensor,
+            meters_per_pixel,
+            angle_bins=int(params.get("shadow_angle_bins", 720)),
+        )
+        if los_tensor is not None
+        else None
+    )
+
+    max_distance = max(float(torch.amax(d2d_m).item()), 1.0)
+    distance_norm = (d2d_m / max_distance).clamp(0.0, 1.0)
+    if shadow_depth_m is None:
+        shadow_depth_norm = nlos_prob * distance_norm
+    else:
+        depth_scale_m = max(float(params.get("shadow_depth_scale_m", 55.0)), 1e-3)
+        shadow_depth_norm = (shadow_depth_m / depth_scale_m).clamp(0.0, 2.5)
+
+    shallow_gate = torch.sigmoid(
+        (shadow_depth_norm - float(params.get("shallow_shadow_depth_norm", 0.20)))
+        / max(float(params.get("shadow_transition_temp", 0.10)), 1e-3)
+    )
+    deep_gate = torch.sigmoid(
+        (shadow_depth_norm - float(params.get("deep_shadow_depth_norm", 0.95)))
+        / max(float(params.get("deep_shadow_temp", 0.14)), 1e-3)
+    )
+    # Higher UAV heights should soften the extra NLoS attenuation instead of
+    # lifting the whole branch through a harsher global mean.
+    high_altitude_relief = 1.0 - math.exp(-max(h_tx, 1.0) / max(float(params.get("high_altitude_relief_m", 120.0)), 1e-3))
+    low_altitude_gate = math.exp(-max(h_tx, 1.0) / max(float(params.get("low_altitude_decay_m", 120.0)), 1e-3))
+    grazing_penalty = torch.relu(float(params.get("break_theta_ref_deg", 18.0)) - theta_deg) / max(
+        float(params.get("break_theta_scale_deg", 18.0)),
+        1e-3,
+    )
+
+    if topology_tensor is None:
+        break_db = (
+            float(params.get("break_base_db", 1.8))
+            + float(params.get("break_eq11_weight", 0.10)) * eq11_soft_db
+            + float(params.get("break_sigma_weight", 0.05)) * sigma_theta
+            + float(params.get("break_theta_weight", 1.6)) * grazing_penalty
+        ) * nlos_prob
+        shadow_db = (
+            float(params.get("shadow_depth_weight", 3.4)) * shadow_depth_norm
+            + float(params.get("shadow_deep_weight", 2.2)) * deep_gate * shadow_depth_norm
+        )
+        total = break_db + shadow_db - float(params.get("high_altitude_relief_weight", 1.0)) * high_altitude_relief * nlos_prob
+        return total.clamp(min=0.0, max=float(params.get("nlos_max_delta_db", 22.0))), shadow_depth_m, None
+
+    topo = topology_tensor.to(dtype=torch.float32)
+    if topo.ndim == 2:
+        topo = topo.unsqueeze(0)
+    building_mask = (topo > float(non_ground_threshold)).float()
+    if float(torch.amax(building_mask).item()) <= 0.0:
+        break_db = (
+            float(params.get("break_base_db", 1.8))
+            + float(params.get("break_eq11_weight", 0.10)) * eq11_soft_db
+            + float(params.get("break_sigma_weight", 0.05)) * sigma_theta
+            + float(params.get("break_theta_weight", 1.6)) * grazing_penalty
+        ) * nlos_prob
+        shadow_db = (
+            float(params.get("shadow_depth_weight", 3.4)) * shadow_depth_norm
+            + float(params.get("shadow_deep_weight", 2.2)) * deep_gate * shadow_depth_norm
+        )
+        total = break_db + shadow_db - float(params.get("high_altitude_relief_weight", 1.0)) * high_altitude_relief * nlos_prob
+        return total.clamp(min=0.0, max=float(params.get("nlos_max_delta_db", 22.0))), shadow_depth_m, torch.zeros_like(d2d_m)
+
+    topo_height = topo.clamp(min=0.0) * building_mask
+    height_scale = max(float(torch.amax(topo_height).item()), 1.0)
+    topo_height_norm = (topo_height / height_scale).clamp(0.0, 1.0)
+
+    near_kernel = _meters_to_odd_kernel(float(params.get("obstruction_near_window_m", 15.0)), meters_per_pixel)
+    far_kernel = _meters_to_odd_kernel(float(params.get("obstruction_far_window_m", 45.0)), meters_per_pixel)
+    support_kernel = _meters_to_odd_kernel(float(params.get("shadow_support_window_m", 31.0)), meters_per_pixel)
+    max_kernel = _meters_to_odd_kernel(float(params.get("obstruction_max_window_m", 21.0)), meters_per_pixel)
+
+    near_occ = _avg_pool_same(building_mask, near_kernel)
+    far_occ = _avg_pool_same(building_mask, far_kernel)
+    near_height = _avg_pool_same(topo_height_norm, near_kernel)
+    far_height = _avg_pool_same(topo_height_norm, far_kernel)
+    local_max_height = _max_pool_same(topo_height_norm, max_kernel)
+    shadow_support = _avg_pool_same(nlos_prob, support_kernel)
+    blocker_prominence = torch.relu(local_max_height - 0.5 * (near_height + far_height))
+    openness = (1.0 - near_occ).clamp(0.0, 1.0)
+    context_density = (0.65 * near_occ + 0.35 * far_occ).clamp(0.0, 1.0)
+    context_height = (0.55 * near_height + 0.45 * far_height).clamp(0.0, 1.0)
+
+    city_params = {
+        "open_lowrise": {
+            "break_bias": 1.3,
+            "break_eq11": 0.08,
+            "shadow": 2.7,
+            "deep": 1.8,
+            "blocker": 2.1,
+            "context": 0.8,
+            "height": 0.7,
+            "sigma": 0.04,
+            "relief": 1.6,
+        },
+        "mixed_midrise": {
+            "break_bias": 1.7,
+            "break_eq11": 0.10,
+            "shadow": 3.3,
+            "deep": 2.4,
+            "blocker": 2.7,
+            "context": 1.1,
+            "height": 0.9,
+            "sigma": 0.05,
+            "relief": 1.3,
+        },
+        "dense_highrise": {
+            "break_bias": 2.0,
+            "break_eq11": 0.12,
+            "shadow": 3.8,
+            "deep": 2.8,
+            "blocker": 3.2,
+            "context": 1.4,
+            "height": 1.1,
+            "sigma": 0.06,
+            "relief": 1.0,
+        },
+    }
+    cp = city_params.get(city_type, city_params["mixed_midrise"])
+
+    break_db = (
+        float(cp["break_bias"]) * nlos_prob
+        + float(cp["break_eq11"]) * eq11_soft_db * nlos_prob
+        + float(cp["sigma"]) * sigma_theta * nlos_prob
+        + float(params.get("break_theta_weight", 1.6)) * grazing_penalty * nlos_prob
+        + float(params.get("low_altitude_break_weight", 0.8)) * low_altitude_gate * shallow_gate * nlos_prob
+    )
+    shadow_db = (
+        float(cp["shadow"]) * shadow_depth_norm * nlos_prob
+        + float(cp["deep"]) * deep_gate * shadow_depth_norm * nlos_prob
+    )
+    blocker_db = (
+        float(cp["blocker"]) * blocker_prominence * nlos_prob
+        + float(params.get("blocker_density_weight", 1.2)) * near_occ * shallow_gate * nlos_prob
+        + float(params.get("blocker_height_weight", 1.0)) * local_max_height * nlos_prob
+    )
+    context_db = (
+        float(cp["context"]) * context_density * nlos_prob
+        + float(cp["height"]) * context_height * nlos_prob
+        + float(params.get("shadow_support_weight", 0.9)) * shadow_support * shallow_gate * nlos_prob
+        - float(cp["relief"]) * openness * shallow_gate * nlos_prob
+        - float(params.get("high_altitude_relief_weight", 1.0)) * high_altitude_relief * (0.5 + 0.5 * openness) * nlos_prob
+    )
+    total = break_db + shadow_db + blocker_db + context_db
+    return total.clamp(min=0.0, max=float(params.get("nlos_max_delta_db", 22.0))), shadow_depth_m, near_occ
+
+
+def _compute_minimal_nlos_delta_db(
+    d2d_m: torch.Tensor,
+    topology_tensor: Optional[torch.Tensor],
+    los_tensor: Optional[torch.Tensor],
+    *,
+    h_tx: float,
+    h_rx: float,
+    freq_ghz: float,
+    city_type: str,
+    meters_per_pixel: float,
+    non_ground_threshold: float,
+    a2g_params: Optional[Dict[str, float]] = None,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    params = dict(a2g_params or {})
+    nlos_prob = 1.0 - los_tensor.clamp(0.0, 1.0) if los_tensor is not None else torch.ones_like(d2d_m)
+    theta_deg = _elevation_angle_deg(d2d_m, h_tx, h_rx)
+    lambda0_db = 20.0 * math.log10((4.0 * math.pi * h_tx * freq_ghz * 1.0e9) / 299792458.0)
+    eq11_soft_db = torch.relu(
+        _a2g_nlos_excess_path_loss_db(
+            d2d_m,
+            h_tx,
+            h_rx,
+            freq_ghz,
+            bias_db=float(params.get("nlos_bias", -16.16)),
+            amp_db=float(params.get("nlos_amp", 12.0436)),
+            tau_deg=float(params.get("nlos_tau", 7.52)),
+        ) - lambda0_db
+    )
+    shadow_depth_m = (
+        _compute_radial_shadow_depth_m(
+            los_tensor,
+            meters_per_pixel,
+            angle_bins=int(params.get("shadow_angle_bins", 720)),
+        )
+        if los_tensor is not None
+        else None
+    )
+    max_distance = max(float(torch.amax(d2d_m).item()), 1.0)
+    distance_norm = (d2d_m / max_distance).clamp(0.0, 1.0)
+    if shadow_depth_m is None:
+        shadow_depth_norm = distance_norm
+    else:
+        depth_scale_m = max(float(params.get("shadow_depth_scale_m", 80.0)), 1e-3)
+        shadow_depth_norm = (shadow_depth_m / depth_scale_m).clamp(0.0, 1.2)
+
+    grazing_penalty = torch.relu(float(params.get("break_theta_ref_deg", 18.0)) - theta_deg) / max(
+        float(params.get("break_theta_scale_deg", 18.0)),
+        1e-3,
+    )
+    low_altitude_gate = math.exp(-max(h_tx, 1.0) / max(float(params.get("low_altitude_decay_m", 120.0)), 1e-3))
+
+    near_occ: Optional[torch.Tensor] = None
+    context_term = torch.zeros_like(d2d_m)
+    if topology_tensor is not None:
+        topo = topology_tensor.to(dtype=torch.float32)
+        if topo.ndim == 2:
+            topo = topo.unsqueeze(0)
+        building_mask = (topo > float(non_ground_threshold)).float()
+        if float(torch.amax(building_mask).item()) > 0.0:
+            topo_height = topo.clamp(min=0.0) * building_mask
+            height_scale = max(float(torch.amax(topo_height).item()), 1.0)
+            topo_height_norm = (topo_height / height_scale).clamp(0.0, 1.0)
+            near_kernel = _meters_to_odd_kernel(float(params.get("obstruction_near_window_m", 15.0)), meters_per_pixel)
+            far_kernel = _meters_to_odd_kernel(float(params.get("obstruction_far_window_m", 45.0)), meters_per_pixel)
+            near_occ = _avg_pool_same(building_mask, near_kernel)
+            far_occ = _avg_pool_same(building_mask, far_kernel)
+            near_height = _avg_pool_same(topo_height_norm, near_kernel)
+            far_height = _avg_pool_same(topo_height_norm, far_kernel)
+            context_density = (0.65 * near_occ + 0.35 * far_occ).clamp(0.0, 1.0)
+            context_height = (0.55 * near_height + 0.45 * far_height).clamp(0.0, 1.0)
+            openness = (1.0 - near_occ).clamp(0.0, 1.0)
+            city_bias = {
+                "open_lowrise": 0.45,
+                "mixed_midrise": 0.70,
+                "dense_highrise": 0.95,
+            }.get(city_type, 0.70)
+            context_term = (
+                city_bias
+                + float(params.get("context_density_weight", 1.8)) * context_density
+                + float(params.get("context_height_weight", 1.0)) * context_height
+                - float(params.get("context_open_relief_weight", 0.8)) * openness
+            ).clamp(0.0, float(params.get("context_max_db", 4.0)))
+
+    break_term = (
+        float(params.get("break_base_db", 1.0))
+        + float(params.get("break_eq11_weight", 0.05)) * eq11_soft_db
+        + float(params.get("break_theta_weight", 0.9)) * grazing_penalty
+        + float(params.get("low_altitude_break_weight", 0.4)) * low_altitude_gate
+    ).clamp(0.0, float(params.get("break_max_db", 5.0)))
+
+    shadow_term = (
+        float(params.get("shadow_depth_weight", 2.0)) * shadow_depth_norm
+    ).clamp(0.0, float(params.get("shadow_max_db", 6.0)))
+
+    total = (break_term + shadow_term + context_term) * nlos_prob
+    return total.clamp(min=0.0, max=float(params.get("nlos_max_delta_db", 12.0))), shadow_depth_m, near_occ
+
+
 def _compute_formula_path_loss_db(
     image_size: int,
     antenna_height_m: float,
@@ -1283,6 +1598,270 @@ def _compute_formula_path_loss_db(
         else:
             los_prob = los_tensor.clamp(0.0, 1.0).to(dtype=torch.float32)
             path_db = los_prob * smooth_los_db + (1.0 - los_prob) * nlos_path_db + ripple_db
+    elif mode == 'hybrid_shadowed_ripple_two_ray_cih7_nlos':
+        cih_params = {
+            **a2g_params,
+            "nlos_max_obstruction_db": float(a2g_params.get("nlos_max_obstruction_db", 11.0)),
+            "nlos_open_relief_weight": float(a2g_params.get("nlos_open_relief_weight", 5.5)),
+            "blocker_prominence_weight": float(a2g_params.get("blocker_prominence_weight", 2.2)),
+            "low_altitude_boost_weight": float(a2g_params.get("low_altitude_boost_weight", 0.8)),
+            "shadow_depth_scale_m": float(a2g_params.get("shadow_depth_scale_m", 55.0)),
+            "deep_shadow_depth_norm": float(a2g_params.get("deep_shadow_depth_norm", 1.05)),
+        }
+        coherent_db, _ = _coherent_two_ray_components_db(
+            d2d_m,
+            h_tx,
+            h_rx,
+            freq_ghz,
+            eps_r=float(a2g_params.get("ground_eps_r", 5.0)),
+            roughness_m=float(a2g_params.get("ground_roughness_m", 0.01)),
+        )
+        smooth_los_db = _damped_coherent_two_ray_path_loss_db(
+            d2d_m,
+            h_tx,
+            h_rx,
+            freq_ghz,
+            eps_r=float(cih_params.get("ground_eps_r", 5.0)),
+            roughness_m=float(cih_params.get("ground_roughness_m", 0.01)),
+            excess_limit_db=float(cih_params.get("interference_excess_limit_db", 10.5)),
+            interference_decay_m=float(cih_params.get("interference_decay_m", 900.0)),
+            min_interference_blend=float(cih_params.get("min_interference_blend", 0.35)),
+        )
+        cih_base_db = _cih7_height_nlos_mean_path_loss_db(d3d_m, h_tx, freq_ghz, city_type)
+        lambda0_db = 20.0 * math.log10((4.0 * math.pi * h_tx * freq_ghz * 1.0e9) / 299792458.0)
+        eq11_excess_db = torch.relu(
+            _a2g_nlos_excess_path_loss_db(
+                d2d_m,
+                h_tx,
+                h_rx,
+                freq_ghz,
+                bias_db=float(cih_params.get("nlos_bias", -16.16)),
+                amp_db=float(cih_params.get("nlos_amp", 12.0436)),
+                tau_deg=float(cih_params.get("nlos_tau", 7.52)),
+            ) - lambda0_db
+        )
+        sigma_theta = _nlos_shadow_sigma_proxy_db(d2d_m, h_tx, h_rx)
+        nlos_base_db = cih_base_db
+        nlos_base_db = nlos_base_db + float(cih_params.get("nlos_eq11_soft_weight", 0.22)) * eq11_excess_db
+        nlos_base_db = nlos_base_db + float(cih_params.get("nlos_sigma_soft_weight", 0.08)) * sigma_theta
+        nlos_floor_db = smooth_los_db + float(cih_params.get("nlos_los_margin_db", 2.0))
+        nlos_base_db = torch.maximum(nlos_base_db, nlos_floor_db)
+        obstruction_db, shadow_depth_m, near_occ = _compute_directional_ripple_nlos_obstruction_db(
+            d2d_m,
+            topology_tensor,
+            los_tensor,
+            h_tx=h_tx,
+            h_rx=h_rx,
+            city_type=city_type,
+            meters_per_pixel=meters_per_pixel,
+            non_ground_threshold=non_ground_threshold,
+            a2g_params=cih_params,
+        )
+        nlos_path_db = nlos_base_db + float(cih_params.get("nlos_obstruction_scale", 0.55)) * obstruction_db
+        ripple_db = _compute_shadowed_ripple_db(
+            coherent_db,
+            smooth_los_db,
+            los_tensor,
+            shadow_depth_m,
+            near_occ,
+            a2g_params={
+                **cih_params,
+                "ripple_gain_los": float(cih_params.get("ripple_gain_los", 0.95)),
+                "ripple_gain_nlos": float(cih_params.get("ripple_gain_nlos", 0.22)),
+                "ripple_deep_floor": float(cih_params.get("ripple_deep_floor", 0.04)),
+            },
+        )
+        if los_tensor is None:
+            path_db = 0.5 * (smooth_los_db + nlos_path_db) + ripple_db
+        else:
+            los_prob = los_tensor.clamp(0.0, 1.0).to(dtype=torch.float32)
+            path_db = los_prob * smooth_los_db + (1.0 - los_prob) * nlos_path_db + ripple_db
+    elif mode == 'hybrid_shadowed_ripple_two_ray_structured_nlos':
+        structured_params = {
+            **a2g_params,
+            "shadow_depth_scale_m": float(a2g_params.get("shadow_depth_scale_m", 60.0)),
+            "deep_shadow_depth_norm": float(a2g_params.get("deep_shadow_depth_norm", 1.05)),
+            "nlos_max_delta_db": float(a2g_params.get("nlos_max_delta_db", 22.0)),
+        }
+        coherent_db, _ = _coherent_two_ray_components_db(
+            d2d_m,
+            h_tx,
+            h_rx,
+            freq_ghz,
+            eps_r=float(structured_params.get("ground_eps_r", 5.0)),
+            roughness_m=float(structured_params.get("ground_roughness_m", 0.01)),
+        )
+        smooth_los_db = _damped_coherent_two_ray_path_loss_db(
+            d2d_m,
+            h_tx,
+            h_rx,
+            freq_ghz,
+            eps_r=float(structured_params.get("ground_eps_r", 5.0)),
+            roughness_m=float(structured_params.get("ground_roughness_m", 0.01)),
+            excess_limit_db=float(structured_params.get("interference_excess_limit_db", 10.5)),
+            interference_decay_m=float(structured_params.get("interference_decay_m", 900.0)),
+            min_interference_blend=float(structured_params.get("min_interference_blend", 0.35)),
+        )
+        nlos_delta_db, shadow_depth_m, near_occ = _compute_structured_nlos_delta_db(
+            d2d_m,
+            topology_tensor,
+            los_tensor,
+            h_tx=h_tx,
+            h_rx=h_rx,
+            freq_ghz=freq_ghz,
+            city_type=city_type,
+            meters_per_pixel=meters_per_pixel,
+            non_ground_threshold=non_ground_threshold,
+            a2g_params=structured_params,
+        )
+        nlos_path_db = torch.maximum(
+            smooth_los_db + float(structured_params.get("nlos_los_margin_db", 1.2)),
+            smooth_los_db + nlos_delta_db,
+        )
+        ripple_db = _compute_shadowed_ripple_db(
+            coherent_db,
+            smooth_los_db,
+            los_tensor,
+            shadow_depth_m,
+            near_occ,
+            a2g_params={
+                **structured_params,
+                "ripple_gain_los": float(structured_params.get("ripple_gain_los", 0.95)),
+                "ripple_gain_nlos": float(structured_params.get("ripple_gain_nlos", 0.20)),
+                "ripple_deep_floor": float(structured_params.get("ripple_deep_floor", 0.04)),
+            },
+        )
+        if los_tensor is None:
+            path_db = 0.5 * (smooth_los_db + nlos_path_db) + ripple_db
+        else:
+            los_prob = los_tensor.clamp(0.0, 1.0).to(dtype=torch.float32)
+            path_db = los_prob * smooth_los_db + (1.0 - los_prob) * nlos_path_db + ripple_db
+    elif mode == 'hybrid_shadowed_ripple_two_ray_structured_nlos_strict_los':
+        structured_params = {
+            **a2g_params,
+            "shadow_depth_scale_m": float(a2g_params.get("shadow_depth_scale_m", 60.0)),
+            "deep_shadow_depth_norm": float(a2g_params.get("deep_shadow_depth_norm", 1.05)),
+            "nlos_max_delta_db": float(a2g_params.get("nlos_max_delta_db", 22.0)),
+        }
+        coherent_db, _ = _coherent_two_ray_components_db(
+            d2d_m,
+            h_tx,
+            h_rx,
+            freq_ghz,
+            eps_r=float(structured_params.get("ground_eps_r", 5.0)),
+            roughness_m=float(structured_params.get("ground_roughness_m", 0.01)),
+        )
+        smooth_los_db = _damped_coherent_two_ray_path_loss_db(
+            d2d_m,
+            h_tx,
+            h_rx,
+            freq_ghz,
+            eps_r=float(structured_params.get("ground_eps_r", 5.0)),
+            roughness_m=float(structured_params.get("ground_roughness_m", 0.01)),
+            excess_limit_db=float(structured_params.get("interference_excess_limit_db", 10.5)),
+            interference_decay_m=float(structured_params.get("interference_decay_m", 900.0)),
+            min_interference_blend=float(structured_params.get("min_interference_blend", 0.35)),
+        )
+        los_reference_db = smooth_los_db + _compute_shadowed_ripple_db(
+            coherent_db,
+            smooth_los_db,
+            None,
+            None,
+            None,
+            a2g_params={
+                **structured_params,
+                "ripple_gain_los": float(structured_params.get("ripple_gain_los", 0.95)),
+            },
+        )
+        nlos_delta_db, _, _ = _compute_structured_nlos_delta_db(
+            d2d_m,
+            topology_tensor,
+            los_tensor,
+            h_tx=h_tx,
+            h_rx=h_rx,
+            freq_ghz=freq_ghz,
+            city_type=city_type,
+            meters_per_pixel=meters_per_pixel,
+            non_ground_threshold=non_ground_threshold,
+            a2g_params=structured_params,
+        )
+        nlos_path_db = torch.maximum(
+            los_reference_db + float(structured_params.get("nlos_los_margin_db", 1.2)),
+            los_reference_db + nlos_delta_db,
+        )
+        if los_tensor is None:
+            path_db = 0.5 * (los_reference_db + nlos_path_db)
+        else:
+            los_mask = _hard_los_mask(los_tensor, dtype=torch.float32)
+            path_db = los_mask * los_reference_db + (1.0 - los_mask) * nlos_path_db
+    elif mode == 'hybrid_shadowed_ripple_two_ray_minimal_nlos_strict_los':
+        minimal_params = {
+            **a2g_params,
+            "shadow_depth_scale_m": float(a2g_params.get("shadow_depth_scale_m", 85.0)),
+            "nlos_max_delta_db": float(a2g_params.get("nlos_max_delta_db", 12.0)),
+            "nlos_los_margin_db": float(a2g_params.get("nlos_los_margin_db", 0.6)),
+            "break_base_db": float(a2g_params.get("break_base_db", 1.0)),
+            "break_eq11_weight": float(a2g_params.get("break_eq11_weight", 0.05)),
+            "break_theta_weight": float(a2g_params.get("break_theta_weight", 0.9)),
+            "break_max_db": float(a2g_params.get("break_max_db", 5.0)),
+            "shadow_depth_weight": float(a2g_params.get("shadow_depth_weight", 2.0)),
+            "shadow_max_db": float(a2g_params.get("shadow_max_db", 6.0)),
+            "context_density_weight": float(a2g_params.get("context_density_weight", 1.8)),
+            "context_height_weight": float(a2g_params.get("context_height_weight", 1.0)),
+            "context_open_relief_weight": float(a2g_params.get("context_open_relief_weight", 0.8)),
+            "context_max_db": float(a2g_params.get("context_max_db", 4.0)),
+        }
+        coherent_db, _ = _coherent_two_ray_components_db(
+            d2d_m,
+            h_tx,
+            h_rx,
+            freq_ghz,
+            eps_r=float(minimal_params.get("ground_eps_r", 5.0)),
+            roughness_m=float(minimal_params.get("ground_roughness_m", 0.01)),
+        )
+        smooth_los_db = _damped_coherent_two_ray_path_loss_db(
+            d2d_m,
+            h_tx,
+            h_rx,
+            freq_ghz,
+            eps_r=float(minimal_params.get("ground_eps_r", 5.0)),
+            roughness_m=float(minimal_params.get("ground_roughness_m", 0.01)),
+            excess_limit_db=float(minimal_params.get("interference_excess_limit_db", 10.5)),
+            interference_decay_m=float(minimal_params.get("interference_decay_m", 900.0)),
+            min_interference_blend=float(minimal_params.get("min_interference_blend", 0.35)),
+        )
+        los_reference_db = smooth_los_db + _compute_shadowed_ripple_db(
+            coherent_db,
+            smooth_los_db,
+            None,
+            None,
+            None,
+            a2g_params={
+                **minimal_params,
+                "ripple_gain_los": float(minimal_params.get("ripple_gain_los", 0.95)),
+            },
+        )
+        nlos_delta_db, _, _ = _compute_minimal_nlos_delta_db(
+            d2d_m,
+            topology_tensor,
+            los_tensor,
+            h_tx=h_tx,
+            h_rx=h_rx,
+            freq_ghz=freq_ghz,
+            city_type=city_type,
+            meters_per_pixel=meters_per_pixel,
+            non_ground_threshold=non_ground_threshold,
+            a2g_params=minimal_params,
+        )
+        nlos_path_db = torch.maximum(
+            los_reference_db + float(minimal_params.get("nlos_los_margin_db", 0.6)),
+            los_reference_db + nlos_delta_db,
+        )
+        if los_tensor is None:
+            path_db = 0.5 * (los_reference_db + nlos_path_db)
+        else:
+            los_mask = _hard_los_mask(los_tensor, dtype=torch.float32)
+            path_db = los_mask * los_reference_db + (1.0 - los_mask) * nlos_path_db
     elif mode == 'hybrid_fresnel_two_ray_cost231_a2g_nlos':
         log_f = math.log10(freq_mhz)
         a_hm = (1.1 * log_f - 0.7) * h_rx - (1.56 * log_f - 0.8)
@@ -1480,13 +2059,13 @@ def _apply_formula_regime_calibration(
                 out = out + float(w) * feat
             return out
 
-        los_pred = obstruction_pred("LoS")
-        nlos_pred = obstruction_pred("NLoS")
-        if los_tensor is None:
-            calibrated = 0.5 * (los_pred + nlos_pred)
-        else:
-            los_prob = los_tensor.clamp(0.0, 1.0).to(dtype=prior_db.dtype)
-            calibrated = los_prob * los_pred + (1.0 - los_prob) * nlos_pred
+    los_pred = obstruction_pred("LoS")
+    nlos_pred = obstruction_pred("NLoS")
+    if los_tensor is None:
+        calibrated = 0.5 * (los_pred + nlos_pred)
+    else:
+        los_mask = _hard_los_mask(los_tensor, dtype=prior_db.dtype)
+        calibrated = los_mask * los_pred + (1.0 - los_mask) * nlos_pred
         return calibrated.clamp(min=float(clip_min), max=float(clip_max))
 
     def coeffs_for(los_label: str) -> Tuple[float, float, float]:
@@ -1511,8 +2090,8 @@ def _apply_formula_regime_calibration(
     if los_tensor is None:
         calibrated = 0.5 * (los_pred + nlos_pred)
     else:
-        los_prob = los_tensor.clamp(0.0, 1.0).to(dtype=prior_db.dtype)
-        calibrated = los_prob * los_pred + (1.0 - los_prob) * nlos_pred
+        los_mask = _hard_los_mask(los_tensor, dtype=prior_db.dtype)
+        calibrated = los_mask * los_pred + (1.0 - los_mask) * nlos_pred
     return calibrated.clamp(min=float(clip_min), max=float(clip_max))
 
 
@@ -2038,9 +2617,8 @@ class CKMHDF5Dataset(Dataset):
         los_input_tensor = None
         los_formula_tensor = None
         if self.los_input_column:
-            los_metadata = self.target_metadata.get(self.los_input_column, {})
             raw_los = np.asarray(handle[city][sample][self.los_input_column][...], dtype=np.float32)
-            los_input_tensor = _resize_array(raw_los, self.image_size, los_metadata)
+            los_input_tensor = _resize_mask_nearest(raw_los > 0.5, self.image_size)
             los_formula_tensor = los_input_tensor
 
         target_tensors = []
@@ -2368,13 +2946,24 @@ def _split_hdf5_samples(
 
 def _resize_mask_nearest(mask_2d: np.ndarray, image_size: int) -> torch.Tensor:
     """Resize a boolean/float mask with nearest-neighbor (preserve sharp invalid regions)."""
-    t = torch.from_numpy(np.asarray(mask_2d, dtype=np.float32)).unsqueeze(0)
+    mask = np.asarray(mask_2d, dtype=np.float32)
+    if mask.ndim != 2:
+        raise ValueError(f"Expected a 2D mask, got shape {mask.shape}")
+    if mask.shape == (image_size, image_size):
+        return torch.from_numpy(mask).unsqueeze(0).gt(0.5).float()
+    t = torch.from_numpy(mask).unsqueeze(0)
     out = TF.resize(
         t,
         [image_size, image_size],
         interpolation=InterpolationMode.NEAREST,
     )
     return (out > 0.5).float()
+
+
+def _hard_los_mask(los_tensor: Optional[torch.Tensor], *, dtype: torch.dtype = torch.float32) -> Optional[torch.Tensor]:
+    if los_tensor is None:
+        return None
+    return (los_tensor > 0.5).to(dtype=dtype)
 
 
 def _load_hdf5_scalar_csv(path: Path) -> Dict[Tuple[str, str], Dict[str, float]]:
@@ -2484,6 +3073,7 @@ def build_dataset_splits_from_config(cfg: Dict[str, Any]) -> Dict[str, Dataset]:
     data_cfg = cfg['data']
     target_columns = list(cfg['target_columns'])
     dataset_format = str(data_cfg.get('format', 'manifest')).lower()
+    train_aug = _augmentation_kwargs(cfg)
 
     if dataset_format == 'manifest':
         common = dict(
@@ -2500,10 +3090,7 @@ def build_dataset_splits_from_config(cfg: Dict[str, Any]) -> Dict[str, Dataset]:
         splits: Dict[str, Dataset] = {
             'train': CKMDataset(
                 manifest_csv=data_cfg['train_manifest'],
-                augment=bool(cfg['augmentation']['enable']),
-                hflip_prob=float(cfg['augmentation']['hflip_prob']),
-                vflip_prob=float(cfg['augmentation']['vflip_prob']),
-                rot90_prob=float(cfg['augmentation']['rot90_prob']),
+                **train_aug,
                 **common,
             ),
             'val': CKMDataset(
@@ -2575,10 +3162,7 @@ def build_dataset_splits_from_config(cfg: Dict[str, Any]) -> Dict[str, Dataset]:
     splits = {
         'train': CKMHDF5Dataset(
             sample_refs=train_refs,
-            augment=bool(cfg['augmentation']['enable']),
-            hflip_prob=float(cfg['augmentation']['hflip_prob']),
-            vflip_prob=float(cfg['augmentation']['vflip_prob']),
-            rot90_prob=float(cfg['augmentation']['rot90_prob']),
+            **train_aug,
             **common_hdf5,
         ),
         'val': CKMHDF5Dataset(
@@ -2605,6 +3189,7 @@ def build_cross_validation_datasets_from_config(cfg: Dict[str, Any]) -> Tuple[Da
     data_cfg = cfg['data']
     target_columns = list(cfg['target_columns'])
     dataset_format = str(data_cfg.get('format', 'manifest')).lower()
+    train_aug = _augmentation_kwargs(cfg)
 
     if dataset_format == 'manifest':
         common = dict(
@@ -2624,18 +3209,12 @@ def build_cross_validation_datasets_from_config(cfg: Dict[str, Any]) -> Tuple[Da
             [
                 CKMDataset(
                     manifest_csv=train_manifest,
-                    augment=bool(cfg['augmentation']['enable']),
-                    hflip_prob=float(cfg['augmentation']['hflip_prob']),
-                    vflip_prob=float(cfg['augmentation']['vflip_prob']),
-                    rot90_prob=float(cfg['augmentation']['rot90_prob']),
+                    **train_aug,
                     **common,
                 ),
                 CKMDataset(
                     manifest_csv=val_manifest,
-                    augment=bool(cfg['augmentation']['enable']),
-                    hflip_prob=float(cfg['augmentation']['hflip_prob']),
-                    vflip_prob=float(cfg['augmentation']['vflip_prob']),
-                    rot90_prob=float(cfg['augmentation']['rot90_prob']),
+                    **train_aug,
                     **common,
                 ),
             ]
@@ -2689,10 +3268,7 @@ def build_cross_validation_datasets_from_config(cfg: Dict[str, Any]) -> Tuple[Da
     )
     dev_train = CKMHDF5Dataset(
         sample_refs=dev_refs,
-        augment=bool(cfg['augmentation']['enable']),
-        hflip_prob=float(cfg['augmentation']['hflip_prob']),
-        vflip_prob=float(cfg['augmentation']['vflip_prob']),
-        rot90_prob=float(cfg['augmentation']['rot90_prob']),
+        **train_aug,
         **common_hdf5,
     )
     dev_eval = CKMHDF5Dataset(

@@ -1,0 +1,70 @@
+[nlos-hgbr] try=TFGFiftiethTry50 dataset=CKM_Dataset_270326.h5 sample_frac=0.030 train_subset=340/11326 val_subset=73/2427
+[nlos-hgbr] train sample 25/340 rows=100402
+[nlos-hgbr] train sample 50/340 rows=195076
+[nlos-hgbr] train sample 75/340 rows=297476
+[nlos-hgbr] train sample 100/340 rows=399876
+[nlos-hgbr] train sample 125/340 rows=501248
+[nlos-hgbr] train sample 150/340 rows=603648
+[nlos-hgbr] train sample 175/340 rows=704955
+[nlos-hgbr] train sample 200/340 rows=807355
+[nlos-hgbr] train sample 225/340 rows=905416
+[nlos-hgbr] train sample 250/340 rows=1004251
+[nlos-hgbr] train sample 275/340 rows=1105284
+[nlos-hgbr] train sample 300/340 rows=1207684
+[nlos-hgbr] train sample 325/340 rows=1310084
+[nlos-hgbr] train sample 340/340 rows=1371524
+[nlos-hgbr] val sample 25/73 overall_rmse=19.8015
+[nlos-hgbr] val sample 50/73 overall_rmse=22.4898
+[nlos-hgbr] val sample 73/73 overall_rmse=22.8203
+{
+  "try_dir": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50",
+  "config": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50\\experiments\\fiftiethtry50_pmnet_prior_gan_fastbatch\\fiftiethtry50_pmnet_prior_stage1_widen112_initial.yaml",
+  "dataset": "C:\\TFG\\TFGpractice\\Datasets\\CKM_Dataset_270326.h5",
+  "train_samples": 340,
+  "val_samples": 73,
+  "train_nlos_pixels": 1371524,
+  "metrics": {
+    "overall": {
+      "count": 14715222,
+      "rmse_db": 22.820265927806872,
+      "mae_db": 11.536173835482733
+    },
+    "LoS": {
+      "count": 10308935,
+      "rmse_db": 4.184979153509091,
+      "mae_db": 3.361452193595926
+    },
+    "NLoS": {
+      "count": 4406287,
+      "rmse_db": 41.20883119937975,
+      "mae_db": 30.661726494513868
+    }
+  },
+  "model": {
+    "train_r2": 0.18628940963203133,
+    "max_depth": 8,
+    "learning_rate": 0.06,
+    "max_iter": 300,
+    "specialist_models": 9,
+    "specialist_min_rows": 25000
+  },
+  "feature_importance": {
+    "prior_delta": 0.0,
+    "shadow_depth": 0.0,
+    "distance_since_los_break": 0.0,
+    "max_blocker_height": 0.0,
+    "blocker_count": 0.0,
+    "distance_norm": 0.0,
+    "prior_confidence": 0.0,
+    "old_prior_delta": 0.0,
+    "antenna_height_norm": 0.0,
+    "city_density": 0.0,
+    "city_height_norm": 0.0,
+    "city_type_code": 0.0,
+    "ant_bin_code": 0.0,
+    "prior_x_shadow": 0.0,
+    "prior_x_break": 0.0,
+    "shadow_x_blocker": 0.0,
+    "dist_x_ant": 0.0
+  }
+}

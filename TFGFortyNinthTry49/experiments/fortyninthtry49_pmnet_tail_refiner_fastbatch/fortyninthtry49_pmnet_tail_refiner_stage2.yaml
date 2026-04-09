@@ -26,7 +26,7 @@ data:
     precomputed_hdf5: ""
   path_loss_obstruction_features:
     enabled: false
-    precomputed_hdf5: ../TFGFortySeventhTry47/precomputed/obstruction_features_u8.h5
+    precomputed_hdf5: ../TFGFiftiethTry50/precomputed/obstruction_features_u8.h5
     meters_per_pixel: 1.0
     angle_bins: 720
     include_shadow_depth: true
@@ -48,14 +48,18 @@ data:
   scalar_feature_norms:
     antenna_height_m: 120.0
   image_size: 513
-  num_workers: 6
-  val_num_workers: 6
+  num_workers: 2
+  val_num_workers: 1
+  val_batch_size: 1
   persistent_workers: false
   val_persistent_workers: false
-  prefetch_factor: 8
+  prefetch_factor: 2
 
 augmentation:
   enable: false
+  hflip_prob: 0.5
+  vflip_prob: 0.5
+  rot90_prob: 0.4
 
 model:
   base_channels: 96
@@ -104,17 +108,15 @@ loss:
 
 tail_refiner:
   refiner_arch: unet
-  refiner_base_channels: 96
+  refiner_base_channels: 84
   use_gate: true
   gate_loss_weight: 0.15
   residual_weight: 1.0
   final_weight: 0.5
-  prediction_key: stage1_pred_norm_f16
-  abs_error_key: stage1_abs_error_db_f16
-  stage1_outputs_train_hdf5: outputs/fortyninthtry49_stage1_outputs_hdf5/stage1_outputs_train.h5
-  stage1_outputs_val_hdf5: outputs/fortyninthtry49_stage1_outputs_hdf5/stage1_outputs_val.h5
+  stage1_config: experiments/fortyninthtry49_pmnet_prior_gan_fastbatch/fortyninthtry49_pmnet_prior_stage1_widen112_resume_mae_dominant.yaml
+  stage1_checkpoint: outputs/fortyninthtry49_pmnet_prior_stage1_mae_dominant_t49_stage1_w112_4gpu/best_cgan.pt
   oversample:
-    enabled: true
+    enabled: false
     threshold_db: 6.0
     temperature_db: 2.5
     alpha: 1.0
@@ -131,6 +133,10 @@ tail_refiner:
   gate_target:
     threshold_db: 6.0
     temperature_db: 2.0
+  high_frequency_loss:
+    enabled: true
+    laplacian_weight: 0.06
+    gradient_weight: 0.02
 
 runtime:
   device: cuda

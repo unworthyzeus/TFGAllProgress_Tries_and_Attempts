@@ -1,0 +1,119 @@
+[nlos-hgbr] try=TFGFiftiethTry50 dataset=CKM_Dataset_270326.h5 sample_frac=0.080 train_subset=906/11326 val_subset=291/2427 baseline=modern
+[nlos-hgbr] train sample 25/906 rows=51200
+[nlos-hgbr] train sample 50/906 rows=102400
+[nlos-hgbr] train sample 75/906 rows=152390
+[nlos-hgbr] train sample 100/906 rows=198266
+[nlos-hgbr] train sample 125/906 rows=249466
+[nlos-hgbr] train sample 150/906 rows=300666
+[nlos-hgbr] train sample 175/906 rows=351866
+[nlos-hgbr] train sample 200/906 rows=403066
+[nlos-hgbr] train sample 225/906 rows=454266
+[nlos-hgbr] train sample 250/906 rows=505466
+[nlos-hgbr] train sample 275/906 rows=556666
+[nlos-hgbr] train sample 300/906 rows=607866
+[nlos-hgbr] train sample 325/906 rows=659066
+[nlos-hgbr] train sample 350/906 rows=710266
+[nlos-hgbr] train sample 375/906 rows=761466
+[nlos-hgbr] train sample 400/906 rows=812666
+[nlos-hgbr] train sample 425/906 rows=863866
+[nlos-hgbr] train sample 450/906 rows=915066
+[nlos-hgbr] train sample 475/906 rows=966266
+[nlos-hgbr] train sample 500/906 rows=1017466
+[nlos-hgbr] train sample 525/906 rows=1068666
+[nlos-hgbr] train sample 550/906 rows=1119866
+[nlos-hgbr] train sample 575/906 rows=1171066
+[nlos-hgbr] train sample 600/906 rows=1221199
+[nlos-hgbr] train sample 625/906 rows=1272170
+[nlos-hgbr] train sample 650/906 rows=1321322
+[nlos-hgbr] train sample 675/906 rows=1372522
+[nlos-hgbr] train sample 700/906 rows=1423722
+[nlos-hgbr] train sample 725/906 rows=1474922
+[nlos-hgbr] train sample 750/906 rows=1526122
+[nlos-hgbr] train sample 775/906 rows=1577322
+[nlos-hgbr] train sample 800/906 rows=1628522
+[nlos-hgbr] train sample 825/906 rows=1679722
+[nlos-hgbr] train sample 850/906 rows=1730922
+[nlos-hgbr] train sample 875/906 rows=1782122
+[nlos-hgbr] train sample 900/906 rows=1833322
+[nlos-hgbr] train sample 906/906 rows=1845610
+[nlos-hgbr] fitting global hgbr
+[nlos-hgbr] fitting specialist 1/9 regime=0 rows=73186
+[nlos-hgbr] fitting specialist 2/9 regime=1 rows=75776
+[nlos-hgbr] fitting specialist 3/9 regime=2 rows=86326
+[nlos-hgbr] fitting specialist 4/9 regime=3 rows=138590
+[nlos-hgbr] fitting specialist 5/9 regime=4 rows=160416
+[nlos-hgbr] fitting specialist 6/9 regime=5 rows=135764
+[nlos-hgbr] fitting specialist 7/9 regime=6 rows=405504
+[nlos-hgbr] fitting specialist 8/9 regime=7 rows=378880
+[nlos-hgbr] fitting specialist 9/9 regime=8 rows=391168
+[nlos-hgbr] starting validation samples=291
+[nlos-hgbr] val sample 25/291 overall_rmse=49.7150
+[nlos-hgbr] val sample 50/291 overall_rmse=51.6625
+[nlos-hgbr] val sample 75/291 overall_rmse=53.0481
+[nlos-hgbr] val sample 100/291 overall_rmse=50.8921
+[nlos-hgbr] val sample 125/291 overall_rmse=51.6020
+[nlos-hgbr] val sample 150/291 overall_rmse=50.6869
+[nlos-hgbr] val sample 175/291 overall_rmse=50.1863
+[nlos-hgbr] val sample 200/291 overall_rmse=51.1759
+[nlos-hgbr] val sample 225/291 overall_rmse=51.8913
+[nlos-hgbr] val sample 250/291 overall_rmse=52.1996
+[nlos-hgbr] val sample 275/291 overall_rmse=51.8820
+[nlos-hgbr] val sample 291/291 overall_rmse=51.8050
+{
+  "try_dir": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50",
+  "config": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50\\experiments\\fiftiethtry50_pmnet_prior_gan_fastbatch\\fiftiethtry50_pmnet_prior_stage1_widen112_initial.yaml",
+  "dataset": "C:\\TFG\\TFGpractice\\Datasets\\CKM_Dataset_270326.h5",
+  "train_samples": 906,
+  "val_samples": 291,
+  "train_nlos_pixels": 1845610,
+  "metrics": {
+    "overall": {
+      "count": 58091260,
+      "rmse_db": 51.805026963039225,
+      "mae_db": 28.93043322911226
+    },
+    "LoS": {
+      "count": 39452453,
+      "rmse_db": 4.551938639603768,
+      "mae_db": 3.6523163139386257
+    },
+    "NLoS": {
+      "count": 18638807,
+      "rmse_db": 91.21718476269925,
+      "mae_db": 82.43620342276563
+    }
+  },
+  "model": {
+    "baseline_mode": "modern",
+    "train_r2": 0.19197086702843258,
+    "max_depth": 10,
+    "learning_rate": 0.05,
+    "max_iter": 420,
+    "delta_clip_max": 30.0,
+    "use_torch_mlp": false,
+    "mlp_max_rows": 0,
+    "mlp_best_epoch": 0,
+    "mlp_device": "disabled",
+    "specialist_models": 9,
+    "specialist_min_rows": 25000
+  },
+  "feature_importance": {
+    "current_minus_old_prior": 0.0,
+    "shadow_depth": 0.0,
+    "distance_since_los_break": 0.0,
+    "max_blocker_height": 0.0,
+    "blocker_count": 0.0,
+    "distance_norm": 0.0,
+    "prior_confidence": 0.0,
+    "old_prior_abs": 0.0,
+    "antenna_height_norm": 0.0,
+    "city_density": 0.0,
+    "city_height_norm": 0.0,
+    "city_type_code": 0.0,
+    "ant_bin_code": 0.0,
+    "prior_x_shadow": 0.0,
+    "prior_x_break": 0.0,
+    "shadow_x_blocker": 0.0,
+    "dist_x_ant": 0.0
+  }
+}

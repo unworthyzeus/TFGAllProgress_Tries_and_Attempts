@@ -5,6 +5,7 @@ import argparse
 import importlib
 import json
 import math
+import random
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,6 +82,14 @@ class ErrStats:
         }
 
 
+def _empty_regime_errstats() -> Dict[str, ErrStats]:
+    return {
+        "overall": ErrStats(),
+        "LoS": ErrStats(),
+        "NLoS": ErrStats(),
+    }
+
+
 @dataclass
 class QuadStats:
     count: int = 0
@@ -138,6 +147,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--try-dir", required=True, help="Path to the try folder")
     p.add_argument("--config", required=True, help="Config path relative to the try folder or absolute")
     p.add_argument("--device", default="cpu", help="cpu/cuda/directml")
+    p.add_argument("--sample-frac", type=float, default=1.0, help="Fraction of train/val samples to use, in (0,1].")
+    p.add_argument("--sample-seed", type=int, default=42, help="Seed for deterministic sample subsetting.")
     p.add_argument("--log-every", type=int, default=100, help="Progress log interval in samples")
     p.add_argument("--dataset", default="", help="Override HDF5 path")
     p.add_argument("--out-json", default=str(PRACTICE_ROOT / "analysis" / "formula_prior_generalization.json"))
@@ -175,6 +186,39 @@ def _quantile_edges(values: List[float]) -> Tuple[float, float]:
     return float(np.quantile(arr, 1.0 / 3.0)), float(np.quantile(arr, 2.0 / 3.0))
 
 
+def _severity_bin(value: float, q1: float, q2: float) -> str:
+    if value <= q1:
+        return "sev_low"
+    if value <= q2:
+        return "sev_mid"
+    return "sev_high"
+
+
+def _sample_pixels(values: np.ndarray, rng: random.Random, cap: int = 2048) -> List[float]:
+    if values.size == 0:
+        return []
+    flat = values.reshape(-1)
+    if flat.size <= cap:
+        return flat.astype(np.float64, copy=False).tolist()
+    idx = np.asarray(rng.sample(range(int(flat.size)), cap), dtype=np.int64)
+    return flat[idx].astype(np.float64, copy=False).tolist()
+
+
+def _subset_sample_refs(sample_refs: List[Tuple[str, str]], sample_frac: float, seed: int) -> List[Tuple[str, str]]:
+    frac = float(sample_frac)
+    if frac >= 1.0:
+        return list(sample_refs)
+    if frac <= 0.0:
+        raise ValueError("--sample-frac must be in (0, 1].")
+    count = max(1, int(round(len(sample_refs) * frac)))
+    rng = random.Random(int(seed))
+    subset = list(sample_refs)
+    rng.shuffle(subset)
+    subset = subset[:count]
+    subset.sort()
+    return subset
+
+
 def _city_type_for_stats(density: float, height: float, dens_q1: float, dens_q2: float, h_q1: float, h_q2: float) -> str:
     if density >= dens_q2 or height >= h_q2:
         return "dense_highrise"
@@ -202,6 +246,87 @@ def _formula_channel_index(cfg: Dict[str, Any]) -> int:
     if bool(cfg.get("data", {}).get("distance_map_channel", False)):
         idx += 1
     return idx
+
+
+def _input_channel_layout(cfg: Dict[str, Any]) -> Dict[str, int]:
+    idx = 0
+    layout: Dict[str, int] = {"topology": idx}
+    idx += 1
+    if cfg.get("data", {}).get("los_input_column"):
+        layout["los"] = idx
+        idx += 1
+    if bool(cfg.get("data", {}).get("distance_map_channel", False)):
+        layout["distance"] = idx
+        idx += 1
+    formula_cfg = dict(cfg.get("data", {}).get("path_loss_formula_input", {}))
+    if bool(formula_cfg.get("enabled", False)):
+        layout["formula"] = idx
+        idx += 1
+        if bool(formula_cfg.get("include_confidence_channel", False)):
+            layout["formula_confidence"] = idx
+            idx += 1
+    obstruction_cfg = dict(cfg.get("data", {}).get("path_loss_obstruction_features", {}))
+    if bool(obstruction_cfg.get("enabled", False)):
+        if bool(obstruction_cfg.get("include_shadow_depth", True)):
+            layout["shadow_depth"] = idx
+            idx += 1
+        if bool(obstruction_cfg.get("include_distance_since_los_break", True)):
+            layout["distance_since_los_break"] = idx
+            idx += 1
+        if bool(obstruction_cfg.get("include_max_blocker_height", True)):
+            layout["max_blocker_height"] = idx
+            idx += 1
+        if bool(obstruction_cfg.get("include_blocker_count", True)):
+            layout["blocker_count"] = idx
+            idx += 1
+    return layout
+
+
+def _compute_los_reference_db(
+    data_utils: Any,
+    *,
+    image_size: int,
+    antenna_height_m: float,
+    receiver_height_m: float,
+    frequency_ghz: float,
+    meters_per_pixel: float,
+    a2g_params: Dict[str, Any],
+) -> np.ndarray:
+    _ = meters_per_pixel
+    d2d = data_utils._compute_distance_map_2d(image_size)
+    distance_scale_m = 256.0 * math.sqrt(2.0)
+    d2d_m = d2d * float(distance_scale_m)
+    coherent_db, _ = data_utils._coherent_two_ray_components_db(
+        d2d_m,
+        float(antenna_height_m),
+        float(receiver_height_m),
+        float(frequency_ghz),
+        eps_r=float(a2g_params.get("ground_eps_r", 5.0)),
+        roughness_m=float(a2g_params.get("ground_roughness_m", 0.01)),
+    )
+    smooth_los_db = data_utils._damped_coherent_two_ray_path_loss_db(
+        d2d_m,
+        float(antenna_height_m),
+        float(receiver_height_m),
+        float(frequency_ghz),
+        eps_r=float(a2g_params.get("ground_eps_r", 5.0)),
+        roughness_m=float(a2g_params.get("ground_roughness_m", 0.01)),
+        excess_limit_db=float(a2g_params.get("interference_excess_limit_db", 10.5)),
+        interference_decay_m=float(a2g_params.get("interference_decay_m", 900.0)),
+        min_interference_blend=float(a2g_params.get("min_interference_blend", 0.35)),
+    )
+    los_reference_db = smooth_los_db + data_utils._compute_shadowed_ripple_db(
+        coherent_db,
+        smooth_los_db,
+        None,
+        None,
+        None,
+        a2g_params={
+            **dict(a2g_params),
+            "ripple_gain_los": float(a2g_params.get("ripple_gain_los", 0.95)),
+        },
+    )
+    return np.asarray(los_reference_db.detach().cpu().numpy()[0], dtype=np.float64)
 
 
 def _sample_metadata(handle: h5py.File, city: str, sample: str) -> Tuple[float, float, float]:
@@ -296,14 +421,25 @@ def _write_markdown(out_path: Path, payload: Dict[str, Any]) -> None:
     lines.append("## Validation Results")
     lines.append("")
     for name, stats in payload["results"].items():
+        overall = stats["overall"]
+        los = stats["LoS"]
+        nlos = stats["NLoS"]
         lines.append(
-            f"- `{name}`: RMSE `{stats['rmse_db']:.4f} dB`, MAE `{stats['mae_db']:.4f} dB`, count `{stats['count']}`"
+            f"- `{name}` overall: RMSE `{overall['rmse_db']:.4f} dB`, MAE `{overall['mae_db']:.4f} dB`, count `{overall['count']}`"
+        )
+        lines.append(
+            f"  `LoS`: RMSE `{los['rmse_db']:.4f} dB`, MAE `{los['mae_db']:.4f} dB`, count `{los['count']}`"
+        )
+        lines.append(
+            f"  `NLoS`: RMSE `{nlos['rmse_db']:.4f} dB`, MAE `{nlos['mae_db']:.4f} dB`, count `{nlos['count']}`"
         )
     lines.append("")
     lines.append("## Recommended Prior-Only System")
     lines.append("")
     lines.append(f"- Best validation system: `{payload['best']['name']}`")
-    lines.append(f"- Validation RMSE: `{payload['best']['rmse_db']:.4f} dB`")
+    lines.append(f"- Validation RMSE: `{payload['best']['overall']['rmse_db']:.4f} dB`")
+    lines.append(f"- Validation `LoS` RMSE: `{payload['best']['LoS']['rmse_db']:.4f} dB`")
+    lines.append(f"- Validation `NLoS` RMSE: `{payload['best']['NLoS']['rmse_db']:.4f} dB`")
     lines.append("")
     lines.append("The systems compared are:")
     lines.append("")
@@ -378,14 +514,23 @@ def main() -> None:
     splits = data_utils.build_dataset_splits_from_config(cfg)
     train_ds = splits["train"]
     val_ds = splits["val"]
+    train_total = len(train_ds.sample_refs)
+    val_total = len(val_ds.sample_refs)
+    train_ds.sample_refs = _subset_sample_refs(list(train_ds.sample_refs), args.sample_frac, args.sample_seed)
+    val_ds.sample_refs = _subset_sample_refs(list(val_ds.sample_refs), args.sample_frac, args.sample_seed + 1)
     target_meta = cfg["target_metadata"]["path_loss"]
     formula_idx = _formula_channel_index(cfg)
+    channel_layout = _input_channel_layout(cfg)
     image_size = int(cfg["data"].get("image_size", 513))
 
     dataset_path = Path(cfg["data"]["hdf5_path"]).resolve()
     print(
         f"[prior-calibration] try={try_dir.name} device={args.device} dataset={dataset_path.name} "
-        f"log_every={int(args.log_every)}"
+        f"log_every={int(args.log_every)} sample_frac={float(args.sample_frac):.3f}"
+    )
+    print(
+        f"[prior-calibration] train_subset={len(train_ds.sample_refs)}/{train_total} "
+        f"val_subset={len(val_ds.sample_refs)}/{val_total}"
     )
     with h5py.File(str(dataset_path), "r") as handle:
         train_city_aggs: Dict[str, Dict[str, float]] = {}
@@ -425,6 +570,22 @@ def main() -> None:
         quad_stats_by_mode: Dict[str, Dict[Tuple[str, ...], QuadStats]] = {
             "city_type_los_ant": {},
         }
+        delta_stats_by_mode: Dict[str, Dict[Tuple[str, ...], LinStats]] = {
+            "city_type_ant": {},
+        }
+        delta_quad_stats_by_mode: Dict[str, Dict[Tuple[str, ...], QuadStats]] = {
+            "city_type_ant": {},
+        }
+        severity_delta_stats_by_mode: Dict[str, Dict[Tuple[str, ...], LinStats]] = {
+            "city_type_ant_severity": {},
+        }
+        severity_delta_quad_stats_by_mode: Dict[str, Dict[Tuple[str, ...], QuadStats]] = {
+            "city_type_ant_severity": {},
+        }
+        severity_shadow_values: List[float] = []
+        severity_break_values: List[float] = []
+        severity_blocker_values: List[float] = []
+        severity_rng = random.Random(args.sample_seed + 17)
 
         support_train_valid = 0
         support_train_zero = 0
@@ -443,6 +604,38 @@ def main() -> None:
             ground_mask = _ground_mask_from_hdf5(handle, city, sample, image_size)
             mask = base_mask & ground_mask
             los = x[:, 1:2].detach().cpu().numpy()[0, 0] > 0.5
+            shadow_depth = (
+                x[:, channel_layout["shadow_depth"] : channel_layout["shadow_depth"] + 1].detach().cpu().numpy()[0, 0]
+                if "shadow_depth" in channel_layout
+                else np.zeros_like(prior, dtype=np.float32)
+            )
+            distance_since_break = (
+                x[:, channel_layout["distance_since_los_break"] : channel_layout["distance_since_los_break"] + 1]
+                .detach()
+                .cpu()
+                .numpy()[0, 0]
+                if "distance_since_los_break" in channel_layout
+                else np.zeros_like(prior, dtype=np.float32)
+            )
+            blocker_height = (
+                x[:, channel_layout["max_blocker_height"] : channel_layout["max_blocker_height"] + 1].detach().cpu().numpy()[0, 0]
+                if "max_blocker_height" in channel_layout
+                else np.zeros_like(prior, dtype=np.float32)
+            )
+            blocker_count = (
+                x[:, channel_layout["blocker_count"] : channel_layout["blocker_count"] + 1].detach().cpu().numpy()[0, 0]
+                if "blocker_count" in channel_layout
+                else np.zeros_like(prior, dtype=np.float32)
+            )
+            los_reference = _compute_los_reference_db(
+                data_utils,
+                image_size=image_size,
+                antenna_height_m=ant,
+                receiver_height_m=float(formula_cfg.get("receiver_height_m", 1.5)),
+                frequency_ghz=float(formula_cfg.get("frequency_ghz", 7.125)),
+                meters_per_pixel=float(formula_cfg.get("meters_per_pixel", 1.0)),
+                a2g_params=dict(formula_cfg.get("a2g_params", {})),
+            )
 
             support_train_valid += int(mask.sum())
             support_train_zero += int((mask & np.isclose(target, 0.0)).sum())
@@ -457,6 +650,18 @@ def main() -> None:
                     key = _key_for_mode(mode, city_type, los_name, ant_label)
                     stats_by_mode[mode].setdefault(key, LinStats()).update(xv, yv)
                 quad_stats_by_mode["city_type_los_ant"].setdefault((city_type, los_name, ant_label), QuadStats()).update(xv, yv)
+            mm_nlos = mask & (~los)
+            if np.any(mm_nlos):
+                delta_prior = prior[mm_nlos] - los_reference[mm_nlos]
+                delta_target = target[mm_nlos] - los_reference[mm_nlos]
+                delta_stats_by_mode["city_type_ant"].setdefault((city_type, ant_label), LinStats()).update(delta_prior, delta_target)
+                delta_quad_stats_by_mode["city_type_ant"].setdefault((city_type, ant_label), QuadStats()).update(delta_prior, delta_target)
+                shadow_vals = shadow_depth[mm_nlos]
+                break_vals = distance_since_break[mm_nlos]
+                blocker_vals = 0.5 * blocker_height[mm_nlos] + 0.5 * blocker_count[mm_nlos]
+                severity_shadow_values.extend(_sample_pixels(shadow_vals, severity_rng))
+                severity_break_values.extend(_sample_pixels(break_vals, severity_rng))
+                severity_blocker_values.extend(_sample_pixels(blocker_vals, severity_rng))
 
             xv = prior[mask]
             yv = target[mask]
@@ -469,17 +674,102 @@ def main() -> None:
                     f"{(support_train_zero / max(support_train_valid, 1)):.3f}"
                 )
 
-        results: Dict[str, ErrStats] = {
-            "raw_prior": ErrStats(),
-            "global_affine": ErrStats(),
-            "city_type_affine": ErrStats(),
-            "city_type_los_affine": ErrStats(),
-            "city_type_los_ant_affine": ErrStats(),
-            "city_type_los_ant_quadratic": ErrStats(),
-            "global_affine_support_scaled": ErrStats(),
-            "city_type_los_affine_support_scaled": ErrStats(),
-            "city_type_los_ant_affine_support_scaled": ErrStats(),
-            "city_type_los_ant_quadratic_support_scaled": ErrStats(),
+        shadow_q1, shadow_q2 = _quantile_edges(severity_shadow_values)
+        break_q1, break_q2 = _quantile_edges(severity_break_values)
+        blocker_q1, blocker_q2 = _quantile_edges(severity_blocker_values)
+
+        for idx in range(len(train_ds)):
+            city, sample = train_ds.sample_refs[idx]
+            density, height, ant = sample_cache[(city, sample)]
+            city_type = city_type_map.get(city, _city_type_for_stats(density, height, density_q1, density_q2, height_q1, height_q2))
+            ant_label = _ant_bin(ant, ant_q1, ant_q2)
+
+            x, y, m, sc = data_utils.unpack_cgan_batch(train_ds[idx], device)
+            x, y, m, sc = _ensure_batch_dims(x, y, m, sc)
+            prior = _denormalize_channel(x[:, formula_idx : formula_idx + 1], target_meta).detach().cpu().numpy()[0, 0]
+            target = _denormalize_channel(y[:, :1], target_meta).detach().cpu().numpy()[0, 0]
+            base_mask = (m[:, :1].detach().cpu().numpy()[0, 0] > 0.0)
+            ground_mask = _ground_mask_from_hdf5(handle, city, sample, image_size)
+            mask = base_mask & ground_mask
+            los = x[:, 1:2].detach().cpu().numpy()[0, 0] > 0.5
+            shadow_depth = (
+                x[:, channel_layout["shadow_depth"] : channel_layout["shadow_depth"] + 1].detach().cpu().numpy()[0, 0]
+                if "shadow_depth" in channel_layout
+                else np.zeros_like(prior, dtype=np.float32)
+            )
+            distance_since_break = (
+                x[:, channel_layout["distance_since_los_break"] : channel_layout["distance_since_los_break"] + 1]
+                .detach()
+                .cpu()
+                .numpy()[0, 0]
+                if "distance_since_los_break" in channel_layout
+                else np.zeros_like(prior, dtype=np.float32)
+            )
+            blocker_height = (
+                x[:, channel_layout["max_blocker_height"] : channel_layout["max_blocker_height"] + 1].detach().cpu().numpy()[0, 0]
+                if "max_blocker_height" in channel_layout
+                else np.zeros_like(prior, dtype=np.float32)
+            )
+            blocker_count = (
+                x[:, channel_layout["blocker_count"] : channel_layout["blocker_count"] + 1].detach().cpu().numpy()[0, 0]
+                if "blocker_count" in channel_layout
+                else np.zeros_like(prior, dtype=np.float32)
+            )
+            los_reference = _compute_los_reference_db(
+                data_utils,
+                image_size=image_size,
+                antenna_height_m=ant,
+                receiver_height_m=float(formula_cfg.get("receiver_height_m", 1.5)),
+                frequency_ghz=float(formula_cfg.get("frequency_ghz", 7.125)),
+                meters_per_pixel=float(formula_cfg.get("meters_per_pixel", 1.0)),
+                a2g_params=dict(formula_cfg.get("a2g_params", {})),
+            )
+
+            mm_nlos = mask & (~los)
+            if not np.any(mm_nlos):
+                continue
+            delta_prior = prior[mm_nlos] - los_reference[mm_nlos]
+            delta_target = target[mm_nlos] - los_reference[mm_nlos]
+            severity_score = (
+                0.45 * shadow_depth[mm_nlos]
+                + 0.35 * distance_since_break[mm_nlos]
+                + 0.20 * (0.5 * blocker_height[mm_nlos] + 0.5 * blocker_count[mm_nlos])
+            )
+            sev_q1 = 0.45 * shadow_q1 + 0.35 * break_q1 + 0.20 * blocker_q1
+            sev_q2 = 0.45 * shadow_q2 + 0.35 * break_q2 + 0.20 * blocker_q2
+            sev_bins = np.empty(severity_score.shape, dtype=object)
+            sev_bins[severity_score <= sev_q1] = "sev_low"
+            sev_bins[(severity_score > sev_q1) & (severity_score <= sev_q2)] = "sev_mid"
+            sev_bins[severity_score > sev_q2] = "sev_high"
+            for sev_name in ("sev_low", "sev_mid", "sev_high"):
+                mm_sev = sev_bins == sev_name
+                if not np.any(mm_sev):
+                    continue
+                key = (city_type, ant_label, sev_name)
+                severity_delta_stats_by_mode["city_type_ant_severity"].setdefault(key, LinStats()).update(
+                    delta_prior[mm_sev],
+                    delta_target[mm_sev],
+                )
+                severity_delta_quad_stats_by_mode["city_type_ant_severity"].setdefault(key, QuadStats()).update(
+                    delta_prior[mm_sev],
+                    delta_target[mm_sev],
+                )
+
+        results: Dict[str, Dict[str, ErrStats]] = {
+            "raw_prior": _empty_regime_errstats(),
+            "global_affine": _empty_regime_errstats(),
+            "city_type_affine": _empty_regime_errstats(),
+            "city_type_los_affine": _empty_regime_errstats(),
+            "city_type_los_ant_affine": _empty_regime_errstats(),
+            "city_type_los_ant_quadratic": _empty_regime_errstats(),
+            "delta_nlos_city_type_ant_affine": _empty_regime_errstats(),
+            "delta_nlos_city_type_ant_quadratic": _empty_regime_errstats(),
+            "delta_nlos_city_type_ant_severity_affine": _empty_regime_errstats(),
+            "delta_nlos_city_type_ant_severity_quadratic": _empty_regime_errstats(),
+            "global_affine_support_scaled": _empty_regime_errstats(),
+            "city_type_los_affine_support_scaled": _empty_regime_errstats(),
+            "city_type_los_ant_affine_support_scaled": _empty_regime_errstats(),
+            "city_type_los_ant_quadratic_support_scaled": _empty_regime_errstats(),
         }
         support_val_valid = 0
         support_val_zero = 0
@@ -498,21 +788,56 @@ def main() -> None:
             ground_mask = _ground_mask_from_hdf5(handle, city, sample, image_size)
             mask = base_mask & ground_mask
             los = x[:, 1:2].detach().cpu().numpy()[0, 0] > 0.5
+            shadow_depth = (
+                x[:, channel_layout["shadow_depth"] : channel_layout["shadow_depth"] + 1].detach().cpu().numpy()[0, 0]
+                if "shadow_depth" in channel_layout
+                else np.zeros_like(prior, dtype=np.float32)
+            )
+            distance_since_break = (
+                x[:, channel_layout["distance_since_los_break"] : channel_layout["distance_since_los_break"] + 1]
+                .detach()
+                .cpu()
+                .numpy()[0, 0]
+                if "distance_since_los_break" in channel_layout
+                else np.zeros_like(prior, dtype=np.float32)
+            )
+            blocker_height = (
+                x[:, channel_layout["max_blocker_height"] : channel_layout["max_blocker_height"] + 1].detach().cpu().numpy()[0, 0]
+                if "max_blocker_height" in channel_layout
+                else np.zeros_like(prior, dtype=np.float32)
+            )
+            blocker_count = (
+                x[:, channel_layout["blocker_count"] : channel_layout["blocker_count"] + 1].detach().cpu().numpy()[0, 0]
+                if "blocker_count" in channel_layout
+                else np.zeros_like(prior, dtype=np.float32)
+            )
+            los_reference = _compute_los_reference_db(
+                data_utils,
+                image_size=image_size,
+                antenna_height_m=ant,
+                receiver_height_m=float(formula_cfg.get("receiver_height_m", 1.5)),
+                frequency_ghz=float(formula_cfg.get("frequency_ghz", 7.125)),
+                meters_per_pixel=float(formula_cfg.get("meters_per_pixel", 1.0)),
+                a2g_params=dict(formula_cfg.get("a2g_params", {})),
+            )
 
             support_val_valid += int(mask.sum())
             support_val_zero += int((mask & np.isclose(target, 0.0)).sum())
 
             xv = prior[mask]
             yv = target[mask]
-            results["raw_prior"].update(xv - yv)
+            raw_err = xv - yv
+            results["raw_prior"]["overall"].update(raw_err)
 
-            a, b, p = _solve_for_key(stats_by_mode["global"], ("all",))
-            pred = a * xv + b
-            results["global_affine"].update(pred - yv)
-            results["global_affine_support_scaled"].update((p * pred) - yv)
+            a_global, b_global, p_global = _solve_for_key(stats_by_mode["global"], ("all",))
+            pred = a_global * xv + b_global
+            global_err = pred - yv
+            results["global_affine"]["overall"].update(global_err)
+            results["global_affine_support_scaled"]["overall"].update((p_global * pred) - yv)
 
-            a, b, _ = _solve_for_key(stats_by_mode["city_type"], (city_type,))
-            results["city_type_affine"].update((a * xv + b) - yv)
+            a_city, b_city, _ = _solve_for_key(stats_by_mode["city_type"], (city_type,))
+            city_err = (a_city * xv + b_city) - yv
+            results["city_type_affine"]["overall"].update(city_err)
 
             for los_name, los_mask in (("LoS", los), ("NLoS", ~los)):
                 mm = mask & los_mask
@@ -520,34 +845,127 @@ def main() -> None:
                     continue
                 xvl = prior[mm]
                 yvl = target[mm]
+                regime_name = los_name
+
+                results["raw_prior"][regime_name].update(xvl - yvl)
+                global_regime_pred = a_global * xvl + b_global
+                results["global_affine"][regime_name].update(global_regime_pred - yvl)
+                results["global_affine_support_scaled"][regime_name].update((p_global * global_regime_pred) - yvl)
+
+                city_regime_pred = a_city * xvl + b_city
+                results["city_type_affine"][regime_name].update(city_regime_pred - yvl)
 
                 a, b, _ = _solve_for_key(stats_by_mode["city_type_los"], (city_type, los_name))
                 pred_los = a * xvl + b
-                results["city_type_los_affine"].update(pred_los - yvl)
+                results["city_type_los_affine"]["overall"].update(pred_los - yvl)
+                results["city_type_los_affine"][regime_name].update(pred_los - yvl)
 
                 a, b, p = _solve_for_key(stats_by_mode["city_type_los"], (city_type, los_name))
-                results["city_type_los_affine_support_scaled"].update((p * pred_los) - yvl)
+                pred_los_scaled_err = (p * pred_los) - yvl
+                results["city_type_los_affine_support_scaled"]["overall"].update(pred_los_scaled_err)
+                results["city_type_los_affine_support_scaled"][regime_name].update(pred_los_scaled_err)
 
                 a, b, _ = _solve_for_key(stats_by_mode["city_type_los_ant"], (city_type, los_name, ant_label))
                 pred_ant = a * xvl + b
-                results["city_type_los_ant_affine"].update(pred_ant - yvl)
+                pred_ant_err = pred_ant - yvl
+                results["city_type_los_ant_affine"]["overall"].update(pred_ant_err)
+                results["city_type_los_ant_affine"][regime_name].update(pred_ant_err)
 
                 a, b, p = _solve_for_key(stats_by_mode["city_type_los_ant"], (city_type, los_name, ant_label))
-                results["city_type_los_ant_affine_support_scaled"].update((p * pred_ant) - yvl)
+                pred_ant_scaled_err = (p * pred_ant) - yvl
+                results["city_type_los_ant_affine_support_scaled"]["overall"].update(pred_ant_scaled_err)
+                results["city_type_los_ant_affine_support_scaled"][regime_name].update(pred_ant_scaled_err)
 
                 a2, a1, a0, p = _solve_quadratic_for_key(quad_stats_by_mode["city_type_los_ant"], (city_type, los_name, ant_label))
                 pred_quad = (a2 * xvl * xvl) + (a1 * xvl) + a0
-                results["city_type_los_ant_quadratic"].update(pred_quad - yvl)
-                results["city_type_los_ant_quadratic_support_scaled"].update((p * pred_quad) - yvl)
+                pred_quad_err = pred_quad - yvl
+                results["city_type_los_ant_quadratic"]["overall"].update(pred_quad_err)
+                results["city_type_los_ant_quadratic"][regime_name].update(pred_quad_err)
+                pred_quad_scaled_err = (p * pred_quad) - yvl
+                results["city_type_los_ant_quadratic_support_scaled"]["overall"].update(pred_quad_scaled_err)
+                results["city_type_los_ant_quadratic_support_scaled"][regime_name].update(pred_quad_scaled_err)
+
+            los_regime_mask = mask & los
+            if np.any(los_regime_mask):
+                los_ref = los_reference[los_regime_mask]
+                los_tgt = target[los_regime_mask]
+                los_delta_err = los_ref - los_tgt
+                results["delta_nlos_city_type_ant_affine"]["overall"].update(los_delta_err)
+                results["delta_nlos_city_type_ant_affine"]["LoS"].update(los_delta_err)
+                results["delta_nlos_city_type_ant_quadratic"]["overall"].update(los_delta_err)
+                results["delta_nlos_city_type_ant_quadratic"]["LoS"].update(los_delta_err)
+                results["delta_nlos_city_type_ant_severity_affine"]["overall"].update(los_delta_err)
+                results["delta_nlos_city_type_ant_severity_affine"]["LoS"].update(los_delta_err)
+                results["delta_nlos_city_type_ant_severity_quadratic"]["overall"].update(los_delta_err)
+                results["delta_nlos_city_type_ant_severity_quadratic"]["LoS"].update(los_delta_err)
+
+            nlos_regime_mask = mask & (~los)
+            if np.any(nlos_regime_mask):
+                delta_prior = prior[nlos_regime_mask] - los_reference[nlos_regime_mask]
+                delta_target = target[nlos_regime_mask] - los_reference[nlos_regime_mask]
+                a_d, b_d, _ = _solve_for_key(delta_stats_by_mode["city_type_ant"], (city_type, ant_label))
+                pred_delta_aff = a_d * delta_prior + b_d
+                pred_path_aff = los_reference[nlos_regime_mask] + pred_delta_aff
+                pred_aff_err = pred_path_aff - target[nlos_regime_mask]
+                results["delta_nlos_city_type_ant_affine"]["overall"].update(pred_aff_err)
+                results["delta_nlos_city_type_ant_affine"]["NLoS"].update(pred_aff_err)
+
+                a2_d, a1_d, a0_d, _ = _solve_quadratic_for_key(delta_quad_stats_by_mode["city_type_ant"], (city_type, ant_label))
+                pred_delta_quad = a2_d * delta_prior * delta_prior + a1_d * delta_prior + a0_d
+                pred_path_quad = los_reference[nlos_regime_mask] + pred_delta_quad
+                pred_quad_delta_err = pred_path_quad - target[nlos_regime_mask]
+                results["delta_nlos_city_type_ant_quadratic"]["overall"].update(pred_quad_delta_err)
+                results["delta_nlos_city_type_ant_quadratic"]["NLoS"].update(pred_quad_delta_err)
+
+                severity_score = (
+                    0.45 * shadow_depth[nlos_regime_mask]
+                    + 0.35 * distance_since_break[nlos_regime_mask]
+                    + 0.20 * (0.5 * blocker_height[nlos_regime_mask] + 0.5 * blocker_count[nlos_regime_mask])
+                )
+                sev_q1 = 0.45 * shadow_q1 + 0.35 * break_q1 + 0.20 * blocker_q1
+                sev_q2 = 0.45 * shadow_q2 + 0.35 * break_q2 + 0.20 * blocker_q2
+                sev_bins = np.empty(severity_score.shape, dtype=object)
+                sev_bins[severity_score <= sev_q1] = "sev_low"
+                sev_bins[(severity_score > sev_q1) & (severity_score <= sev_q2)] = "sev_mid"
+                sev_bins[severity_score > sev_q2] = "sev_high"
+                pred_aff_full = np.empty_like(delta_prior)
+                pred_quad_full = np.empty_like(delta_prior)
+                for sev_name in ("sev_low", "sev_mid", "sev_high"):
+                    mm_sev = sev_bins == sev_name
+                    if not np.any(mm_sev):
+                        continue
+                    key = (city_type, ant_label, sev_name)
+                    a_s, b_s, _ = _solve_for_key(severity_delta_stats_by_mode["city_type_ant_severity"], key)
+                    pred_aff_full[mm_sev] = a_s * delta_prior[mm_sev] + b_s
+                    a2_s, a1_s, a0_s, _ = _solve_quadratic_for_key(
+                        severity_delta_quad_stats_by_mode["city_type_ant_severity"],
+                        key,
+                    )
+                    pred_quad_full[mm_sev] = (
+                        a2_s * delta_prior[mm_sev] * delta_prior[mm_sev]
+                        + a1_s * delta_prior[mm_sev]
+                        + a0_s
+                    )
+                pred_path_aff_sev = los_reference[nlos_regime_mask] + pred_aff_full
+                pred_path_quad_sev = los_reference[nlos_regime_mask] + pred_quad_full
+                pred_aff_sev_err = pred_path_aff_sev - target[nlos_regime_mask]
+                pred_quad_sev_err = pred_path_quad_sev - target[nlos_regime_mask]
+                results["delta_nlos_city_type_ant_severity_affine"]["overall"].update(pred_aff_sev_err)
+                results["delta_nlos_city_type_ant_severity_affine"]["NLoS"].update(pred_aff_sev_err)
+                results["delta_nlos_city_type_ant_severity_quadratic"]["overall"].update(pred_quad_sev_err)
+                results["delta_nlos_city_type_ant_severity_quadratic"]["NLoS"].update(pred_quad_sev_err)
             if (idx + 1) % max(int(args.log_every), 1) == 0 or (idx + 1) == len(val_ds):
                 print(
                     f"[prior-calibration] val {idx + 1}/{len(val_ds)} "
-                    f"raw_rmse={results['raw_prior'].summary()['rmse_db']:.4f} "
-                    f"best_so_far={min(v.summary()['rmse_db'] for v in results.values()):.4f}"
+                    f"raw_rmse={results['raw_prior']['overall'].summary()['rmse_db']:.4f} "
+                    f"best_so_far={min(v['overall'].summary()['rmse_db'] for v in results.values()):.4f}"
                 )
 
-    result_payload = {name: stats.summary() for name, stats in results.items()}
-    best_name, best_stats = min(result_payload.items(), key=lambda kv: kv[1]["rmse_db"])
+    result_payload = {
+        name: {regime: stats.summary() for regime, stats in regime_stats.items()}
+        for name, regime_stats in results.items()
+    }
+    best_name, best_stats = min(result_payload.items(), key=lambda kv: kv[1]["overall"]["rmse_db"])
 
     payload: Dict[str, Any] = {
         "try_dir": str(try_dir),
@@ -568,6 +986,12 @@ def main() -> None:
             "height_q2": height_q2,
             "ant_q1": ant_q1,
             "ant_q2": ant_q2,
+            "shadow_q1": shadow_q1,
+            "shadow_q2": shadow_q2,
+            "break_q1": break_q1,
+            "break_q2": break_q2,
+            "blocker_q1": blocker_q1,
+            "blocker_q2": blocker_q2,
         },
         "results": result_payload,
         "best": {"name": best_name, **best_stats},

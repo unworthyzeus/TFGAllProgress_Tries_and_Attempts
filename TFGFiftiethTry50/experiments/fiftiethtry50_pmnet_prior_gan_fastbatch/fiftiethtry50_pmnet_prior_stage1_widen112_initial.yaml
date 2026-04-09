@@ -13,20 +13,20 @@ data:
   non_ground_threshold: 0.0
   path_loss_formula_input:
     enabled: true
-    formula: hybrid_damped_coherent_two_ray_deepshadow_vinogradov_nlos
-    regime_calibration_json: prior_calibration/regime_obstruction_train_only_deepshadow_directml_quick.json
+    formula: hybrid_shadowed_ripple_two_ray_minimal_nlos_strict_los
+    regime_calibration_json: prior_calibration/regime_minimal_nlos_strict_los_directml_1pct.json
     meters_per_pixel: 1.0
     frequency_ghz: 7.125
     receiver_height_m: 1.5
     include_confidence_channel: true
     confidence_kernel_size: 31
-    cache_version: try50_prior_conf_v3
+    cache_version: try50_prior_conf_v6
     cache_enabled: false
-    cache_dir: prior_cache/try50_prior_conf_v3
+    cache_dir: prior_cache/try50_prior_conf_v6
     precomputed_hdf5: ""
   path_loss_obstruction_features:
     enabled: true
-    precomputed_hdf5: ../TFGFortySeventhTry47/precomputed/obstruction_features_u8.h5
+    precomputed_hdf5: precomputed/obstruction_features_u8.h5
     meters_per_pixel: 1.0
     angle_bins: 720
     include_shadow_depth: true

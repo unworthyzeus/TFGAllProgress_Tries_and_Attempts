@@ -18,12 +18,16 @@ If someone new needs to understand the current state quickly, the recommended or
 3. [TRY14_TRY22_REEVALUATION_AND_MASKING.md](/C:/TFG/TFGpractice/TRY14_TRY22_REEVALUATION_AND_MASKING.md)
 4. [FORMULA_PRIOR_CALIBRATION_SYSTEM.md](/C:/TFG/TFGpractice/FORMULA_PRIOR_CALIBRATION_SYSTEM.md)
 5. the active-branch note for the current path-loss line
+6. [PATH_LOSS_MODEL_TRAINING_PAPERS.md](/C:/TFG/TFGpractice/PATH_LOSS_MODEL_TRAINING_PAPERS.md)
+7. [TRY51_LITERATURE_ALIGNED_SUPERVISED_PLAN.md](/C:/TFG/TFGpractice/TRY51_LITERATURE_ALIGNED_SUPERVISED_PLAN.md)
+8. [TRY52_PAPER_BACKED_NEXT_STEPS.md](/C:/TFG/TFGpractice/TRY52_PAPER_BACKED_NEXT_STEPS.md)
 
 Right now the most relevant active-branch note is:
 
 - [TRY47_UNET22_PRIOR_NLOS_MOE.md](/C:/TFG/TFGpractice/TRY47_UNET22_PRIOR_NLOS_MOE.md)
-- [TRY48_PRIOR_RESEARCH_NOTES.md](/C:/TFG/TFGpractice/TRY48_PRIOR_RESEARCH_NOTES.md)
-- [TRY48_TWO_RAY_AND_NLOS_REFINEMENT.md](/C:/TFG/TFGpractice/TRY48_TWO_RAY_AND_NLOS_REFINEMENT.md)
+- [TRY49_PRIOR_IMPROVEMENTS.md](/C:/TFG/TFGpractice/TRY49_PRIOR_IMPROVEMENTS.md)
+- [TRY50_PRIOR_IMPROVEMENTS.md](/C:/TFG/TFGpractice/TRY50_PRIOR_IMPROVEMENTS.md)
+- [TRY51_LITERATURE_ALIGNED_SUPERVISED_PLAN.md](/C:/TFG/TFGpractice/TRY51_LITERATURE_ALIGNED_SUPERVISED_PLAN.md)
 
 ## Which documents are authoritative right now
 
@@ -48,16 +52,29 @@ The following files should be treated as the main current references.
   - why calibration must be train-only
 
 - [TRY47_UNET22_PRIOR_NLOS_MOE.md](/C:/TFG/TFGpractice/TRY47_UNET22_PRIOR_NLOS_MOE.md)
-  - current active path-loss branch
-  - architectural synthesis of `Try 22`, `Try 42`, and `Try 46`
+  - strongest prior-calibration baseline still in practical use
+  - source of the copied calibration reused by later branches
 
-- [TRY48_PRIOR_RESEARCH_NOTES.md](/C:/TFG/TFGpractice/TRY48_PRIOR_RESEARCH_NOTES.md)
-  - source-backed explanation of why the current prior misses the concentric LoS structure
-  - explains why the next improvement should come from prior family choice, not fine coefficient tuning
+- [TRY49_PRIOR_IMPROVEMENTS.md](/C:/TFG/TFGpractice/TRY49_PRIOR_IMPROVEMENTS.md)
+  - current two-stage PMNet branch
+  - documents the `mae_dominant` stage1 branch and the `84`-channel stage2
 
-- [TRY48_TWO_RAY_AND_NLOS_REFINEMENT.md](/C:/TFG/TFGpractice/TRY48_TWO_RAY_AND_NLOS_REFINEMENT.md)
-  - practical note on how to refine the LoS and NLoS prior families for `Try 48`
-  - focuses on fixed-frequency, variable-height A2G behavior
+- [TRY50_PRIOR_IMPROVEMENTS.md](/C:/TFG/TFGpractice/TRY50_PRIOR_IMPROVEMENTS.md)
+  - current `Try 50` prior-research status
+  - explains that the copied `Try 47` calibration remains the only practical prior
+
+- [TRY51_LITERATURE_ALIGNED_SUPERVISED_PLAN.md](/C:/TFG/TFGpractice/TRY51_LITERATURE_ALIGNED_SUPERVISED_PLAN.md)
+  - current plan for the new `Try 51` branch
+  - explains why it pivots toward automatic city-type generalization and supervised regime-aware training
+
+- [TRY52_PAPER_BACKED_NEXT_STEPS.md](/C:/TFG/TFGpractice/TRY52_PAPER_BACKED_NEXT_STEPS.md)
+  - focused note on the next paper-backed jump after `Try 51`
+  - explains why RL is probably not the right next training paradigm
+  - proposes a `Try 52` centered on explicit `LoS/NLoS` routing and stronger global context
+
+- [PATH_LOSS_MODEL_TRAINING_PAPERS.md](/C:/TFG/TFGpractice/PATH_LOSS_MODEL_TRAINING_PAPERS.md)
+  - literature-backed note on how path-loss and radio-map models are usually trained
+  - best short reference when the question is methodological rather than branch-specific
 
 ### Current historical correction about metrics
 
@@ -80,6 +97,9 @@ If the reader is a supervisor and wants the concise but complete story, these ar
   - source-to-try mapping
   - useful when the question is "why did we try this?"
 
+- [TRY49_PRIOR_IMPROVEMENTS.md](/C:/TFG/TFGpractice/TRY49_PRIOR_IMPROVEMENTS.md)
+  - good short operational note for the current cluster-facing branch
+
 ## Best documents for implementation work
 
 If the reader wants to change code or reproduce the latest setup, these are the most useful files:
@@ -87,11 +107,27 @@ If the reader wants to change code or reproduce the latest setup, these are the 
 - [TRY47_UNET22_PRIOR_NLOS_MOE.md](/C:/TFG/TFGpractice/TRY47_UNET22_PRIOR_NLOS_MOE.md)
   - architecture and training logic
 
-- [TRY48_PRIOR_RESEARCH_NOTES.md](/C:/TFG/TFGpractice/TRY48_PRIOR_RESEARCH_NOTES.md)
-  - why the prior itself now matters more than another backbone change
+- [TRY49_PRIOR_IMPROVEMENTS.md](/C:/TFG/TFGpractice/TRY49_PRIOR_IMPROVEMENTS.md)
+  - active stage1/stage2 path
+  - best entry point for current PMNet implementation work
 
-- [TRY48_TWO_RAY_AND_NLOS_REFINEMENT.md](/C:/TFG/TFGpractice/TRY48_TWO_RAY_AND_NLOS_REFINEMENT.md)
-  - the best current note for refining the physical prior before relaunching `Try 48`
+- [TRY50_PRIOR_IMPROVEMENTS.md](/C:/TFG/TFGpractice/TRY50_PRIOR_IMPROVEMENTS.md)
+  - active prior-research note
+  - points to archived failed prior experiments and the current baseline
+
+- [TFGFiftyFirstTry51/README.md](/C:/TFG/TFGpractice/TFGFiftyFirstTry51/README.md)
+  - active implementation note for `Try 51`
+  - best entry point for the new literature-aligned branch
+
+- [TFGFiftyFirstTry51/PRIOR_AGGREGATION_NOTE.md](/C:/TFG/TFGpractice/TFGFiftyFirstTry51/PRIOR_AGGREGATION_NOTE.md)
+  - explains why `Try 51` prior overall RMSE can look better even when the
+    regime-specific prior numbers do not both improve
+
+- [TFGFiftyFourthTry54/README.md](/C:/TFG/TFGpractice/TFGFiftyFourthTry54/README.md)
+  - active implementation note for the partitioned-expert branch
+
+- [TFGFiftyFourthTry54/TRY54_IMPLEMENTATION_NOTES.md](/C:/TFG/TFGpractice/TFGFiftyFourthTry54/TRY54_IMPLEMENTATION_NOTES.md)
+  - practical note for `PMHHNet`, `no_data`, validation JSON contents, and cluster intent
 
 - [FORMULA_PRIOR_CALIBRATION_SYSTEM.md](/C:/TFG/TFGpractice/FORMULA_PRIOR_CALIBRATION_SYSTEM.md)
   - calibration workflow and why it must be regenerated for a new dataset
@@ -101,6 +137,28 @@ If the reader wants to change code or reproduce the latest setup, these are the 
 
 - [TRY46_LOS_NLOS_BRANCHING_AND_NLOS_EXPERTS.md](/C:/TFG/TFGpractice/TRY46_LOS_NLOS_BRANCHING_AND_NLOS_EXPERTS.md)
   - the branch that motivated explicit `LoS / NLoS` specialization
+
+## Best documents for the new diagrams
+
+If you want the visual map of the Try 50 to Try 54 branch family, start here:
+
+- [Try 50 diagram page](/C:/TFG/TFGpractice/diagram/try50/index.html)
+  - browser-friendly Mermaid page for the Try 50 prior system
+
+- [Try 51 diagram page](/C:/TFG/TFGpractice/diagram/try51/index.html)
+  - browser-friendly Mermaid page for the supervised PMNet baseline
+
+- [Try 52 diagram page](/C:/TFG/TFGpractice/diagram/try52/index.html)
+  - browser-friendly Mermaid page for the morphology-routed MoE branch
+
+- [Try 53 diagram page](/C:/TFG/TFGpractice/diagram/try53/index.html)
+  - browser-friendly Mermaid page for the cyclic feedback chain
+
+- [Try 54 diagram page](/C:/TFG/TFGpractice/diagram/try54/index.html)
+  - browser-friendly Mermaid page for the partitioned experts and PMHHNet
+
+- [TRY51_TO_TRY54_DIAGRAMS.md](/C:/TFG/TFGpractice/TRY51_TO_TRY54_DIAGRAMS.md)
+  - source text companion with direct links to the Mermaid files
 
 ## Best documents for understanding why PMNet was not enough
 
@@ -186,8 +244,8 @@ These explain:
 
 For the current prior-refinement discussion, also read:
 
-- [TRY48_PRIOR_RESEARCH_NOTES.md](/C:/TFG/TFGpractice/TRY48_PRIOR_RESEARCH_NOTES.md)
-- [TRY48_TWO_RAY_AND_NLOS_REFINEMENT.md](/C:/TFG/TFGpractice/TRY48_TWO_RAY_AND_NLOS_REFINEMENT.md)
+- [TRY50_PRIOR_IMPROVEMENTS.md](/C:/TFG/TFGpractice/TRY50_PRIOR_IMPROVEMENTS.md)
+- [TFGFiftiethTry50/FAILED_PRIOR_EXPERIMENTS_SUMMARY.md](/C:/TFG/TFGpractice/TFGFiftiethTry50/FAILED_PRIOR_EXPERIMENTS_SUMMARY.md)
 
 ## Best documents for source tracing
 
@@ -214,8 +272,8 @@ These are older focused notes that still matter because they preserve the reason
 - [TRY45_ENHANCED_PRIOR_AND_MOE.md](/C:/TFG/TFGpractice/TRY45_ENHANCED_PRIOR_AND_MOE.md)
 - [TRY45_RELEASE_GATE_AND_PRIOR_STATUS.md](/C:/TFG/TFGpractice/TRY45_RELEASE_GATE_AND_PRIOR_STATUS.md)
 - [TRY46_LOS_NLOS_BRANCHING_AND_NLOS_EXPERTS.md](/C:/TFG/TFGpractice/TRY46_LOS_NLOS_BRANCHING_AND_NLOS_EXPERTS.md)
-- [TRY48_PRIOR_RESEARCH_NOTES.md](/C:/TFG/TFGpractice/TRY48_PRIOR_RESEARCH_NOTES.md)
-- [TRY48_TWO_RAY_AND_NLOS_REFINEMENT.md](/C:/TFG/TFGpractice/TRY48_TWO_RAY_AND_NLOS_REFINEMENT.md)
+- [TRY49_PRIOR_IMPROVEMENTS.md](/C:/TFG/TFGpractice/TRY49_PRIOR_IMPROVEMENTS.md)
+- [TRY50_PRIOR_IMPROVEMENTS.md](/C:/TFG/TFGpractice/TRY50_PRIOR_IMPROVEMENTS.md)
 
 ## Historical documents that remain useful mainly for traceability
 
@@ -253,11 +311,12 @@ These matter mostly when someone wants to reconstruct the exact sequence of loca
 
 ### "...why the current two-ray prior is still too weak?"
 
-- [TRY48_PRIOR_RESEARCH_NOTES.md](/C:/TFG/TFGpractice/TRY48_PRIOR_RESEARCH_NOTES.md)
+- [TRY50_PRIOR_IMPROVEMENTS.md](/C:/TFG/TFGpractice/TRY50_PRIOR_IMPROVEMENTS.md)
 
 ### "...how should the LoS/NLoS prior be refined next?"
 
-- [TRY48_TWO_RAY_AND_NLOS_REFINEMENT.md](/C:/TFG/TFGpractice/TRY48_TWO_RAY_AND_NLOS_REFINEMENT.md)
+- [TRY50_PRIOR_IMPROVEMENTS.md](/C:/TFG/TFGpractice/TRY50_PRIOR_IMPROVEMENTS.md)
+- [TFGFiftiethTry50/FAILED_PRIOR_EXPERIMENTS_SUMMARY.md](/C:/TFG/TFGpractice/TFGFiftiethTry50/FAILED_PRIOR_EXPERIMENTS_SUMMARY.md)
 
 ### "...which papers motivated the recent branches?"
 

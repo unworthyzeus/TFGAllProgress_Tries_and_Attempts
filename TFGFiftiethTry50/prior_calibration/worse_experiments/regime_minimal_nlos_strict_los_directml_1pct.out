@@ -1,0 +1,228 @@
+[prior-calibration] try=TFGFiftiethTry50 device=directml dataset=CKM_Dataset_270326.h5 log_every=10 sample_frac=0.010
+[prior-calibration] train_subset=113/11326 val_subset=24/2427
+[prior-calibration] train 10/113 valid_pixels=2094445 zero_ratio=0.226
+[prior-calibration] train 20/113 valid_pixels=4031957 zero_ratio=0.366
+[prior-calibration] train 30/113 valid_pixels=6135604 zero_ratio=0.337
+[prior-calibration] train 40/113 valid_pixels=8237110 zero_ratio=0.295
+[prior-calibration] train 50/113 valid_pixels=9792394 zero_ratio=0.319
+[prior-calibration] train 60/113 valid_pixels=11992423 zero_ratio=0.292
+[prior-calibration] train 70/113 valid_pixels=13825980 zero_ratio=0.286
+[prior-calibration] train 80/113 valid_pixels=15615747 zero_ratio=0.289
+[prior-calibration] train 90/113 valid_pixels=17393008 zero_ratio=0.291
+[prior-calibration] train 100/113 valid_pixels=19537241 zero_ratio=0.279
+[prior-calibration] train 110/113 valid_pixels=21588564 zero_ratio=0.270
+[prior-calibration] train 113/113 valid_pixels=22284056 zero_ratio=0.266
+[prior-calibration] val 10/24 raw_rmse=45.3932 best_so_far=19.3895
+[prior-calibration] val 20/24 raw_rmse=48.5025 best_so_far=22.0541
+[prior-calibration] val 24/24 raw_rmse=49.2202 best_so_far=23.4290
+{
+  "try_dir": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50",
+  "config": "C:\\TFG\\TFGpractice\\TFGFiftiethTry50\\experiments\\fiftiethtry50_pmnet_prior_gan_fastbatch\\fiftiethtry50_pmnet_prior_stage1_widen112_initial.yaml",
+  "dataset": "C:\\TFG\\TFGpractice\\Datasets\\CKM_Dataset_270326.h5",
+  "support": {
+    "train_valid_pixels": 22284056,
+    "train_zero_pixels": 5930517,
+    "train_zero_ratio": 0.2661327453135103,
+    "val_valid_pixels": 4784130,
+    "val_zero_pixels": 1140463,
+    "val_zero_ratio": 0.2383846174748596
+  },
+  "regimes": {
+    "density_q1": 0.15565093153068937,
+    "density_q2": 0.30379076225205515,
+    "height_q1": 8.377039803398981,
+    "height_q2": 14.877010451422796,
+    "ant_q1": 59.09285354614258,
+    "ant_q2": 114.87122344970703
+  },
+  "results": {
+    "raw_prior": {
+      "overall": {
+        "count": 4784130,
+        "rmse_db": 49.22019798994296,
+        "mae_db": 27.024947657725292
+      },
+      "LoS": {
+        "count": 3364365,
+        "rmse_db": 4.7071026245780345,
+        "mae_db": 3.7939956490788447
+      },
+      "NLoS": {
+        "count": 1419765,
+        "rmse_db": 90.06073547255212,
+        "mae_db": 82.07448180920092
+      }
+    },
+    "global_affine": {
+      "overall": {
+        "count": 4784130,
+        "rmse_db": 40.60119658461332,
+        "mae_db": 34.46928878890293
+      },
+      "LoS": {
+        "count": 3364365,
+        "rmse_db": 27.174050930091074,
+        "mae_db": 23.890233630910863
+      },
+      "NLoS": {
+        "count": 1419765,
+        "rmse_db": 61.68401245621443,
+        "mae_db": 59.53808743277567
+      }
+    },
+    "city_type_affine": {
+      "overall": {
+        "count": 4784130,
+        "rmse_db": 38.31951175885629,
+        "mae_db": 30.837982730808985
+      },
+      "LoS": {
+        "count": 3364365,
+        "rmse_db": 23.820593661567813,
+        "mae_db": 19.746450828322992
+      },
+      "NLoS": {
+        "count": 1419765,
+        "rmse_db": 60.02805182498128,
+        "mae_db": 57.121178702753134
+      }
+    },
+    "city_type_los_affine": {
+      "overall": {
+        "count": 4784130,
+        "rmse_db": 23.453021597455628,
+        "mae_db": 12.279078239731016
+      },
+      "LoS": {
+        "count": 3364365,
+        "rmse_db": 4.588752065540433,
+        "mae_db": 3.68618497234033
+      },
+      "NLoS": {
+        "count": 1419765,
+        "rmse_db": 42.46841959242968,
+        "mae_db": 32.64134196474527
+      }
+    },
+    "city_type_los_ant_affine": {
+      "overall": {
+        "count": 4784130,
+        "rmse_db": 23.43861006579504,
+        "mae_db": 12.132101617467018
+      },
+      "LoS": {
+        "count": 3364365,
+        "rmse_db": 4.422016184987493,
+        "mae_db": 3.579643986167312
+      },
+      "NLoS": {
+        "count": 1419765,
+        "rmse_db": 42.4835231178941,
+        "mae_db": 32.398546500055076
+      }
+    },
+    "city_type_los_ant_quadratic": {
+      "overall": {
+        "count": 4784130,
+        "rmse_db": 23.42903086730394,
+        "mae_db": 11.98272747647044
+      },
+      "LoS": {
+        "count": 3364365,
+        "rmse_db": 4.202824862387518,
+        "mae_db": 3.378948993456289
+      },
+      "NLoS": {
+        "count": 1419765,
+        "rmse_db": 42.518428201557604,
+        "mae_db": 32.37078549734425
+      }
+    },
+    "global_affine_support_scaled": {
+      "overall": {
+        "count": 4784130,
+        "rmse_db": 45.649049191801815,
+        "mae_db": 43.75474199986893
+      },
+      "LoS": {
+        "count": 3364365,
+        "rmse_db": 43.50247257159628,
+        "mae_db": 41.429457999319254
+      },
+      "NLoS": {
+        "count": 1419765,
+        "rmse_db": 50.371812672290865,
+        "mae_db": 49.26488213327786
+      }
+    },
+    "city_type_los_affine_support_scaled": {
+      "overall": {
+        "count": 4784130,
+        "rmse_db": 25.27282280482571,
+        "mae_db": 9.468188971617604
+      },
+      "LoS": {
+        "count": 3364365,
+        "rmse_db": 4.588752065540433,
+        "mae_db": 3.68618497234033
+      },
+      "NLoS": {
+        "count": 1419765,
+        "rmse_db": 45.85149133000707,
+        "mae_db": 23.16959158756354
+      }
+    },
+    "city_type_los_ant_affine_support_scaled": {
+      "overall": {
+        "count": 4784130,
+        "rmse_db": 25.19248717577605,
+        "mae_db": 9.40814915677936
+      },
+      "LoS": {
+        "count": 3364365,
+        "rmse_db": 4.422016184987493,
+        "mae_db": 3.579643986167312
+      },
+      "NLoS": {
+        "count": 1419765,
+        "rmse_db": 45.74121030951095,
+        "mae_db": 23.21974389134895
+      }
+    },
+    "city_type_los_ant_quadratic_support_scaled": {
+      "overall": {
+        "count": 4784130,
+        "rmse_db": 25.170232179848703,
+        "mae_db": 9.265733105431842
+      },
+      "LoS": {
+        "count": 3364365,
+        "rmse_db": 4.202824862387518,
+        "mae_db": 3.378948993456289
+      },
+      "NLoS": {
+        "count": 1419765,
+        "rmse_db": 45.74889455438879,
+        "mae_db": 23.215429307892553
+      }
+    }
+  },
+  "best": {
+    "name": "city_type_los_ant_quadratic",
+    "overall": {
+      "count": 4784130,
+      "rmse_db": 23.42903086730394,
+      "mae_db": 11.98272747647044
+    },
+    "LoS": {
+      "count": 3364365,
+      "rmse_db": 4.202824862387518,
+      "mae_db": 3.378948993456289
+    },
+    "NLoS": {
+      "count": 1419765,
+      "rmse_db": 42.518428201557604,
+      "mae_db": 32.37078549734425
+    }
+  }
+}

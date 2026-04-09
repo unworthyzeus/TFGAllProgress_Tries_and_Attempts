@@ -1,0 +1,52 @@
+%%{init: {'flowchart': {'nodeSpacing': 26, 'rankSpacing': 34}} }%%
+flowchart TB
+    subgraph INPUTS["Inputs and calibrated prior"]
+      direction TB
+      A1["Topology map + LoS mask + distance map"]
+      A2["Antenna height scalar"]
+      A3["Calibrated Try47 prior"]
+      A4["Automatic city type from density + height"]
+      A1 --> A3
+      A2 --> A3
+      A1 --> A4
+    end
+
+    subgraph S1["Stage 1: supervised PMNet"]
+      direction TB
+      B1["PMNetResidualRegressor<br/>112 channels"]
+      B2["MSE-dominant residual learning"]
+      B3["city_holdout validation"]
+      B4["best stage1 checkpoint"]
+      B1 --> B2 --> B3 --> B4
+    end
+
+    subgraph RW["Regime-aware weighting"]
+      direction TB
+      C1["Boost NLoS"]
+      C2["Boost low antenna"]
+      C3["Boost dense_highrise"]
+      C1 --> C2 --> C3
+    end
+
+    subgraph S2["Stage 2: residual tail refiner"]
+      direction TB
+      D1["Frozen stage1 teacher"]
+      D2["UNet residual refiner"]
+      D3["Residual correction on top of stage1"]
+      D1 --> D2 --> D3
+    end
+
+    A3 --> B1
+    A4 --> RW
+    RW --> B2
+    B4 --> D1
+
+    classDef input fill:#d6f0ff,stroke:#0077aa,stroke-width:1px,color:#003344;
+    classDef stage1 fill:#dff7df,stroke:#2d8a34,stroke-width:1px,color:#103d16;
+    classDef regime fill:#f0e2ff,stroke:#7a3db5,stroke-width:1px,color:#38185c;
+    classDef stage2 fill:#ffe8c7,stroke:#b16b00,stroke-width:1px,color:#5a3300;
+
+    class A1,A2,A3,A4 input;
+    class B1,B2,B3,B4 stage1;
+    class C1,C2,C3 regime;
+    class D1,D2,D3 stage2;
