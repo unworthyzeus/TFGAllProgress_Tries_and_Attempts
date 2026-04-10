@@ -426,6 +426,51 @@ def _checkpoint_model_state(state: Dict[str, Any]) -> Dict[str, Any]:
     raise KeyError("Checkpoint missing model/generator state")
 
 
+def _rewind_training_state_from_checkpoint(
+    checkpoint_path: Path,
+    device: object,
+    generator_model: nn.Module,
+    optimizer_g: torch.optim.Optimizer,
+    scaler_g: amp.GradScaler,
+    scheduler_g: Optional[torch.optim.lr_scheduler.ReduceLROnPlateau],
+    ema_generator: Optional[nn.Module],
+    discriminator: Optional[nn.Module],
+    optimizer_d: Optional[torch.optim.Optimizer],
+    scaler_d: Optional[amp.GradScaler],
+) -> None:
+    state = load_torch_checkpoint(checkpoint_path, device)
+    target_generator = unwrap_model(generator_model)
+    target_generator.load_state_dict(_checkpoint_model_state(state))
+    if ema_generator is not None:
+        if "generator_ema" in state and state["generator_ema"] is not None:
+            ema_generator.load_state_dict(state["generator_ema"])
+        else:
+            ema_generator.load_state_dict(target_generator.state_dict())
+    if discriminator is not None and "discriminator" in state and state["discriminator"] is not None:
+        target_discriminator = unwrap_model(discriminator)
+        target_discriminator.load_state_dict(state["discriminator"])
+    if "optimizer_g" in state and state["optimizer_g"] is not None:
+        optimizer_g.load_state_dict(state["optimizer_g"])
+        move_optimizer_state_to_device(optimizer_g, device)
+    elif "optimizer" in state and state["optimizer"] is not None:
+        optimizer_g.load_state_dict(state["optimizer"])
+        move_optimizer_state_to_device(optimizer_g, device)
+    if "optimizer_d" in state and optimizer_d is not None and state["optimizer_d"] is not None:
+        optimizer_d.load_state_dict(state["optimizer_d"])
+        move_optimizer_state_to_device(optimizer_d, device)
+    if "scaler_g" in state and state["scaler_g"] is not None:
+        scaler_g.load_state_dict(state["scaler_g"])
+    elif "scaler" in state and state["scaler"] is not None:
+        scaler_g.load_state_dict(state["scaler"])
+    if "scaler_d" in state and scaler_d is not None and state["scaler_d"] is not None:
+        scaler_d.load_state_dict(state["scaler_d"])
+    if scheduler_g is not None:
+        if "scheduler_g" in state and state["scheduler_g"] is not None:
+            scheduler_g.load_state_dict(state["scheduler_g"])
+        elif "scheduler" in state and state["scheduler"] is not None:
+            scheduler_g.load_state_dict(state["scheduler"])
+
+
 def _load_generator_weights(module: nn.Module, checkpoint_path: Path, device: object) -> None:
     state = load_torch_checkpoint(checkpoint_path, device)
     module.load_state_dict(_checkpoint_model_state(state), strict=True)
@@ -1599,6 +1644,13 @@ def main() -> None:
                 )
             )
 
+    es_cfg = cfg['training'].get('early_stopping') or {}
+    es_enabled = bool(es_cfg.get('enabled', False))
+    es_patience = int(es_cfg.get('patience', 10))
+    es_min_delta = float(es_cfg.get('min_delta', 0.0))
+    es_rewind_to_best_model = bool(es_cfg.get('rewind_to_best_model', False))
+    epochs_without_improvement = 0
+
     amp_enabled = bool(cfg["training"].get("amp", True)) and is_cuda_device(device)
     selection_metric = next(iter(dict(cfg["training"].get("selection_metrics", {"path_loss.rmse_physical": 1.0})).keys()))
 
@@ -1670,6 +1722,12 @@ def main() -> None:
                 val_summary["_train"] = train_payload
                 val_summary["_train_metrics"] = train_metrics
                 current_score = extract_selection_metric(val_summary, selection_metric)
+                prev_best_score = float(best_score)
+                if es_enabled and es_patience > 0:
+                    if current_score < (prev_best_score - es_min_delta):
+                        epochs_without_improvement = 0
+                    else:
+                        epochs_without_improvement += 1
                 if current_score < best_score:
                     best_score = current_score
                     best_epoch = epoch
@@ -1740,6 +1798,85 @@ def main() -> None:
                 print(json.dumps(progress_payload))
             else:
                 current_score = 0.0
+
+            control_tensor = torch.tensor([0], device=device, dtype=torch.int32)
+            if distributed:
+                if is_main_process(rank) and es_enabled and es_patience > 0 and epochs_without_improvement >= es_patience:
+                    if es_rewind_to_best_model:
+                        control_tensor[0] = 2
+                        print(
+                            json.dumps(
+                                {
+                                    "rewind_to_best_model": True,
+                                    "epochs_without_improvement": int(epochs_without_improvement),
+                                    "patience": int(es_patience),
+                                }
+                            )
+                        )
+                    else:
+                        control_tensor[0] = 1
+                        print(
+                            json.dumps(
+                                {
+                                    "early_stopping": True,
+                                    "epochs_without_improvement": int(epochs_without_improvement),
+                                    "patience": int(es_patience),
+                                }
+                            )
+                        )
+                dist.broadcast(control_tensor, src=0)
+            else:
+                if is_main_process(rank) and es_enabled and es_patience > 0 and epochs_without_improvement >= es_patience:
+                    if es_rewind_to_best_model:
+                        control_tensor[0] = 2
+                        print(
+                            json.dumps(
+                                {
+                                    "rewind_to_best_model": True,
+                                    "epochs_without_improvement": int(epochs_without_improvement),
+                                    "patience": int(es_patience),
+                                }
+                            )
+                        )
+                    else:
+                        control_tensor[0] = 1
+                        print(
+                            json.dumps(
+                                {
+                                    "early_stopping": True,
+                                    "epochs_without_improvement": int(epochs_without_improvement),
+                                    "patience": int(es_patience),
+                                }
+                            )
+                        )
+
+            control_value = int(control_tensor.item())
+            if control_value == 2:
+                best_path = out_dir / "best_model.pt"
+                if not best_path.exists():
+                    raise FileNotFoundError(f"Best checkpoint not found for rewind: {best_path}")
+                _rewind_training_state_from_checkpoint(
+                    best_path,
+                    device,
+                    generator_for_training,
+                    optimizer_g,
+                    scaler_g,
+                    scheduler_g,
+                    ema_generator,
+                    discriminator_for_training,
+                    optimizer_d,
+                    scaler_d,
+                )
+                epochs_without_improvement = 0
+                if is_cuda_device(device):
+                    torch.cuda.empty_cache()
+                barrier_if_distributed(distributed)
+                continue
+            if control_value == 1:
+                if is_cuda_device(device):
+                    torch.cuda.empty_cache()
+                barrier_if_distributed(distributed)
+                break
 
             if scheduler_g is not None:
                 if distributed:

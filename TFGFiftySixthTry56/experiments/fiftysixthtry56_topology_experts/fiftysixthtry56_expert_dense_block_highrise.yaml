@@ -37,7 +37,7 @@ data:
     height_q1: 12.0
     height_q2: 28.0
 model:
-  base_channels: 12
+  base_channels: 10
   gradient_checkpointing: false
   out_channels: 3
   use_scalar_channels: true
@@ -52,9 +52,10 @@ training:
   batch_size: 6
   epochs: 500
   early_stopping:
-    enabled: false
-    patience: 15
+    enabled: true
+    patience: 5
     min_delta: 0.0
+    rewind_to_best_model: true
   scalar_report_samples: 1000
   selection_metrics:
     delay_spread.rmse_physical: 1.0
@@ -68,7 +69,7 @@ training:
     min_batch_size: 1
     max_batch_size: 6
     safety_factor: 0.92
-  generator_lr: 0.001
+  generator_lr: 0.002
   beta1: 0.5
   beta2: 0.999
   weight_decay: 0.1

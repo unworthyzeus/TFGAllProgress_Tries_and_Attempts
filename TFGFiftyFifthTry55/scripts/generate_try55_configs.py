@@ -13,12 +13,12 @@ if str(ROOT) not in sys.path:
 from data_utils import TRY54_TOPOLOGY_CLASSES
 
 TOPOLOGY_MODEL_SPECS = {
-    "open_sparse_lowrise": {"base_channels": 12, "hf_channels": 8, "scalar_hidden_dim": 24},
-    "open_sparse_vertical": {"base_channels": 12, "hf_channels": 8, "scalar_hidden_dim": 24},
-    "mixed_compact_lowrise": {"base_channels": 12, "hf_channels": 8, "scalar_hidden_dim": 24},
-    "mixed_compact_midrise": {"base_channels": 12, "hf_channels": 8, "scalar_hidden_dim": 24},
-    "dense_block_midrise": {"base_channels": 12, "hf_channels": 8, "scalar_hidden_dim": 24},
-    "dense_block_highrise": {"base_channels": 12, "hf_channels": 8, "scalar_hidden_dim": 24},
+    "open_sparse_lowrise": {"base_channels": 10, "hf_channels": 8, "scalar_hidden_dim": 24},
+    "open_sparse_vertical": {"base_channels": 10, "hf_channels": 8, "scalar_hidden_dim": 24},
+    "mixed_compact_lowrise": {"base_channels": 10, "hf_channels": 8, "scalar_hidden_dim": 24},
+    "mixed_compact_midrise": {"base_channels": 10, "hf_channels": 8, "scalar_hidden_dim": 24},
+    "dense_block_midrise": {"base_channels": 10, "hf_channels": 8, "scalar_hidden_dim": 24},
+    "dense_block_highrise": {"base_channels": 10, "hf_channels": 8, "scalar_hidden_dim": 24},
 }
 
 
@@ -70,7 +70,7 @@ def main() -> None:
         cfg["training"]["epochs"] = 1000
         cfg["training"]["batch_size"] = 6
         cfg["training"]["optimizer"] = "adamw"
-        cfg["training"]["learning_rate"] = 1.0e-4
+        cfg["training"]["learning_rate"] = 2.0e-4
         cfg["training"]["weight_decay"] = 0.075
         cfg["training"]["ema_decay"] = 1.0
         cfg["training"]["lr_scheduler"] = "none"
@@ -80,6 +80,12 @@ def main() -> None:
         cfg["training"]["save_every"] = 1
         cfg["training"]["generator_objective"] = "full_map_rmse_only"
         cfg["training"]["selection_metrics"] = {"path_loss.rmse_physical": 1.0}
+        cfg["training"]["early_stopping"] = {
+            "enabled": True,
+            "patience": 5,
+            "min_delta": 0.0,
+            "rewind_to_best_model": True,
+        }
         cfg["training"]["regime_reweighting"]["enabled"] = False
         cfg["model"]["disc_base_channels"] = 0
         cfg["model"]["arch"] = "pmhhnet"

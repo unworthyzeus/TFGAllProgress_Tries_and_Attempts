@@ -47,7 +47,7 @@ def _make_expert_cfg(base_cfg: Dict, topology_class: str) -> Dict:
     data_cfg['num_workers'] = 2
 
     model_cfg = cfg.setdefault('model', {})
-    model_cfg['base_channels'] = 12
+    model_cfg['base_channels'] = 10
     model_cfg['gradient_checkpointing'] = False
     model_cfg['out_channels'] = 3
     model_cfg['scalar_film_hidden'] = 32
@@ -63,10 +63,16 @@ def _make_expert_cfg(base_cfg: Dict, topology_class: str) -> Dict:
     training_cfg['batch_size'] = 6
     training_cfg['save_every'] = 1
     training_cfg['generator_optimizer'] = 'adamw'
-    training_cfg['generator_lr'] = 1.0e-3
+    training_cfg['generator_lr'] = 2.0e-3
     training_cfg['weight_decay'] = 0.10
     training_cfg['ema_decay'] = 1.0
     training_cfg['lr_scheduler'] = 'none'
+    training_cfg['early_stopping'] = {
+        'enabled': True,
+        'patience': 5,
+        'min_delta': 0.0,
+        'rewind_to_best_model': True,
+    }
     training_cfg.pop('discriminator_optimizer', None)
     training_cfg.pop('discriminator_lr', None)
     training_cfg.pop('discriminator_optimizer_foreach', None)

@@ -65,7 +65,7 @@ data:
   path_loss_no_data_mask_column: path_loss_no_data_mask
   derive_no_data_from_non_ground: true
 model:
-  base_channels: 12
+  base_channels: 10
   disc_base_channels: 0
   disc_norm_type: group
   disc_input_downsample_factor: 1
@@ -92,7 +92,10 @@ training:
   batch_size: 6
   epochs: 1000
   early_stopping:
-    enabled: false
+    enabled: true
+    patience: 5
+    min_delta: 0.0
+    rewind_to_best_model: true
   selection_metrics:
     path_loss.rmse_physical: 1.0
   save_validation_json_each_epoch: true
@@ -106,7 +109,7 @@ training:
     safety_factor: 0.9
   optimizer: adamw
   discriminator_optimizer: adam
-  learning_rate: 0.0001
+  learning_rate: 0.0002
   discriminator_lr: 3.0e-05
   weight_decay: 0.075
   beta1: 0.5
