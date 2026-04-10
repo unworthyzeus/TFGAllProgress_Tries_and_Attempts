@@ -45,7 +45,7 @@ def _int_or(value: Any, default: int) -> int:
 def find_output_dirs(root_dir: Path) -> list[Path]:
     if not root_dir.exists():
         return []
-    dirs = {path.parent for path in root_dir.rglob("validate_metrics_epoch_*.json")}
+    dirs = {path.parent for path in root_dir.glob("*/validate_metrics_epoch_*.json")}
     return sorted(dirs, key=lambda path: str(path).lower())
 
 

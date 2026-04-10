@@ -1020,7 +1020,7 @@ def evaluate_validation(
         loader_kwargs["prefetch_factor"] = int(cfg["data"].get("prefetch_factor", 2))
     loader = DataLoader(
         eval_dataset,
-        batch_size=1,
+        batch_size=int(cfg["training"]["batch_size"]),
         shuffle=False,
         num_workers=val_num_workers,
         pin_memory=is_cuda_device(device),

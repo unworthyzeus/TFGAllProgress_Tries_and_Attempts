@@ -665,6 +665,14 @@ def build_optimizer(
     foreach_enabled: bool = False,
 ) -> torch.optim.Optimizer:
     name = optimizer_name.lower()
+    if name == 'adamw':
+        return torch.optim.AdamW(
+            params,
+            lr=learning_rate,
+            betas=(beta1, beta2),
+            weight_decay=weight_decay,
+            foreach=bool(foreach_enabled),
+        )
     if name == 'adam':
         return torch.optim.Adam(
             params,

@@ -10,12 +10,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-import yaml
 
 try:
     import paramiko
+    import yaml
+
 except ImportError:
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "paramiko"], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "yaml"], check=True)
     import paramiko
 
 

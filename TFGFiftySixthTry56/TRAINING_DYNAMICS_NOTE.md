@@ -21,3 +21,13 @@ For `Try 56`, the active profile is intentionally milder than `Try 55`:
 `Try 56` is now generator-only; the discriminator/GAN path was removed from the active trainer and configs.
 
 This is still an experimental optimization choice, not a standard recipe.
+
+## Rewind behavior
+
+`Try 56` also uses early stopping with `rewind_to_best_model = true`.
+When patience is exhausted, the trainer reloads `best_model.pt`, restores the
+optimizer/scaler/scheduler state, resets the patience counter, and then
+continues with the next epoch number.
+
+That means the weights jump back to the best checkpoint, but the epoch index in
+the logs and plots keeps increasing instead of restarting from the best epoch.

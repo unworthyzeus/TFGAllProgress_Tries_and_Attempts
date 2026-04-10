@@ -70,7 +70,7 @@ def main() -> None:
         cfg["training"]["epochs"] = 1000
         cfg["training"]["batch_size"] = 6
         cfg["training"]["optimizer"] = "adamw"
-        cfg["training"]["learning_rate"] = 2.0e-4
+        cfg["training"]["learning_rate"] = 8e-4
         cfg["training"]["weight_decay"] = 0.075
         cfg["training"]["ema_decay"] = 1.0
         cfg["training"]["lr_scheduler"] = "none"

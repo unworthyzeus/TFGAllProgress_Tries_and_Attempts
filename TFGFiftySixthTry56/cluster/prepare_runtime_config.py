@@ -23,6 +23,40 @@ def save_yaml(path: Path, data: Dict[str, Any]) -> None:
         yaml.safe_dump(data, handle, sort_keys=False)
 
 
+def _resolve_relative_path(base_dir: Path, raw_value: str) -> str:
+    path = Path(raw_value)
+    if path.is_absolute():
+        return str(path)
+    return str((base_dir / path).resolve())
+
+
+def resolve_input_paths(cfg: Dict[str, Any], base_dir: Path) -> Dict[str, Any]:
+    data_cfg = dict(cfg.get('data', {}))
+
+    for key in ('hdf5_path', 'scalar_table_csv'):
+        value = data_cfg.get(key)
+        if isinstance(value, str) and value.strip():
+            data_cfg[key] = _resolve_relative_path(base_dir, value.strip())
+
+    formula_cfg = dict(data_cfg.get('path_loss_formula_input', {}))
+    for key in ('precomputed_hdf5', 'regime_calibration_json', 'cache_dir'):
+        value = formula_cfg.get(key)
+        if isinstance(value, str) and value.strip():
+            formula_cfg[key] = _resolve_relative_path(base_dir, value.strip())
+    if formula_cfg:
+        data_cfg['path_loss_formula_input'] = formula_cfg
+
+    obstruction_cfg = dict(data_cfg.get('path_loss_obstruction_features', {}))
+    value = obstruction_cfg.get('precomputed_hdf5')
+    if isinstance(value, str) and value.strip():
+        obstruction_cfg['precomputed_hdf5'] = _resolve_relative_path(base_dir, value.strip())
+    if obstruction_cfg:
+        data_cfg['path_loss_obstruction_features'] = obstruction_cfg
+
+    cfg['data'] = data_cfg
+    return cfg
+
+
 def detect_vram_gb() -> Optional[float]:
     env_value = os.environ.get('GPU_VRAM_GB')
     if env_value:
@@ -125,6 +159,7 @@ def main() -> None:
     output_path = Path(args.output_config)
 
     cfg = load_yaml(input_path)
+    cfg = resolve_input_paths(cfg, input_path.resolve().parent)
     detected_vram_gb = detect_vram_gb()
     cfg = apply_dynamic_batch_size(cfg, detected_vram_gb)
     cfg = apply_runtime_overrides(

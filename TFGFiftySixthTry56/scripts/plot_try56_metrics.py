@@ -45,7 +45,7 @@ def _int_or(value: Any, default: int) -> int:
 def find_output_dirs(root_dir: Path) -> list[Path]:
     if not root_dir.exists():
         return []
-    dirs = {path.parent for path in root_dir.rglob("validate_metrics_epoch_*.json")}
+    dirs = {path.parent for path in root_dir.glob("*/validate_metrics_epoch_*.json")}
     return sorted(dirs, key=lambda path: str(path).lower())
 
 
@@ -86,6 +86,12 @@ def load_rows(output_dir: Path) -> list[dict[str, Any]]:
             "epoch": epoch,
             "delay_rmse_physical": _finite(_nested(payload, "metrics.delay_spread.rmse_physical", _nested(payload, "delay_spread.rmse_physical"))),
             "angular_rmse_physical": _finite(_nested(payload, "metrics.angular_spread.rmse_physical", _nested(payload, "angular_spread.rmse_physical"))),
+            "train_delay_rmse_physical": _finite(
+                _nested(payload, "metrics.train_delay_spread.rmse_physical", _nested(payload, "train_delay_spread.rmse_physical"))
+            ),
+            "train_angular_rmse_physical": _finite(
+                _nested(payload, "metrics.train_angular_spread.rmse_physical", _nested(payload, "train_angular_spread.rmse_physical"))
+            ),
             "delay_loss": _finite(_nested(payload, "_loss.target_losses.delay_spread", _nested(payload, "metrics.delay_spread.mse", _nested(payload, "delay_spread.mse")))),
             "angular_loss": _finite(_nested(payload, "_loss.target_losses.angular_spread", _nested(payload, "metrics.angular_spread.mse", _nested(payload, "angular_spread.mse")))),
             "delay_rmse": _finite(_nested(payload, "metrics.delay_spread.rmse", _nested(payload, "delay_spread.rmse"))),
@@ -128,6 +134,8 @@ def plot_output_dir(output_dir: Path, save_path: Path | None = None) -> dict[str
     epochs = [r["epoch"] for r in rows]
     delay_rmse_phys = [r["delay_rmse_physical"] for r in rows]
     angular_rmse_phys = [r["angular_rmse_physical"] for r in rows]
+    train_delay_rmse_phys = [r["train_delay_rmse_physical"] for r in rows]
+    train_angular_rmse_phys = [r["train_angular_rmse_physical"] for r in rows]
     delay_loss = [r["delay_loss"] for r in rows]
     angular_loss = [r["angular_loss"] for r in rows]
     gen_loss = [r["generator_loss"] for r in rows]
@@ -143,8 +151,10 @@ def plot_output_dir(output_dir: Path, save_path: Path | None = None) -> dict[str
 
     fig, axes = plt.subplots(4, 1, figsize=(11, 12), sharex=True, constrained_layout=True)
 
-    axes[0].plot(epochs, delay_rmse_phys, label="delay spread RMSE", color="#0b7285", linewidth=2.0)
-    axes[0].plot(epochs, angular_rmse_phys, label="angular spread RMSE", color="#e8590c", linewidth=2.0)
+    axes[0].plot(epochs, delay_rmse_phys, label="val delay spread RMSE", color="#0b7285", linewidth=2.0)
+    axes[0].plot(epochs, train_delay_rmse_phys, label="train delay spread RMSE", color="#0b7285", linestyle="--", linewidth=1.8)
+    axes[0].plot(epochs, angular_rmse_phys, label="val angular spread RMSE", color="#e8590c", linewidth=2.0)
+    axes[0].plot(epochs, train_angular_rmse_phys, label="train angular spread RMSE", color="#e8590c", linestyle="--", linewidth=1.8)
     axes[0].axvline(best_epoch, color="#2b8a3e", linestyle=":", linewidth=1.5, label=f"best epoch {best_epoch}")
     axes[0].set_ylabel("Physical RMSE")
     axes[0].set_title(f"Try 56 metrics - {topo}")
@@ -188,11 +198,13 @@ def plot_output_dir(output_dir: Path, save_path: Path | None = None) -> dict[str
         "best_epoch": best_epoch,
         "best_delay_rmse_physical": rows[best_i]["delay_rmse_physical"],
         "best_angular_rmse_physical": rows[best_i]["angular_rmse_physical"],
+        "best_train_delay_rmse_physical": rows[best_i]["train_delay_rmse_physical"],
+        "best_train_angular_rmse_physical": rows[best_i]["train_angular_rmse_physical"],
     }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Plot Try 56 delay/angular expert metrics.")
+    parser = argparse.ArgumentParser(description="Plot Try 56 train/val delay and angular spread RMSE trends.")
     parser.add_argument("--output-dir", default="", help="Optional single expert output dir. If omitted, scans --root-dir.")
     parser.add_argument("--root-dir", default=str(DEFAULT_ROOT), help="Root containing downloaded Try56 expert output folders.")
     parser.add_argument("--save-path", default="", help="PNG path for single-dir mode, or directory for scan mode.")

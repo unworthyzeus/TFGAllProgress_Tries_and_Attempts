@@ -125,3 +125,12 @@ If training starts collapsing, the first rollback should be:
 - lower `weight_decay` from `0.10` to `0.05`
 
 rather than immediately lowering the learning rate.
+
+## Rewind behavior
+
+When early stopping hits and `rewind_to_best_model` is enabled, the trainer
+reloads `best_model.pt` and continues with the next epoch number. It does not
+reset the epoch counter back to the best epoch.
+
+So the plots keep a monotonic epoch axis even after the model weights are
+rewound to the best checkpoint.

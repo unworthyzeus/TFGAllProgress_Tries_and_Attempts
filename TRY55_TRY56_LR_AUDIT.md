@@ -9,9 +9,9 @@ Source files:
 - `TFGFiftyFifthTry55/scripts/generate_try55_configs.py`
 
 Used by training:
-- `training.learning_rate = 0.001`
+- `training.learning_rate = 0.0008`
 - `training.weight_decay = 0.10`
-- `training.ema_decay = 0.99`
+- `training.ema_decay = 1` (disabled for now)
 
 Not used as optimizer inputs:
 - `experiment.learning_rate` in validation JSON files is only a snapshot/metadata field.
