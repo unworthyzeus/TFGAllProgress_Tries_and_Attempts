@@ -74,13 +74,14 @@ def main() -> None:
         cfg["model"]["use_scalar_film"] = True
         cfg["model"]["gradient_checkpointing"] = False
         cfg["loss"]["lambda_gan"] = 0.0
-        cfg["loss"]["mse_weight"] = 1.25
-        cfg["loss"]["l1_weight"] = 0.10
+        cfg["loss"]["mse_weight"] = 3.0
+        cfg["loss"]["l1_weight"] = 0.0
         cfg["multiscale_path_loss"]["loss_weight"] = 0.14
-        cfg["prior_residual_path_loss"]["mse_weight"] = 1.25
-        cfg["prior_residual_path_loss"]["l1_weight"] = 0.10
-        cfg["prior_residual_path_loss"]["final_loss_weight_when_residual_only"] = 0.28
-        cfg["prior_residual_path_loss"]["multiscale_loss_weight_when_residual_only"] = 0.06
+        cfg["prior_residual_path_loss"]["loss_weight"] = 0.55
+        cfg["prior_residual_path_loss"]["mse_weight"] = 2.5
+        cfg["prior_residual_path_loss"]["l1_weight"] = 0.0
+        cfg["prior_residual_path_loss"]["final_loss_weight_when_residual_only"] = 0.70
+        cfg["prior_residual_path_loss"]["multiscale_loss_weight_when_residual_only"] = 0.10
         cfg["no_data_auxiliary"] = {
             "enabled": True,
             "loss_weight": 0.18,

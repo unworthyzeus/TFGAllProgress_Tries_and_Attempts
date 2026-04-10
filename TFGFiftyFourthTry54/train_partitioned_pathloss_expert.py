@@ -1204,7 +1204,14 @@ def train_one_epoch(
                 gan_loss = torch.zeros((), device=target.device)
 
             if optimize_residual_only:
-                g_loss = float(residual_cfg.get("loss_weight", 1.0)) * residual_loss
+                residual_only_weight = float(residual_cfg.get("loss_weight", 1.0))
+                final_only_weight = float(residual_cfg.get("final_loss_weight_when_residual_only", 0.0))
+                multiscale_only_weight = float(residual_cfg.get("multiscale_loss_weight_when_residual_only", 0.0))
+                g_loss = (
+                    residual_only_weight * residual_loss
+                    + final_only_weight * final_loss
+                    + multiscale_only_weight * multiscale_loss
+                )
             else:
                 g_loss = (
                     lambda_recon * final_loss

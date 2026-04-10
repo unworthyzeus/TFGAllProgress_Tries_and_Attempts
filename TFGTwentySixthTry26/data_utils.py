@@ -394,6 +394,8 @@ class CKMHDF5Dataset(Dataset):
         scalar_table_csv: Optional[str] = None,
         hdf5_scalar_specs: Optional[List[Dict[str, Any]]] = None,
         path_loss_ignore_nonfinite: bool = True,
+        topology_mask_threshold: float = 0.0,
+        apply_topology_mask_to_targets: bool = False,
     ) -> None:
         self.hdf5_path = Path(hdf5_path)
         self.sample_refs = list(sample_refs)
@@ -417,6 +419,8 @@ class CKMHDF5Dataset(Dataset):
         self.path_loss_saturation_db = path_loss_saturation_db
         self.path_loss_ignore_nonfinite = bool(path_loss_ignore_nonfinite)
         self.hdf5_scalar_specs_map = _normalize_hdf5_scalar_specs(hdf5_scalar_specs or [])
+        self.topology_mask_threshold = float(topology_mask_threshold)
+        self.apply_topology_mask_to_targets = bool(apply_topology_mask_to_targets)
         self.scalar_table: Dict[Tuple[str, str], Dict[str, float]] = {}
         if scalar_table_csv:
             self.scalar_table = _load_hdf5_scalar_csv(Path(scalar_table_csv))
@@ -515,7 +519,10 @@ class CKMHDF5Dataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         city, sample = self.sample_refs[idx]
+        handle = self._get_handle()
+        raw_topology = np.asarray(handle[city][sample][self.input_column][...], dtype=np.float32)
         input_tensor = self._read_field(city, sample, self.input_column, self.input_metadata)
+        topology_mask_tensor = _resize_mask_nearest(raw_topology > self.topology_mask_threshold, self.image_size)
 
         los_input_tensor = None
         if self.los_input_column:
@@ -529,7 +536,6 @@ class CKMHDF5Dataset(Dataset):
             field_name = self.target_field_map.get(col, col)
             meta = self.target_metadata.get(col, {})
             if col == 'path_loss':
-                handle = self._get_handle()
                 raw = np.asarray(handle[city][sample][field_name][...], dtype=np.float32)
                 invalid = ~np.isfinite(raw)
                 finite_vals = raw[np.isfinite(raw)]
@@ -604,6 +610,10 @@ class CKMHDF5Dataset(Dataset):
         model_input = torch.cat(model_input_channels, dim=0)
         target_tensor = torch.cat(target_tensors, dim=0)
         mask_tensor = torch.ones_like(target_tensor, dtype=torch.float32)
+        if self.apply_topology_mask_to_targets:
+            valid_topology = (1.0 - topology_mask_tensor).squeeze(0)
+            for idx_target in range(len(self.target_columns)):
+                mask_tensor[idx_target] = mask_tensor[idx_target] * valid_topology
         if 'path_loss' in self.target_columns:
             path_loss_idx = self.target_columns.index('path_loss')
             if raw_path_loss_tensor is not None and self.path_loss_saturation_db is not None:
@@ -877,6 +887,8 @@ def build_dataset_splits_from_config(cfg: Dict[str, Any]) -> Dict[str, Dataset]:
         scalar_table_csv=data_cfg.get('scalar_table_csv'),
         hdf5_scalar_specs=list(data_cfg.get('hdf5_scalar_specs', [])),
         path_loss_ignore_nonfinite=bool(data_cfg.get('path_loss_ignore_nonfinite', True)),
+        topology_mask_threshold=float(data_cfg.get('topology_mask_threshold', 0.0)),
+        apply_topology_mask_to_targets=bool(data_cfg.get('apply_topology_mask_to_targets', False)),
     )
     splits = {
         'train': CKMHDF5Dataset(
