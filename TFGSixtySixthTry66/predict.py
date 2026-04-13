@@ -49,10 +49,16 @@ def denormalize(values: np.ndarray, metadata: Dict[str, Any]) -> np.ndarray:
 
 
 def clip_to_target_range(values: torch.Tensor, metadata: Dict[str, Any]) -> torch.Tensor:
-    clip_min = metadata.get("clip_min")
-    clip_max = metadata.get("clip_max")
     scale = float(metadata.get("scale", 1.0))
     offset = float(metadata.get("offset", 0.0))
+    clip_min_db = metadata.get("clip_min_db")
+    clip_max_db = metadata.get("clip_max_db")
+    if clip_min_db is not None and clip_max_db is not None:
+        min_norm = (float(clip_min_db) - offset) / max(scale, 1e-12)
+        max_norm = (float(clip_max_db) - offset) / max(scale, 1e-12)
+        return values.clamp(min=min_norm, max=max_norm)
+    clip_min = metadata.get("clip_min")
+    clip_max = metadata.get("clip_max")
     if clip_min is None or clip_max is None:
         return values
     min_norm = (float(clip_min) - offset) / max(scale, 1e-12)

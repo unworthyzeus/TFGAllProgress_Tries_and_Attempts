@@ -147,10 +147,21 @@ def extract_formula_prior_or_zero(
 
 
 def clip_to_target_range(values: torch.Tensor, metadata: Dict[str, Any]) -> torch.Tensor:
-    clip_min = metadata.get("clip_min")
-    clip_max = metadata.get("clip_max")
+    """Clamp model outputs in normalized target space.
+
+    If ``clip_min_db`` and ``clip_max_db`` are set (physical units, same as
+    ``scale``/``offset`` convention), they override ``clip_min``/``clip_max``.
+    """
     scale = float(metadata.get("scale", 1.0))
     offset = float(metadata.get("offset", 0.0))
+    clip_min_db = metadata.get("clip_min_db")
+    clip_max_db = metadata.get("clip_max_db")
+    if clip_min_db is not None and clip_max_db is not None:
+        min_norm = (float(clip_min_db) - offset) / max(scale, 1e-12)
+        max_norm = (float(clip_max_db) - offset) / max(scale, 1e-12)
+        return values.clamp(min=min_norm, max=max_norm)
+    clip_min = metadata.get("clip_min")
+    clip_max = metadata.get("clip_max")
     if clip_min is None or clip_max is None:
         return values
     min_norm = (float(clip_min) - offset) / max(scale, 1e-12)
@@ -202,6 +213,27 @@ def masked_huber_loss(
     huber = 0.5 * quadratic.pow(2) + delta * (abs_diff - quadratic)
     denom = mask.sum().clamp_min(1.0)
     return (huber * mask).sum() / denom
+
+
+def _masked_hard_huber_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    delta: float,
+    alpha: float,
+    gamma: float,
+) -> torch.Tensor:
+    """Huber loss on normalized residuals, up-weighted on large errors (NLoS focus).
+
+    ``w = 1 + alpha * |pred - target|^gamma`` applied elementwise before masking.
+    """
+    abs_diff = (pred - target).abs()
+    quadratic = torch.clamp(abs_diff, max=delta)
+    huber = 0.5 * quadratic.pow(2) + delta * (abs_diff - quadratic)
+    w = 1.0 + float(alpha) * abs_diff.pow(float(gamma))
+    denom = mask.sum().clamp_min(1.0)
+    return (w * huber * mask).sum() / denom
 
 
 def _cutmix_box(h: int, w: int, lam: float) -> tuple[int, int, int, int]:
@@ -332,6 +364,18 @@ def compute_nlos_focus_loss(
     los = input_batch[:, 1:2].clamp(0.0, 1.0)
     nlos_mask = mask * (los <= 0.5).to(mask.dtype)
     mode = str(focus_cfg.get("mode", "rmse")).lower()
+    if mode == "hard_huber":
+        delta = float(
+            focus_cfg.get(
+                "huber_delta",
+                cfg.get("loss", {}).get("huber_delta", 6.0),
+            )
+        )
+        alpha = float(focus_cfg.get("hard_huber_alpha", 1.0))
+        gamma = float(focus_cfg.get("hard_huber_gamma", 1.0))
+        return _masked_hard_huber_loss(
+            pred, target, nlos_mask, delta=delta, alpha=alpha, gamma=gamma
+        )
     if mode == "rmse":
         return masked_rmse_loss(pred, target, nlos_mask)
     return masked_mse_l1_loss(
@@ -2194,7 +2238,11 @@ def main() -> None:
                         "lambda_recon": float(cfg.get("loss", {}).get("lambda_recon", 0.0)),
                         "residual_loss_weight": float(cfg.get("prior_residual_path_loss", {}).get("loss_weight", 0.0)),
                         "gate_loss_weight": float(cfg.get("separated_refiner", {}).get("gate_loss_weight", 0.0)),
-                        "nlos_focus_loss_weight": float(cfg.get("nlos_focus_loss", {}).get("loss_weight", 0.0)),
+                        "nlos_focus_loss_weight": (
+                            float(cfg.get("nlos_focus_loss", {}).get("loss_weight", 0.0))
+                            if bool(cfg.get("nlos_focus_loss", {}).get("enabled", False))
+                            else 0.0
+                        ),
                     },
                     "learning_rate": float(optimizer_g.param_groups[0]["lr"]),
                     "generator_objective": str(cfg["training"].get("generator_objective", "legacy")),

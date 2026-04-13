@@ -97,7 +97,7 @@ training:
   epochs: 1000
   early_stopping:
     enabled: true
-    patience: 50
+    patience: 65
     min_delta: 0.0
     rewind_to_best_model: true
   selection_metrics:
@@ -113,12 +113,12 @@ training:
     safety_factor: 0.9
   optimizer: adamw
   discriminator_optimizer: adam
-  learning_rate: 0.0005
+  learning_rate: 0.002
   discriminator_lr: 3.0e-05
   weight_decay: 0.015
   beta1: 0.5
   beta2: 0.999
-  lr_scheduler: cosine_annealing_lr
+  lr_scheduler: cosine_warm_restarts
   lr_scheduler_factor: 0.5
   lr_scheduler_patience: 5
   lr_scheduler_min_lr: 5.0e-06
@@ -131,10 +131,11 @@ training:
   ema_decay: 0.995
   lr_warmup_optimizer_steps: 0
   lr_warmup_start_factor: 0.5
-  lr_scheduler_T_max: 1000
+  lr_scheduler_T0: 30
+  lr_scheduler_Tmult: 2
   lr_scheduler_eta_min: 1.0e-06
   generator_objective: full_map_rmse_only
-  nlos_reweight_factor: 4.0
+  nlos_reweight_factor: 6.0
   cutmix_prob: 0.25
   cutmix_alpha: 1.0
 loss:
@@ -144,7 +145,7 @@ loss:
   l1_weight: 0.0
   adversarial_loss: bce
   loss_type: huber
-  huber_delta: 6.0
+  huber_delta: 4.0
 multiscale_path_loss:
   enabled: true
   scales:
@@ -185,13 +186,20 @@ target_metadata:
     unit: dB
     clip_min: 0.0
     clip_max: 180.0
+    clip_min_db: 50.0
+    clip_max_db: 150.0
     predict_linear: false
 no_data_auxiliary:
   enabled: false
   loss_weight: 0.0
   positive_weight: 1.0
 nlos_focus_loss:
-  enabled: false
+  enabled: true
+  mode: hard_huber
+  loss_weight: 0.15
+  huber_delta: 4.0
+  hard_huber_alpha: 0.5
+  hard_huber_gamma: 1.25
 corridor_weighting:
   enabled: true
   sigma: 40.0
