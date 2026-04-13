@@ -1,0 +1,146 @@
+{
+  "metrics": {
+    "path_loss": {
+      "mse_physical": 115.01571297472718,
+      "rmse_physical": 10.724537890964216,
+      "mae_physical": 4.5978056243123095,
+      "count": 98513555,
+      "unit": "dB",
+      "fraction_of_valid_pixels": 1.0,
+      "mse_physical_quantized_u8": 115.08952405585201,
+      "rmse_physical_quantized_u8": 10.727978563357219,
+      "mae_physical_quantized_u8": 4.589218955706146
+    },
+    "train_path_loss": {
+      "mse_physical": 110.28234734010525,
+      "rmse_physical": 10.501540236560789,
+      "mae_physical": 5.049525039538107,
+      "count": 96586566,
+      "unit": "dB",
+      "mse_physical_quantized_u8": 110.35933233199324,
+      "rmse_physical_quantized_u8": 10.505205011421397,
+      "mae_physical_quantized_u8": 5.042686371104653
+    },
+    "prior_path_loss": {},
+    "improvement_vs_prior": {},
+    "no_data": {
+      "count": 131584500,
+      "bce": 0.013947503813542426,
+      "mse": 0.003541766931039026,
+      "rmse": 0.05951274595445102,
+      "mae": 0.009914171916085766,
+      "accuracy": 0.9955401434059483,
+      "precision": 0.9463033738962118,
+      "recall": 0.9868359165307942,
+      "iou": 0.934506729139845,
+      "positive_fraction_target": 0.06448544471423306,
+      "positive_fraction_pred": 0.06724751775475075
+    }
+  },
+  "focus": {
+    "topology_class": "open_sparse_lowrise",
+    "routed_city_type": "open_lowrise",
+    "regimes": {
+      "path_loss__los__LoS": {
+        "mse_physical": 20.140998546612234,
+        "rmse_physical": 4.487872385285954,
+        "mae_physical": 3.274065279739536,
+        "count": 91003243,
+        "unit": "dB",
+        "fraction_of_valid_pixels": 0.9237636688677004
+      },
+      "path_loss__los__NLoS": {
+        "mse_physical": 1264.622623667299,
+        "rmse_physical": 35.561532920661605,
+        "mae_physical": 20.637707324109837,
+        "count": 7510312,
+        "unit": "dB",
+        "fraction_of_valid_pixels": 0.07623633113229951
+      }
+    }
+  },
+  "experiment": {
+    "topology_class": "open_sparse_lowrise",
+    "los_sample_filter": null,
+    "focused_city_type": "open_lowrise",
+    "split_mode": "city_holdout",
+    "sample_count": 400,
+    "image_size": 513,
+    "batch_size": 5,
+    "model_arch": "pmhhnet",
+    "base_channels": 12,
+    "hf_channels": 10,
+    "out_channels": 2,
+    "use_scalar_film": true,
+    "learning_rate": 0.0008,
+    "generator_objective": "legacy",
+    "save_every": 1,
+    "no_data_aux_enabled": true,
+    "no_data_target_source": "fallback:non_ground_mask"
+  },
+  "support": {
+    "sample_count": 400,
+    "valid_pixel_count": 98513555,
+    "los_valid_pixel_count": 91003243,
+    "nlos_valid_pixel_count": 7510312,
+    "los_fraction": 0.9237636688677004,
+    "nlos_fraction": 0.07623633113229951,
+    "no_data_positive_fraction": 0.06448544471423306
+  },
+  "runtime": {
+    "generator_loss": 0.19848100907909563,
+    "no_data_loss": 0.016912417080348883,
+    "loss_components": {
+      "final_loss": 0.018168935056728047,
+      "residual_loss": 0.019374071459214274,
+      "multiscale_loss": 0.0004666172561626762,
+      "gate_loss": 0.0,
+      "gan_loss": 0.0,
+      "nlos_focus_loss": 0.17899983557753074,
+      "term_final": 0.018168935056728047,
+      "term_residual": 0.0,
+      "term_multiscale": 0.0004666172561626762,
+      "term_gate": 0.0,
+      "term_gan": 0.0,
+      "term_nlos_focus": 0.17899983557753074,
+      "generator_loss_total": 0.19848100907909563
+    },
+    "loss_flags": {
+      "optimize_residual_only": false,
+      "multiscale_enabled": true,
+      "gan_enabled": false,
+      "gate_enabled": false,
+      "lambda_recon": 1.0,
+      "residual_loss_weight": 0.0,
+      "gate_loss_weight": 0.0,
+      "no_data_loss_weight": 0.05,
+      "nlos_focus_loss_weight": 1.0
+    },
+    "learning_rate": 0.0008,
+    "generator_objective": "legacy",
+    "train_seconds": 25.14499424600035,
+    "val_seconds": 2.2899488450002536,
+    "epoch_seconds": 27.434943091000605,
+    "train_batches_per_second": 3.102009061402229,
+    "seconds_per_train_batch": 0.3223717211025686,
+    "val_samples_per_second": 174.67639107892634,
+    "seconds_per_val_sample": 0.0057248721125006344,
+    "gan_enabled": false
+  },
+  "checkpoint": {
+    "epoch": 41,
+    "best_epoch": 26,
+    "best_score": 19.31165725644252
+  },
+  "selection": {
+    "metric": "selection_proxy.composite_nlos_weighted_rmse",
+    "current_score": 19.61492112112962,
+    "is_best_epoch": false
+  },
+  "selection_proxy": {
+    "overall_rmse_physical": 10.724537890964216,
+    "nlos_rmse_physical": 35.561532920661605,
+    "alpha": 0.25,
+    "composite_nlos_weighted_rmse": 19.61492112112962
+  }
+}

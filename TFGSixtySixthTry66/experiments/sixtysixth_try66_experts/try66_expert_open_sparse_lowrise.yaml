@@ -1,0 +1,202 @@
+seed: 42
+data:
+  format: hdf5
+  hdf5_path: ../Datasets/CKM_Dataset_270326.h5
+  input_column: topology_map
+  input_metadata:
+    scale: 255.0
+    offset: 0.0
+  los_input_column: los_mask
+  distance_map_channel: true
+  exclude_non_ground_targets: true
+  non_ground_threshold: 0.0
+  path_loss_formula_input:
+    enabled: true
+    formula: hybrid_two_ray_cost231_a2g_nlos
+    regime_calibration_json: prior_calibration/regime_obstruction_train_only_from_try47.json
+    prefer_threshold_city_type: true
+    meters_per_pixel: 1.0
+    frequency_ghz: 7.125
+    receiver_height_m: 1.5
+    include_confidence_channel: true
+    confidence_kernel_size: 31
+    cache_version: try66_prior_auto_city_v1
+    cache_enabled: false
+    cache_dir: prior_cache/try66_prior_auto_city_v1
+    precomputed_hdf5: ''
+  path_loss_obstruction_features:
+    enabled: false
+    precomputed_hdf5: ../TFGFortySeventhTry47/precomputed/obstruction_features_u8.h5
+    meters_per_pixel: 1.0
+    angle_bins: 720
+    include_shadow_depth: false
+    include_distance_since_los_break: false
+    include_max_blocker_height: false
+    include_blocker_count: false
+  path_loss_saturation_db: 180
+  path_loss_ignore_nonfinite: true
+  target_field_map: {}
+  split_mode: city_holdout
+  val_ratio: 0.15
+  test_ratio: 0.15
+  split_seed: 42
+  scalar_feature_columns:
+  - antenna_height_m
+  hdf5_scalar_specs:
+  - name: antenna_height_m
+    from_dataset: uav_height
+  constant_scalar_features: {}
+  scalar_feature_norms:
+    antenna_height_m: 120.0
+  image_size: 513
+  num_workers: 6
+  val_num_workers: 4
+  persistent_workers: true
+  val_persistent_workers: true
+  prefetch_factor: 4
+  partition_filter:
+    topology_class: open_sparse_lowrise
+  topology_partitioning:
+    density_q1: 0.12
+    density_q2: 0.28
+    height_q1: 12.0
+    height_q2: 28.0
+  path_loss_no_data_mask_column: path_loss_no_data_mask
+  derive_no_data_from_non_ground: true
+  tx_depth_map_channel: true
+  elevation_angle_map_channel: true
+  building_mask_channel: true
+  val_batch_size: 1
+model:
+  base_channels: 40
+  disc_base_channels: 0
+  disc_norm_type: group
+  disc_input_downsample_factor: 1
+  encoder_blocks:
+  - 2
+  - 2
+  - 2
+  - 2
+  context_dilations:
+  - 1
+  - 2
+  - 4
+  - 8
+  dropout: 0.12
+  gradient_checkpointing: false
+  out_channels: 1
+  use_scalar_channels: true
+  norm_type: group
+  arch: pmhhnet
+  hf_channels: 16
+  use_scalar_film: true
+  use_se_attention: true
+  se_reduction: 4
+training:
+  batch_size: 1
+  epochs: 1000
+  early_stopping:
+    enabled: true
+    patience: 50
+    min_delta: 0.0
+    rewind_to_best_model: true
+  selection_metrics:
+    path_loss.rmse_physical: 1.0
+  save_validation_json_each_epoch: true
+  run_final_test_after_training: true
+  auto_batch_by_vram:
+    enabled: false
+    reference_vram_gb: 80.0
+    reference_batch_size: 1
+    min_batch_size: 1
+    max_batch_size: 5
+    safety_factor: 0.9
+  optimizer: adamw
+  discriminator_optimizer: adam
+  learning_rate: 0.0005
+  discriminator_lr: 3.0e-05
+  weight_decay: 0.015
+  beta1: 0.5
+  beta2: 0.999
+  lr_scheduler: cosine_annealing_lr
+  lr_scheduler_factor: 0.5
+  lr_scheduler_patience: 5
+  lr_scheduler_min_lr: 5.0e-06
+  amp: true
+  clip_grad_norm: 1.0
+  save_every: 5
+  regime_reweighting:
+    enabled: false
+  gradient_accumulation_steps: 8
+  ema_decay: 0.995
+  lr_warmup_optimizer_steps: 0
+  lr_warmup_start_factor: 0.5
+  lr_scheduler_T_max: 1000
+  lr_scheduler_eta_min: 1.0e-06
+  generator_objective: full_map_rmse_only
+  nlos_reweight_factor: 4.0
+  cutmix_prob: 0.25
+  cutmix_alpha: 1.0
+loss:
+  lambda_recon: 0.0
+  lambda_gan: 0.0
+  mse_weight: 0.0
+  l1_weight: 0.0
+  adversarial_loss: bce
+  loss_type: huber
+  huber_delta: 6.0
+multiscale_path_loss:
+  enabled: true
+  scales:
+  - 2
+  - 4
+  weights:
+  - 0.6
+  - 0.4
+  min_valid_ratio: 0.5
+  loss_weight: 0.3
+prior_residual_path_loss:
+  enabled: true
+  use_formula_input_channel: true
+  optimize_residual_only: false
+  clamp_final_output: true
+  loss_weight: 0.0
+  mse_weight: 1.0
+  l1_weight: 0.0
+  final_loss_weight_when_residual_only: 0.0
+  multiscale_loss_weight_when_residual_only: 0.0
+augmentation:
+  enable: true
+  hflip_prob: 0.5
+  vflip_prob: 0.5
+  rot90_prob: 0.5
+runtime:
+  device: cuda
+  output_dir: outputs/try66_expert_open_sparse_lowrise
+  resume_checkpoint: ''
+target_columns:
+- path_loss
+target_losses:
+  path_loss: mse
+target_metadata:
+  path_loss:
+    scale: 180.0
+    offset: 0.0
+    unit: dB
+    clip_min: 0.0
+    clip_max: 180.0
+    predict_linear: false
+no_data_auxiliary:
+  enabled: false
+  loss_weight: 0.0
+  positive_weight: 1.0
+nlos_focus_loss:
+  enabled: false
+corridor_weighting:
+  enabled: true
+  sigma: 40.0
+  kappa: 150.0
+  min_weight: 0.3
+test_time_augmentation:
+  enabled: true
+  transforms: d4

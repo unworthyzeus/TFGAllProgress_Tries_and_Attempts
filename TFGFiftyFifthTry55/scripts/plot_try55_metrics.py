@@ -81,6 +81,14 @@ def load_rows(output_dir: Path) -> list[dict[str, Any]]:
             "val_no_data_rmse": _finite(_nested(payload, "metrics.no_data.rmse")),
             "val_no_data_accuracy": _finite(_nested(payload, "metrics.no_data.accuracy")),
             "val_no_data_iou": _finite(_nested(payload, "metrics.no_data.iou")),
+            "final_loss": _finite(_nested(train_payload, "loss_components.final_loss")),
+            "residual_loss": _finite(_nested(train_payload, "loss_components.residual_loss")),
+            "multiscale_loss": _finite(_nested(train_payload, "loss_components.multiscale_loss")),
+            "gate_loss": _finite(_nested(train_payload, "loss_components.gate_loss")),
+            "gan_loss": _finite(_nested(train_payload, "loss_components.gan_loss")),
+            "term_final": _finite(_nested(train_payload, "loss_components.term_final")),
+            "term_residual": _finite(_nested(train_payload, "loss_components.term_residual")),
+            "term_multiscale": _finite(_nested(train_payload, "loss_components.term_multiscale")),
             "lr": _finite(train_payload.get("learning_rate")),
             "best_epoch": _int_or(checkpoint.get("best_epoch"), _epoch_from_path(path)),
             "best_score": _finite(checkpoint.get("best_score")),
@@ -105,13 +113,21 @@ def plot_output_dir(output_dir: Path, save_path: Path | None = None) -> dict[str
     val_no_data_bce = [r["val_no_data_bce"] for r in rows]
     val_no_data_acc = [r["val_no_data_accuracy"] for r in rows]
     val_no_data_iou = [r["val_no_data_iou"] for r in rows]
+    final_loss = [r["final_loss"] for r in rows]
+    residual_loss = [r["residual_loss"] for r in rows]
+    multiscale_loss = [r["multiscale_loss"] for r in rows]
+    gate_loss = [r["gate_loss"] for r in rows]
+    gan_loss = [r["gan_loss"] for r in rows]
+    term_final = [r["term_final"] for r in rows]
+    term_residual = [r["term_residual"] for r in rows]
+    term_multiscale = [r["term_multiscale"] for r in rows]
     lr = [r["lr"] for r in rows]
 
     best_idx = min(range(len(rows)), key=lambda i: rows[i]["val_rmse"])
     best_epoch = rows[best_idx]["epoch"]
     topo = rows[0]["topology_class"] or output_dir.name
 
-    fig, axes = plt.subplots(4, 1, figsize=(11, 12), sharex=True, constrained_layout=True)
+    fig, axes = plt.subplots(5, 1, figsize=(11, 15), sharex=True, constrained_layout=True)
 
     axes[0].plot(epochs, val_rmse, label="val RMSE", color="#0b7285", linewidth=2.0)
     axes[0].plot(epochs, train_rmse, label="train RMSE", color="#e8590c", linewidth=1.8)
@@ -141,12 +157,28 @@ def plot_output_dir(output_dir: Path, save_path: Path | None = None) -> dict[str
     lines_b, labels_b = ax2.get_legend_handles_labels()
     axes[2].legend(lines_a + lines_b, labels_a + labels_b, loc="best")
 
-    axes[3].plot(epochs, val_no_data_acc, label="val no-data accuracy", color="#2f9e44", linewidth=2.0)
-    axes[3].plot(epochs, val_no_data_iou, label="val no-data IoU", color="#0b7285", linewidth=1.8)
-    axes[3].set_ylabel("Mask quality")
-    axes[3].set_xlabel("Epoch")
+    axes[3].plot(epochs, final_loss, label="final loss", color="#1971c2", linewidth=1.8)
+    axes[3].plot(epochs, residual_loss, label="residual loss", color="#e8590c", linewidth=1.8)
+    axes[3].plot(epochs, multiscale_loss, label="multiscale loss", color="#5f3dc4", linewidth=1.6)
+    axes[3].plot(epochs, gate_loss, label="gate loss", color="#2b8a3e", linewidth=1.2)
+    axes[3].plot(epochs, gan_loss, label="gan loss", color="#c2255c", linewidth=1.2)
+    ax3 = axes[3].twinx()
+    ax3.plot(epochs, term_final, label="term final", color="#74c0fc", linestyle="--", linewidth=1.2)
+    ax3.plot(epochs, term_residual, label="term residual", color="#ffa94d", linestyle="--", linewidth=1.2)
+    ax3.plot(epochs, term_multiscale, label="term multiscale", color="#b197fc", linestyle="--", linewidth=1.2)
+    axes[3].set_ylabel("Raw loss")
+    ax3.set_ylabel("Weighted term")
     axes[3].grid(alpha=0.25)
-    axes[3].legend(loc="best")
+    lines_a, labels_a = axes[3].get_legend_handles_labels()
+    lines_b, labels_b = ax3.get_legend_handles_labels()
+    axes[3].legend(lines_a + lines_b, labels_a + labels_b, loc="best", ncol=2)
+
+    axes[4].plot(epochs, val_no_data_acc, label="val no-data accuracy", color="#2f9e44", linewidth=2.0)
+    axes[4].plot(epochs, val_no_data_iou, label="val no-data IoU", color="#0b7285", linewidth=1.8)
+    axes[4].set_ylabel("Mask quality")
+    axes[4].set_xlabel("Epoch")
+    axes[4].grid(alpha=0.25)
+    axes[4].legend(loc="best")
 
     resolved_save_path = save_path or output_dir / "metrics_plot.png"
     resolved_save_path.parent.mkdir(parents=True, exist_ok=True)

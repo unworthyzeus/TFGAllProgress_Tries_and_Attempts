@@ -1249,7 +1249,7 @@ def train_one_epoch(
     rank: int = 0,
     epoch: Optional[int] = None,
     out_dir: Optional[Path] = None,
-) -> tuple[float, float, float, dict[str, Any]]:
+) -> tuple[float, float, float, dict[str, Any], dict[str, float]]:
     formula_idx = formula_channel_index(cfg)
     meta = dict(cfg["target_metadata"]["path_loss"])
     loss_cfg = dict(cfg["loss"])
@@ -1272,6 +1272,16 @@ def train_one_epoch(
     running_g = 0.0
     running_d = 0.0
     running_no_data = 0.0
+    running_final = 0.0
+    running_residual = 0.0
+    running_multiscale = 0.0
+    running_gate = 0.0
+    running_gan = 0.0
+    running_term_final = 0.0
+    running_term_residual = 0.0
+    running_term_multiscale = 0.0
+    running_term_gate = 0.0
+    running_term_gan = 0.0
     train_metric_totals = init_metric_totals()
     train_metric_totals_quantized = init_metric_totals()
     steps = 0
@@ -1384,25 +1394,37 @@ def train_one_epoch(
 
             if objective_mode == "full_map_rmse_only":
                 g_loss = masked_rmse_loss(pred, target, mask)
+                term_final = torch.zeros((), device=target.device)
+                term_residual = torch.zeros((), device=target.device)
+                term_multiscale = torch.zeros((), device=target.device)
             elif optimize_residual_only:
                 residual_only_weight = float(residual_cfg.get("loss_weight", 1.0))
                 final_only_weight = float(residual_cfg.get("final_loss_weight_when_residual_only", 0.0))
                 multiscale_only_weight = float(residual_cfg.get("multiscale_loss_weight_when_residual_only", 0.0))
+                term_final = final_only_weight * final_loss
+                term_residual = residual_only_weight * residual_loss
+                term_multiscale = multiscale_only_weight * multiscale_loss
                 g_loss = (
-                    residual_only_weight * residual_loss
-                    + final_only_weight * final_loss
-                    + multiscale_only_weight * multiscale_loss
+                    term_residual
+                    + term_final
+                    + term_multiscale
                 )
             else:
+                term_final = lambda_recon * final_loss
+                term_residual = float(residual_cfg.get("loss_weight", 0.0)) * residual_loss
+                term_multiscale = multiscale_loss
                 g_loss = (
-                    lambda_recon * final_loss
-                    + float(residual_cfg.get("loss_weight", 0.0)) * residual_loss
-                    + multiscale_loss
+                    term_final
+                    + term_residual
+                    + term_multiscale
                     + lambda_gan * gan_loss
                 )
+            term_gan = lambda_gan * gan_loss
 
+            term_gate = torch.zeros((), device=target.device)
             if gate_loss_weight > 0.0:
-                g_loss = g_loss + gate_loss_weight * gate_loss
+                term_gate = gate_loss_weight * gate_loss
+                g_loss = g_loss + term_gate
             if bool(_no_data_aux_cfg(cfg).get("enabled", False)):
                 g_loss = g_loss + float(_no_data_aux_cfg(cfg).get("loss_weight", 0.0)) * no_data_loss
 
@@ -1427,6 +1449,16 @@ def train_one_epoch(
         running_g += float(g_loss.item())
         running_d += float(d_loss.item())
         running_no_data += float(no_data_loss.item())
+        running_final += float(final_loss.item())
+        running_residual += float(residual_loss.item())
+        running_multiscale += float(multiscale_loss.item())
+        running_gate += float(gate_loss.item())
+        running_gan += float(gan_loss.item())
+        running_term_final += float(term_final.item())
+        running_term_residual += float(term_residual.item())
+        running_term_multiscale += float(term_multiscale.item())
+        running_term_gate += float(term_gate.item())
+        running_term_gan += float(term_gan.item())
         steps += 1
         if is_main_process(rank) and out_dir is not None and (steps == 1 or steps % progress_every == 0 or steps == len(loader)):
             elapsed = max(time.perf_counter() - epoch_started, 1e-9)
@@ -1448,6 +1480,19 @@ def train_one_epoch(
                 ),
                 "learning_rate": float(optimizer_g.param_groups[0]["lr"]),
                 "generator_objective": str(cfg.get("training", {}).get("generator_objective", "legacy")),
+                "loss_components_running": {
+                    "final_loss": float(running_final / steps),
+                    "residual_loss": float(running_residual / steps),
+                    "multiscale_loss": float(running_multiscale / steps),
+                    "gate_loss": float(running_gate / steps),
+                    "gan_loss": float(running_gan / steps),
+                    "term_final": float(running_term_final / steps),
+                    "term_residual": float(running_term_residual / steps),
+                    "term_multiscale": float(running_term_multiscale / steps),
+                    "term_gate": float(running_term_gate / steps),
+                    "term_gan": float(running_term_gan / steps),
+                    "generator_loss_total": float(running_g / steps),
+                },
             }
             if use_gan:
                 live_payload["discriminator_loss_running"] = float(running_d / steps)
@@ -1455,7 +1500,20 @@ def train_one_epoch(
     denom = max(steps, 1)
     train_metrics = finalize_metric_total(train_metric_totals, str(meta.get("unit", "dB")))
     attach_quantized_metric_fields(train_metrics, train_metric_totals_quantized, str(meta.get("unit", "dB")))
-    return running_g / denom, running_d / denom, running_no_data / denom, train_metrics
+    train_loss_components = {
+        "final_loss": float(running_final / denom),
+        "residual_loss": float(running_residual / denom),
+        "multiscale_loss": float(running_multiscale / denom),
+        "gate_loss": float(running_gate / denom),
+        "gan_loss": float(running_gan / denom),
+        "term_final": float(running_term_final / denom),
+        "term_residual": float(running_term_residual / denom),
+        "term_multiscale": float(running_term_multiscale / denom),
+        "term_gate": float(running_term_gate / denom),
+        "term_gan": float(running_term_gan / denom),
+        "generator_loss_total": float(running_g / denom),
+    }
+    return running_g / denom, running_d / denom, running_no_data / denom, train_metrics, train_loss_components
 
 
 def main() -> None:
@@ -1660,7 +1718,7 @@ def main() -> None:
                 train_sampler.set_epoch(epoch)
 
             train_started = time.perf_counter()
-            train_g_loss, train_d_loss, train_no_data_loss, train_metrics = train_one_epoch(
+            train_g_loss, train_d_loss, train_no_data_loss, train_metrics, train_loss_components = train_one_epoch(
                 generator_for_training,
                 discriminator_for_training,
                 train_loader,
@@ -1706,6 +1764,17 @@ def main() -> None:
                 train_payload = {
                     "generator_loss": float(train_g_loss),
                     "no_data_loss": float(train_no_data_loss),
+                    "loss_components": train_loss_components,
+                    "loss_flags": {
+                        "optimize_residual_only": bool(cfg.get("prior_residual_path_loss", {}).get("optimize_residual_only", False)),
+                        "multiscale_enabled": bool(cfg.get("multiscale_path_loss", {}).get("enabled", False)),
+                        "gan_enabled": bool(cfg.get("loss", {}).get("lambda_gan", 0.0) > 0.0),
+                        "gate_enabled": bool(cfg.get("separated_refiner", {}).get("use_gate", False)),
+                        "lambda_recon": float(cfg.get("loss", {}).get("lambda_recon", 0.0)),
+                        "residual_loss_weight": float(cfg.get("prior_residual_path_loss", {}).get("loss_weight", 0.0)),
+                        "gate_loss_weight": float(cfg.get("separated_refiner", {}).get("gate_loss_weight", 0.0)),
+                        "no_data_loss_weight": float(cfg.get("no_data_auxiliary", {}).get("loss_weight", 0.0)),
+                    },
                     "learning_rate": float(optimizer_g.param_groups[0]["lr"]),
                     "generator_objective": str(cfg["training"].get("generator_objective", "legacy")),
                     "train_seconds": float(train_seconds),

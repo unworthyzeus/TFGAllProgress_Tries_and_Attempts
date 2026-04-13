@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH --job-name=ckm-t56-expert
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:rtx2080:2
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
+#SBATCH --time=04:00:00
+#SBATCH --output=logs_try59_expert_%j.out
+#SBATCH --error=logs_try59_expert_%j.err
+
+set -euo pipefail
+
+ROOT_DIR="${ROOT_DIR:-/scratch/nas/3/gmoreno/TFGpractice/TFGFiftyNinthTry59}"
+CONFIG_PATH="${CONFIG_PATH:-experiments/fiftyninthtry59_topology_experts/fiftyninthtry59_expert_open_sparse_lowrise.yaml}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
+OUTPUT_SUFFIX="${OUTPUT_SUFFIX:-cluster}"
+RUNTIME_CONFIG="$(mktemp "${SLURM_TMPDIR:-/tmp}/try59_runtime_XXXX.yaml")"
+
+cleanup() {
+  rm -f "$RUNTIME_CONFIG"
+}
+trap cleanup EXIT
+
+cd "$ROOT_DIR"
+
+"$PYTHON_BIN" cluster/prepare_runtime_config.py \
+  --input-config "$CONFIG_PATH" \
+  --output-config "$RUNTIME_CONFIG" \
+  --output-suffix "$OUTPUT_SUFFIX"
+
+torchrun --standalone --nproc_per_node=2 train_topology_expert.py --config "$RUNTIME_CONFIG"

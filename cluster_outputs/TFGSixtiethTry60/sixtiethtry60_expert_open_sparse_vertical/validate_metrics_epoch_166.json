@@ -1,0 +1,136 @@
+{
+  "metrics": {
+    "path_loss": {
+      "mse_physical": 356.9415281996954,
+      "rmse_physical": 18.89289623640842,
+      "mae_physical": 6.444174011061521,
+      "count": 56745542,
+      "unit": "dB",
+      "fraction_of_valid_pixels": 1.0,
+      "mse_physical_quantized_u8": 357.0119386647148,
+      "rmse_physical_quantized_u8": 18.89475955562057,
+      "mae_physical_quantized_u8": 6.437024533134251
+    },
+    "train_path_loss": {
+      "mse_physical": 120.11870561235072,
+      "rmse_physical": 10.959867955972404,
+      "mae_physical": 4.373499641672274,
+      "count": 65410791,
+      "unit": "dB",
+      "mse_physical_quantized_u8": 120.1974926124957,
+      "rmse_physical_quantized_u8": 10.96346170753087,
+      "mae_physical_quantized_u8": 4.368663635331974
+    },
+    "prior_path_loss": {},
+    "improvement_vs_prior": {},
+    "no_data": {
+      "count": 76319010,
+      "bce": 8.646958275958554e-05,
+      "mse": 1.4966352872657894e-05,
+      "rmse": 0.003868637082055888,
+      "mae": 0.00013095278900889445,
+      "accuracy": 0.9999824683260435,
+      "precision": 0.9998723236684083,
+      "recall": 0.9998793747081796,
+      "iou": 0.9997517291747537,
+      "positive_fraction_target": 0.07060610456031859,
+      "positive_fraction_pred": 0.07060660247034127
+    }
+  },
+  "focus": {
+    "topology_class": "open_sparse_vertical",
+    "routed_city_type": "open_lowrise",
+    "regimes": {
+      "path_loss__los__LoS": {
+        "mse_physical": 15.328767714750326,
+        "rmse_physical": 3.915197021191951,
+        "mae_physical": 3.1037439766723454,
+        "count": 49193115,
+        "unit": "dB",
+        "fraction_of_valid_pixels": 0.8669071307839478
+      },
+      "path_loss__los__NLoS": {
+        "mse_physical": 2582.053523191949,
+        "rmse_physical": 50.813910725232994,
+        "mae_physical": 28.202234038475314,
+        "count": 7552427,
+        "unit": "dB",
+        "fraction_of_valid_pixels": 0.13309286921605226
+      }
+    }
+  },
+  "experiment": {
+    "topology_class": "open_sparse_vertical",
+    "focused_city_type": "open_lowrise",
+    "split_mode": "city_holdout",
+    "sample_count": 230,
+    "image_size": 513,
+    "batch_size": 5,
+    "model_arch": "pmhhnet",
+    "base_channels": 10,
+    "hf_channels": 8,
+    "out_channels": 2,
+    "use_scalar_film": true,
+    "learning_rate": 0.0008,
+    "generator_objective": "legacy",
+    "save_every": 1,
+    "no_data_aux_enabled": true,
+    "no_data_target_source": "fallback:non_ground_mask"
+  },
+  "support": {
+    "sample_count": 230,
+    "valid_pixel_count": 56745542,
+    "los_valid_pixel_count": 49193115,
+    "nlos_valid_pixel_count": 7552427,
+    "los_fraction": 0.8669071307839478,
+    "nlos_fraction": 0.13309286921605226,
+    "no_data_positive_fraction": 0.07060610456031859
+  },
+  "runtime": {
+    "generator_loss": 0.006542897554700849,
+    "no_data_loss": 0.00018416935523014722,
+    "loss_components": {
+      "final_loss": 0.006144090835867381,
+      "residual_loss": 0.012735554327567419,
+      "multiscale_loss": 0.0003895982843931523,
+      "gate_loss": 0.0,
+      "gan_loss": 0.0,
+      "term_final": 0.006144090835867381,
+      "term_residual": 0.0,
+      "term_multiscale": 0.0003895982843931523,
+      "term_gate": 0.0,
+      "term_gan": 0.0,
+      "generator_loss_total": 0.006542897554700849
+    },
+    "loss_flags": {
+      "optimize_residual_only": false,
+      "multiscale_enabled": true,
+      "gan_enabled": false,
+      "gate_enabled": false,
+      "lambda_recon": 1.0,
+      "residual_loss_weight": 0.0,
+      "gate_loss_weight": 0.0,
+      "no_data_loss_weight": 0.05
+    },
+    "learning_rate": 0.0008,
+    "generator_objective": "legacy",
+    "train_seconds": 15.188645383997937,
+    "val_seconds": 1.417639915998734,
+    "epoch_seconds": 16.60628529999667,
+    "train_batches_per_second": 3.555287429179954,
+    "seconds_per_train_batch": 0.28127121081477663,
+    "val_samples_per_second": 162.24148135527344,
+    "seconds_per_val_sample": 0.006163651808690148,
+    "gan_enabled": false
+  },
+  "checkpoint": {
+    "epoch": 166,
+    "best_epoch": 16,
+    "best_score": 16.1682164674967
+  },
+  "selection": {
+    "metric": "path_loss.rmse_physical",
+    "current_score": 18.89289623640842,
+    "is_best_epoch": false
+  }
+}

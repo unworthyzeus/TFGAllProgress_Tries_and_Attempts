@@ -94,6 +94,31 @@ def build_optimizer(cfg: Dict, model: nn.Module, device: object) -> torch.optim.
     raise ValueError(f"Unsupported optimizer '{optimizer_name}'.")
 
 
+def apply_optimizer_hparams_from_cfg(
+    optimizer: torch.optim.Optimizer,
+    *,
+    learning_rate: float,
+    weight_decay: float,
+    momentum: float,
+) -> None:
+    lr = float(learning_rate)
+    decay = float(weight_decay)
+    mom = float(momentum)
+
+    for group in optimizer.param_groups:
+        group['lr'] = lr
+        group['weight_decay'] = decay
+        if 'momentum' in group:
+            group['momentum'] = mom
+
+    defaults = getattr(optimizer, 'defaults', None)
+    if isinstance(defaults, dict):
+        defaults['lr'] = lr
+        defaults['weight_decay'] = decay
+        if 'momentum' in defaults:
+            defaults['momentum'] = mom
+
+
 def compute_weighted_loss(
     outputs: torch.Tensor,
     targets: torch.Tensor,
@@ -279,6 +304,12 @@ def main() -> None:
         if 'optimizer' in state:
             optimizer.load_state_dict(state['optimizer'])
             move_optimizer_state_to_device(optimizer, device)
+            apply_optimizer_hparams_from_cfg(
+                optimizer,
+                learning_rate=float(cfg['training']['learning_rate']),
+                weight_decay=float(cfg['training']['weight_decay']),
+                momentum=float(cfg['training'].get('momentum', 0.0)),
+            )
         if 'scaler' in state:
             scaler.load_state_dict(state['scaler'])
         if 'best_val_loss' in state:

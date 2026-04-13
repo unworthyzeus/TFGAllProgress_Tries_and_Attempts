@@ -55,7 +55,7 @@ def main() -> None:
         }
         cfg["data"]["image_size"] = 513
         cfg["data"]["num_workers"] = 4
-        cfg["data"]["val_num_workers"] = 1
+        cfg["data"]["val_num_workers"] = 2
         cfg["data"]["persistent_workers"] = True
         cfg["data"]["val_persistent_workers"] = False
         cfg["data"]["prefetch_factor"] = 2
@@ -68,7 +68,7 @@ def main() -> None:
         cfg["data"]["path_loss_formula_input"]["cache_version"] = "try55_prior_auto_city_v1"
         cfg["data"]["path_loss_formula_input"]["cache_dtype"] = "uint8"
         cfg["training"]["epochs"] = 1000
-        cfg["training"]["batch_size"] = 6
+        cfg["training"]["batch_size"] = 5
         cfg["training"]["optimizer"] = "adamw"
         cfg["training"]["learning_rate"] = 8e-4
         cfg["training"]["weight_decay"] = 0.075

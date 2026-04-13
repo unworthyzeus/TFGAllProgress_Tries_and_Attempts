@@ -495,6 +495,38 @@ def build_optimizer(
     raise ValueError(f"Unsupported optimizer '{optimizer_name}'.")
 
 
+def apply_optimizer_hparams_from_cfg(
+    optimizer: torch.optim.Optimizer,
+    *,
+    learning_rate: float,
+    weight_decay: float,
+    beta1: float,
+    beta2: float,
+    momentum: float,
+) -> None:
+    lr = float(learning_rate)
+    decay = float(weight_decay)
+    beta_tuple = (float(beta1), float(beta2))
+    mom = float(momentum)
+
+    for group in optimizer.param_groups:
+        group['lr'] = lr
+        group['weight_decay'] = decay
+        if 'betas' in group:
+            group['betas'] = beta_tuple
+        if 'momentum' in group:
+            group['momentum'] = mom
+
+    defaults = getattr(optimizer, 'defaults', None)
+    if isinstance(defaults, dict):
+        defaults['lr'] = lr
+        defaults['weight_decay'] = decay
+        if 'betas' in defaults:
+            defaults['betas'] = beta_tuple
+        if 'momentum' in defaults:
+            defaults['momentum'] = mom
+
+
 def compute_reconstruction_loss(
     outputs: torch.Tensor,
     targets: torch.Tensor,
@@ -876,8 +908,22 @@ def main() -> None:
             scaler_g.load_state_dict(state['scaler_g'])
         if 'scaler_d' in state:
             scaler_d.load_state_dict(state['scaler_d'])
-        if scheduler_g is not None and 'scheduler_g' in state:
-            scheduler_g.load_state_dict(state['scheduler_g'])
+        apply_optimizer_hparams_from_cfg(
+            opt_g,
+            learning_rate=float(cfg['training']['generator_lr']),
+            weight_decay=float(cfg['training']['weight_decay']),
+            beta1=float(cfg['training']['beta1']),
+            beta2=float(cfg['training']['beta2']),
+            momentum=momentum,
+        )
+        apply_optimizer_hparams_from_cfg(
+            opt_d,
+            learning_rate=float(cfg['training']['discriminator_lr']),
+            weight_decay=float(cfg['training']['weight_decay']),
+            beta1=float(cfg['training']['beta1']),
+            beta2=float(cfg['training']['beta2']),
+            momentum=momentum,
+        )
         if 'best_selection_metric_value' in state:
             best_selection_value = float(state['best_selection_metric_value'])
         elif 'best_val_recon_loss' in state and selection_metric == 'val_recon_loss':
