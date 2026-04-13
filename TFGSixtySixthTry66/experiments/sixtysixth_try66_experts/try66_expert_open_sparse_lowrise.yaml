@@ -113,7 +113,7 @@ training:
     safety_factor: 0.9
   optimizer: adamw
   discriminator_optimizer: adam
-  learning_rate: 0.002
+  learning_rate: 0.0006
   discriminator_lr: 3.0e-05
   weight_decay: 0.015
   beta1: 0.5
@@ -186,20 +186,13 @@ target_metadata:
     unit: dB
     clip_min: 0.0
     clip_max: 180.0
-    clip_min_db: 50.0
-    clip_max_db: 150.0
     predict_linear: false
 no_data_auxiliary:
   enabled: false
   loss_weight: 0.0
   positive_weight: 1.0
 nlos_focus_loss:
-  enabled: true
-  mode: hard_huber
-  loss_weight: 0.15
-  huber_delta: 4.0
-  hard_huber_alpha: 0.5
-  hard_huber_gamma: 1.25
+  enabled: false
 corridor_weighting:
   enabled: true
   sigma: 40.0

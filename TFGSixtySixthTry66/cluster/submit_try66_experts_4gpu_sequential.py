@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""Upload Try 66, optionally cancel all user Slurm jobs, submit chained 4-GPU jobs for open_sparse_lowrise.
+"""Upload Try 66, optionally scancel specific jobs, submit chained 4-GPU Slurm jobs for one or more experts.
 
-Each job uses ``cluster/run_sixtysixth_try66_4gpu.slurm`` (4× RTX2080, 4:00:00 walltime). Jobs are
-chained with ``--dependency=afterany:<prev>`` so only one runs at a time.
-
-By default every job exports ``RESUME_CHECKPOINT`` to the expert ``best_model.pt`` under
-``outputs/try66_expert_open_sparse_lowrise/`` (path relative to the repo on the cluster). Each
-segment reloads that path at startup, so after job *k* updates the checkpoint, job *k+1* picks up
-the latest weights.
+Each job uses ``cluster/run_sixtysixth_try66_4gpu.slurm`` (4 GPUs, 4:00:00). Experts are resolved from
+``experiments/sixtysixth_try66_experts/try66_expert_registry.yaml``. By default no RESUME_CHECKPOINT
+is set (fresh training from the YAML).
 """
 from __future__ import annotations
 
@@ -17,6 +13,9 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 try:
     import paramiko
@@ -26,12 +25,11 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCAL_DIR = ROOT / "TFGSixtySixthTry66"
+REGISTRY = LOCAL_DIR / "experiments" / "sixtysixth_try66_experts" / "try66_expert_registry.yaml"
 REMOTE_DIR = "/scratch/nas/3/gmoreno/TFGpractice/TFGSixtySixthTry66"
 HOST = "sert.ac.upc.edu"
 USER = "gmoreno"
 TARGET_NODE = "sert-2001"
-DEFAULT_CONFIG = "experiments/sixtysixth_try66_experts/try66_expert_open_sparse_lowrise.yaml"
-DEFAULT_RESUME_CHECKPOINT = "outputs/try66_expert_open_sparse_lowrise/best_model.pt"
 
 
 def run_local(command: list[str]) -> None:
@@ -67,36 +65,55 @@ def remote_sbatch(client: paramiko.SSHClient, command: str) -> str:
     return parse_job_id(out)
 
 
+def load_registry() -> list[dict[str, Any]]:
+    with REGISTRY.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    experts = list(data.get("experts", [])) if isinstance(data, dict) else []
+    if not experts:
+        raise RuntimeError(f"No experts in {REGISTRY}")
+    return experts
+
+
+def resolve_expert(expert_id: str, experts: list[dict[str, Any]]) -> dict[str, Any]:
+    for row in experts:
+        if str(row.get("expert_id")) == expert_id or str(row.get("topology_class")) == expert_id:
+            return row
+    ids = [str(r.get("expert_id")) for r in experts]
+    raise SystemExit(f"Unknown expert_id {expert_id!r}. Known: {ids}")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Submit N sequential Try66 open_sparse_lowrise 4-GPU jobs.")
-    parser.add_argument("--count", type=int, default=4, help="Number of chained jobs (default: 4).")
+    parser = argparse.ArgumentParser(description="Submit sequential Try66 4-GPU jobs for given expert_ids.")
+    parser.add_argument(
+        "expert_ids",
+        nargs="+",
+        help="expert_id values from try66_expert_registry.yaml (e.g. open_sparse_vertical).",
+    )
     parser.add_argument("--skip-upload", action="store_true")
     parser.add_argument("--host", default=HOST)
     parser.add_argument("--user", default=USER)
     parser.add_argument("--password-env", default="SSH_PASSWORD")
     parser.add_argument("--ssh-key", default=None)
     parser.add_argument("--node", default=TARGET_NODE)
-    parser.add_argument("--cancel-all-user-jobs", action="store_true", help="Run scancel -u USER before submitting.")
-    parser.add_argument("--config", default=DEFAULT_CONFIG, help="CONFIG_PATH relative to repo root on cluster.")
-    parser.add_argument("--base-master-port", type=int, default=30166, help="MASTER_PORT for first job; +i per job.")
+    parser.add_argument(
+        "--cancel-job-ids",
+        default="",
+        help="Comma-separated Slurm job IDs to scancel before submitting (e.g. 10029675,10029676).",
+    )
+    parser.add_argument("--base-master-port", type=int, default=30266)
     parser.add_argument(
         "--resume-checkpoint",
-        default=DEFAULT_RESUME_CHECKPOINT,
-        help=(
-            "Path passed as RESUME_CHECKPOINT to Slurm (relative to repo on cluster). "
-            "Ignored if --no-resume is set."
-        ),
-    )
-    parser.add_argument(
-        "--no-resume",
-        action="store_true",
-        help="Omit RESUME_CHECKPOINT (trainer resolves best_model.pt from output_dir).",
+        default="",
+        help="If set, export RESUME_CHECKPOINT for every job (relative to repo on cluster).",
     )
     args = parser.parse_args()
 
     password = os.environ.get(args.password_env, "")
     if not password and not args.ssh_key:
         raise SystemExit(f"Set environment variable {args.password_env} or pass --ssh-key")
+
+    experts = load_registry()
+    rows = [resolve_expert(eid, experts) for eid in args.expert_ids]
 
     if not args.skip_upload:
         run_local([
@@ -124,23 +141,28 @@ def main() -> None:
     client.connect(**connect_kwargs)
 
     try:
-        if args.cancel_all_user_jobs:
-            remote_exec(client, f"scancel -u {args.user}", check=False)
-
+        cancel_raw = str(args.cancel_job_ids).strip()
+        if cancel_raw:
+            for jid in cancel_raw.split(","):
+                jid = jid.strip()
+                if jid:
+                    remote_exec(client, f"scancel {jid}", check=False)
         remote_exec(client, f"squeue -u {args.user}", check=False)
 
         sbatch_prefix = f"sbatch --nodelist={args.node}"
         current_dep = ""
         submitted: list[tuple[str, str]] = []
 
-        for i in range(args.count):
-            job_name = f"t66-osl-4gpu-{i + 1}"
+        for i, row in enumerate(rows):
+            expert_id = str(row["expert_id"])
+            config = str(row["config"])
+            job_name = f"t66-{expert_id.replace('_', '-')[:28]}"
             exports = [
-                f"CONFIG_PATH={args.config}",
+                f"CONFIG_PATH={config}",
                 "TRAIN_SCRIPT=train_partitioned_pathloss_expert.py",
                 f"MASTER_PORT={args.base_master_port + i}",
             ]
-            if not args.no_resume and str(args.resume_checkpoint).strip():
+            if str(args.resume_checkpoint).strip():
                 exports.append(f"RESUME_CHECKPOINT={args.resume_checkpoint}")
             cmd = (
                 f"{sbatch_prefix} {current_dep}-J {job_name} "

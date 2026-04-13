@@ -139,7 +139,7 @@ def _build_expert(cfg: dict, spec: dict, model_spec: dict) -> dict:
     t["gradient_accumulation_steps"] = 8
     t["epochs"] = 1000
     t["optimizer"] = "adamw"
-    t["learning_rate"] = 5.0e-4
+    t["learning_rate"] = 4.0e-4
     t["weight_decay"] = 1.5e-2
 
     t["ema_decay"] = 0.995
@@ -303,7 +303,7 @@ def main() -> None:
         "training": {
             "batch_size": 8,
             "epochs": 500,
-            "learning_rate": 8.0e-4,
+            "learning_rate": 6.0e-4,
             "weight_decay": 1.0e-4,
             "lr_scheduler_factor": 0.5,
             "lr_scheduler_patience": 3,

@@ -201,6 +201,22 @@ def masked_rmse_loss(
     return torch.sqrt(mse + float(eps))
 
 
+def effective_huber_delta(delta: float, path_loss_meta: Dict[str, Any], loss_cfg: Dict[str, Any]) -> float:
+    """Map config ``huber_delta`` to the scale of ``|pred - target|`` (normalized path loss).
+
+    Targets are trained in normalized units with ``path_loss.scale`` (e.g. 180 dB full span).
+    Project docs treat ``huber_delta`` as **physical dB** at which Huber switches from quadratic
+    to linear. In that case ``delta_eff = huber_delta / scale``.
+
+    Set ``loss.huber_delta_normalized: true`` to treat ``huber_delta`` as already in normalized
+    residual units (legacy behaviour where large values made the loss purely quadratic).
+    """
+    if bool(loss_cfg.get("huber_delta_normalized", False)):
+        return float(delta)
+    scale = max(float(path_loss_meta.get("scale", 1.0)), 1e-12)
+    return float(delta) / scale
+
+
 def masked_huber_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -208,6 +224,7 @@ def masked_huber_loss(
     *,
     delta: float = 6.0,
 ) -> torch.Tensor:
+    """Element-wise Huber / smooth transition; ``delta`` must be in the same units as ``pred-target``."""
     abs_diff = (pred - target).abs()
     quadratic = torch.clamp(abs_diff, max=delta)
     huber = 0.5 * quadratic.pow(2) + delta * (abs_diff - quadratic)
@@ -365,12 +382,15 @@ def compute_nlos_focus_loss(
     nlos_mask = mask * (los <= 0.5).to(mask.dtype)
     mode = str(focus_cfg.get("mode", "rmse")).lower()
     if mode == "hard_huber":
-        delta = float(
+        delta_raw = float(
             focus_cfg.get(
                 "huber_delta",
                 cfg.get("loss", {}).get("huber_delta", 6.0),
             )
         )
+        meta_pl = dict(cfg.get("target_metadata", {}).get("path_loss", {}))
+        loss_cfg = dict(cfg.get("loss", {}))
+        delta = effective_huber_delta(delta_raw, meta_pl, loss_cfg)
         alpha = float(focus_cfg.get("hard_huber_alpha", 1.0))
         gamma = float(focus_cfg.get("hard_huber_gamma", 1.0))
         return _masked_hard_huber_loss(
@@ -1618,6 +1638,7 @@ def train_one_epoch(
     nlos_reweight_factor = float(cfg["training"].get("nlos_reweight_factor", 1.0))
     loss_type = str(cfg.get("loss", {}).get("loss_type", "mse")).lower()
     huber_delta_cfg = float(cfg.get("loss", {}).get("huber_delta", 6.0))
+    huber_delta_eff = effective_huber_delta(huber_delta_cfg, meta, loss_cfg)
     has_los_channel = bool(cfg["data"].get("los_input_column"))
 
     prev_cutmix_buf: dict[str, torch.Tensor | None] = {"x": None, "y": None, "m": None, "sc": None}
@@ -1755,7 +1776,7 @@ def train_one_epoch(
 
             if objective_mode == "full_map_rmse_only":
                 if loss_type == "huber":
-                    g_loss = masked_huber_loss(pred, target, mask, delta=huber_delta_cfg)
+                    g_loss = masked_huber_loss(pred, target, mask, delta=huber_delta_eff)
                 else:
                     g_loss = masked_rmse_loss(pred, target, mask)
                 ms_loss = compute_multiscale_path_loss_loss(pred, target, mask, meta, cfg)
