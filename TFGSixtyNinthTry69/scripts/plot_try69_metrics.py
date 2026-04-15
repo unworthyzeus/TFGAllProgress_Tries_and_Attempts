@@ -342,7 +342,7 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
     # SOA caption across the whole figure.
     fig.suptitle(_format_soa_caption(soa_features), fontsize=9, y=1.005, color="#495057")
 
-    resolved = save_path or output_dir / "metrics_plot_try67.png"
+    resolved = save_path or output_dir / "metrics_plot_try69.png"
     resolved.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(resolved, dpi=180, bbox_inches="tight")
     plt.close(fig)
@@ -388,7 +388,7 @@ def main() -> None:
     summaries: list[dict[str, Any]] = []
     for d in dirs:
         eid = _expert_key(d)
-        save = Path(args.save_path) / f"{eid}_metrics_try67.png" if args.save_path else None
+        save = Path(args.save_path) / f"{eid}_metrics_try69.png" if args.save_path else None
         try:
             summaries.append(plot_expert(eid, d, save))
         except ValueError as exc:

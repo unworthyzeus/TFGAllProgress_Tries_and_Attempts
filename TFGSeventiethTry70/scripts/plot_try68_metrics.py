@@ -1,28 +1,24 @@
-"""Plot Try 68 training metrics from validate_metrics_epoch_*.json files.
+"""Plot Try 70 training metrics from validate_metrics_epoch_*.json files.
 
-Reads the Try 68 JSON schema (single-stage 513x513, no no-data head) and
-generates multi-panel PNG plots per expert.
+Reads the Try 70 JSON schema (single-stage 513x513 PMHHNet with multi-resolution
+auxiliary heads at 257/129/65, Huber loss, no prior residual loss) and generates
+multi-panel PNG plots per expert.
 
-JSON schema (from build_validation_payload):
-  metrics.path_loss          .rmse_physical / .mae_physical
-  metrics.path_loss_513      .rmse_physical / .mae_physical
-  metrics.train_path_loss    .rmse_physical / .mae_physical
-  metrics.prior_path_loss    .rmse_physical / .mae_physical
-  metrics.improvement_vs_prior .rmse_gain_db / .mae_gain_db
-  focus.regimes.path_loss__los__LoS     .rmse_physical
-  focus.regimes.path_loss__los__NLoS    .rmse_physical
-  focus.topology_class
-  runtime.generator_loss / .learning_rate / .train_seconds / .val_seconds
-  runtime.loss_components.{final_loss, residual_loss, multiscale_loss, ...}
-  checkpoint.epoch / .best_epoch / .best_score
-  selection.metric / .current_score / .is_best_epoch
-  selection_proxy.composite_nlos_weighted_rmse / .nlos_rmse_physical / .alpha
-  model_info.val_uses_ema / .ema_decay / .note
-  support.sample_count / .los_fraction / .nlos_fraction
+JSON schema vs Try 68:
+  runtime.loss_components.main_map_regression_loss  — Huber loss on 513×513 output
+  runtime.loss_components.term_multiscale            — multiscale loss (weight 0.3)
+  runtime.loss_components.term_try70_aux             — NEW: multi-res aux loss (257/129/65)
+  (no residual_loss: prior_residual_path_loss.loss_weight=0.0 in Try 70)
+  (no nlos_focus_loss: nlos_focus_loss.enabled=false in Try 70)
+
+Architecture notes:
+  arch: pmhhnet_try70 — adds auxiliary quad/tile heads at 3 resolutions
+  batch_size: 1 (memory for aux heads), weight_decay: 0.1, grad_accum: 16
+  init from Try 68 best_model.pt optional
 
 Usage:
   python scripts/plot_try68_metrics.py
-  python scripts/plot_try68_metrics.py --root D:/cluster_outputs/TFGSixtyEighthTry68
+  python scripts/plot_try68_metrics.py --root D:/cluster_outputs/TFGSeventiethTry70
   python scripts/plot_try68_metrics.py --expert-id open_sparse_lowrise
 """
 from __future__ import annotations
@@ -35,8 +31,8 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_ROOT = REPO_ROOT / "cluster_outputs" / "TFGSixtyEighthTry68"
-EXPERT_PREFIX = "sixtyeighth_try68_expert_"
+DEFAULT_ROOT = REPO_ROOT / "cluster_outputs" / "TFGSeventiethTry70"
+EXPERT_PREFIX = "seventieth_try70_expert_"
 
 
 def _nested(payload: dict[str, Any], path: str, default: Any = float("nan")) -> Any:
@@ -78,7 +74,7 @@ def _expert_key(path: Path) -> str:
     name = path.name
     if name.startswith(EXPERT_PREFIX):
         return name[len(EXPERT_PREFIX):]
-    for prefix in ("sixtyeighth_try68_expert_", "sixtysixth_expert_", "try68_expert_", "sixtyeighth_try68_"):
+    for prefix in ("seventieth_try70_expert_", "try70_expert_", "seventieth_try70_"):
         if name.startswith(prefix):
             return name[len(prefix):]
     return name
@@ -131,8 +127,20 @@ def load_rows(output_dir: Path) -> list[dict[str, Any]]:
             "lr": _f(runtime.get("learning_rate")),
             "train_seconds": _f(runtime.get("train_seconds")),
             "val_seconds": _f(runtime.get("val_seconds")),
-            "huber_loss": _f(loss_components.get("final_loss", loss_components.get("generator_loss_total"))),
-            "multiscale_loss": _f(loss_components.get("multiscale_loss")),
+            # main_map_regression_loss = Huber loss on 513×513 in Try 70
+            "huber_loss": _f(
+                loss_components["main_map_regression_loss"]
+                if "main_map_regression_loss" in loss_components
+                else loss_components.get("final_loss", loss_components.get("generator_loss_total"))
+            ),
+            "multiscale_loss": _f(
+                loss_components["term_multiscale"]
+                if "term_multiscale" in loss_components
+                else loss_components.get("multiscale_loss")
+            ),
+            # NEW in Try 70: auxiliary multi-resolution loss (257/129/65 heads)
+            "term_try70_aux": _f(loss_components.get("term_try70_aux")),
+            # nlos_focus disabled in Try 70 — will be NaN, skipped in plot
             "nlos_focus_loss": _f(loss_components.get("nlos_focus_loss")),
             # --- support ---
             "los_fraction": _f(_nested(data, "support.los_fraction")),
@@ -201,7 +209,7 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
     ax.axvline(rows[best_idx]["epoch"], color="#2b8a3e", linestyle=":", linewidth=1.2, label=f"best @ ep {rows[best_idx]['epoch']}")
     _plot_best_marker(ax, epochs, val_rmse)
     ax.set_ylabel("RMSE (dB)")
-    ax.set_title(f"Try 68 — {topo} — Overall RMSE" + (" [EMA for val]" if uses_ema else ""))
+    ax.set_title(f"Try 70 — {topo} — Overall RMSE" + (" [EMA for val]" if uses_ema else ""))
     ax.grid(alpha=0.25)
     ax.legend(loc="best", fontsize=8)
 
@@ -247,17 +255,21 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
     lines_a, labels_a = ax.get_legend_handles_labels()
     ax.legend(lines_a + lines_c, labels_a + labels_c, loc="best", fontsize=8)
 
-    # ---- Panel 3: Loss components ----
+    # ---- Panel 3: Loss components (Try 70: Huber + multiscale + multi-res aux) ----
     ax = axes[3]
     gen_loss = [r["generator_loss"] for r in rows]
     huber = [r["huber_loss"] for r in rows]
     ms_loss = [r["multiscale_loss"] for r in rows]
+    aux_loss = [r["term_try70_aux"] for r in rows]
     nlos_fl = [r["nlos_focus_loss"] for r in rows]
+
     ax.plot(epochs, gen_loss, label="total generator loss", color="#5f3dc4", linewidth=1.8)
     if any(math.isfinite(v) for v in huber):
-        ax.plot(epochs, huber, label="main loss (Huber/RMSE)", color="#e8590c", linewidth=1.3, alpha=0.8)
+        ax.plot(epochs, huber, label="main loss (Huber 513×513)", color="#e8590c", linewidth=1.3, alpha=0.8)
     if any(math.isfinite(v) for v in ms_loss):
-        ax.plot(epochs, ms_loss, label="multiscale loss", color="#1098ad", linewidth=1.2, alpha=0.7)
+        ax.plot(epochs, ms_loss, label="multiscale loss (w=0.3)", color="#1098ad", linewidth=1.2, alpha=0.7)
+    if any(math.isfinite(v) for v in aux_loss):
+        ax.plot(epochs, aux_loss, label="multi-res aux loss (257/129/65, w=0.08)", color="#f59f00", linewidth=1.3, alpha=0.8)
     if any(math.isfinite(v) for v in nlos_fl):
         ax.plot(epochs, nlos_fl, label="NLoS focus loss", color="#c2255c", linewidth=1.2, alpha=0.7)
     ax_lr = ax.twinx()
@@ -265,7 +277,7 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
     ax_lr.plot(epochs, lr, label="LR", color="#1c7ed6", linestyle="--", linewidth=1.0, alpha=0.6)
     ax_lr.set_ylabel("LR", fontsize=8)
     ax.set_ylabel("Loss")
-    ax.set_title("Loss Components + Learning Rate")
+    ax.set_title("Loss Components + Learning Rate (Try 70: Huber + multi-res aux heads)")
     ax.grid(alpha=0.25)
     lines_a, labels_a = ax.get_legend_handles_labels()
     lines_b, labels_b = ax_lr.get_legend_handles_labels()
@@ -292,7 +304,7 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
     ax.grid(alpha=0.25)
     ax.legend(loc="best", fontsize=8)
 
-    resolved = save_path or output_dir / "metrics_plot_try68.png"
+    resolved = save_path or output_dir / "metrics_plot_try70.png"
     resolved.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(resolved, dpi=180, bbox_inches="tight")
     plt.close(fig)
@@ -314,7 +326,7 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Plot Try 68 single-stage metrics per expert.")
+    parser = argparse.ArgumentParser(description="Plot Try 70 multi-res aux head metrics per expert.")
     parser.add_argument("--root-dir", default=str(DEFAULT_ROOT))
     parser.add_argument("--expert-id", default="")
     parser.add_argument("--output-dir", default="", help="Explicit output dir for a single expert.")
@@ -337,7 +349,7 @@ def main() -> None:
     summaries: list[dict[str, Any]] = []
     for d in dirs:
         eid = _expert_key(d)
-        save = Path(args.save_path) / f"{eid}_metrics_try68.png" if args.save_path else None
+        save = Path(args.save_path) / f"{eid}_metrics_try70.png" if args.save_path else None
         try:
             summaries.append(plot_expert(eid, d, save))
         except ValueError as exc:

@@ -121,7 +121,7 @@ training:
     safety_factor: 0.9
   optimizer: adamw
   discriminator_optimizer: adam
-  learning_rate: 0.0008
+  learning_rate: 0.002
   discriminator_lr: 9.0e-05
   weight_decay: 0.015
   beta1: 0.5
@@ -140,7 +140,7 @@ training:
   lr_warmup_optimizer_steps: 0
   lr_warmup_start_factor: 0.5
   lr_scheduler_T_max: 1000
-  lr_scheduler_eta_min: 0.0005
+  lr_scheduler_eta_min: 0.00125
   generator_objective: full_map_rmse_only
   nlos_reweight_factor: 4.0
   cutmix_prob: 0.25
@@ -201,7 +201,7 @@ no_data_auxiliary:
 nlos_focus_loss:
   enabled: true
   mode: rmse
-  loss_weight: 0.2
+  loss_weight: 5.0
 corridor_weighting:
   enabled: false
   sigma: 40.0

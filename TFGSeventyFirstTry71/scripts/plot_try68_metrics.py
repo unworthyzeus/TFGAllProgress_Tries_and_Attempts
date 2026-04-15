@@ -1,9 +1,17 @@
 """Plot Try 71 training metrics from validate_metrics_epoch_*.json files.
 
-Reads the Try 71 JSON schema (single-stage 513x513, no no-data head) and
-generates multi-panel PNG plots per expert.
+Reads the Try 71 JSON schema (single-stage 513x513, heteroscedastic NLL objective,
+out_channels=2: mean + log_var, same RMSE validation as Try 68) and generates
+multi-panel PNG plots per expert.
 
-JSON schema (from build_validation_payload):
+Try 71 key differences vs Try 68:
+  generator_objective: heteroscedastic  — Kendall & Gal NLL loss
+  out_channels: 2 (channel 1 = log_var, surfaced via no_data_logits during train)
+  main_map_regression_loss = heteroscedastic NLL value (not MSE/Huber)
+  nlos_focus_loss still enabled (weight=0.2)
+  Validation RMSE is computed on the mean prediction only (channel 0)
+
+JSON schema (same as Try 68 — uncertainty output not exposed in validation JSON):
   metrics.path_loss          .rmse_physical / .mae_physical
   metrics.path_loss_513      .rmse_physical / .mae_physical
   metrics.train_path_loss    .rmse_physical / .mae_physical
@@ -13,9 +21,8 @@ JSON schema (from build_validation_payload):
   focus.regimes.path_loss__los__NLoS    .rmse_physical
   focus.topology_class
   runtime.generator_loss / .learning_rate / .train_seconds / .val_seconds
-  runtime.loss_components.{final_loss, residual_loss, multiscale_loss, ...}
+  runtime.loss_components.{main_map_regression_loss (NLL), multiscale_loss, nlos_focus_loss}
   checkpoint.epoch / .best_epoch / .best_score
-  selection.metric / .current_score / .is_best_epoch
   selection_proxy.composite_nlos_weighted_rmse / .nlos_rmse_physical / .alpha
   model_info.val_uses_ema / .ema_decay / .note
   support.sample_count / .los_fraction / .nlos_fraction
@@ -263,7 +270,7 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
     nlos_fl = [r["nlos_focus_loss"] for r in rows]
     ax.plot(epochs, gen_loss, label="total generator loss", color="#5f3dc4", linewidth=1.8)
     if any(math.isfinite(v) for v in huber):
-        ax.plot(epochs, huber, label="main loss (Huber/RMSE)", color="#e8590c", linewidth=1.3, alpha=0.8)
+        ax.plot(epochs, huber, label="main loss (heteroscedastic NLL)", color="#e8590c", linewidth=1.3, alpha=0.8)
     if any(math.isfinite(v) for v in ms_loss):
         ax.plot(epochs, ms_loss, label="multiscale loss", color="#1098ad", linewidth=1.2, alpha=0.7)
     if any(math.isfinite(v) for v in nlos_fl):
@@ -273,7 +280,7 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
     ax_lr.plot(epochs, lr, label="LR", color="#1c7ed6", linestyle="--", linewidth=1.0, alpha=0.6)
     ax_lr.set_ylabel("LR", fontsize=8)
     ax.set_ylabel("Loss")
-    ax.set_title("Loss Components + Learning Rate")
+    ax.set_title("Loss Components + Learning Rate (Try 71: heteroscedastic NLL, log_var clamped [−10, 10])")
     ax.grid(alpha=0.25)
     lines_a, labels_a = ax.get_legend_handles_labels()
     lines_b, labels_b = ax_lr.get_legend_handles_labels()
@@ -300,7 +307,7 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
     ax.grid(alpha=0.25)
     ax.legend(loc="best", fontsize=8)
 
-    resolved = save_path or output_dir / "metrics_plot_try68.png"
+    resolved = save_path or output_dir / "metrics_plot_try71.png"
     resolved.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(resolved, dpi=180, bbox_inches="tight")
     plt.close(fig)
@@ -345,7 +352,7 @@ def main() -> None:
     summaries: list[dict[str, Any]] = []
     for d in dirs:
         eid = _expert_key(d)
-        save = Path(args.save_path) / f"{eid}_metrics_try68.png" if args.save_path else None
+        save = Path(args.save_path) / f"{eid}_metrics_try71.png" if args.save_path else None
         try:
             summaries.append(plot_expert(eid, d, save))
         except ValueError as exc:

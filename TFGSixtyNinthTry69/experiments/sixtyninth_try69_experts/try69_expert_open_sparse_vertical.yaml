@@ -129,7 +129,7 @@ training:
     safety_factor: 0.9
   optimizer: adamw
   discriminator_optimizer: adam
-  learning_rate: 0.0003
+  learning_rate: 0.00075
   discriminator_lr: 3.0e-05
   weight_decay: 0.015
   beta1: 0.5
@@ -173,13 +173,13 @@ multiscale_path_loss:
   - 0.6
   - 0.4
   min_valid_ratio: 0.5
-  loss_weight: 0.55
+  loss_weight: 0.385
 prior_residual_path_loss:
   enabled: true
   use_formula_input_channel: true
   optimize_residual_only: false
   clamp_final_output: true
-  loss_weight: 0.5
+  loss_weight: 0.1
   mse_weight: 1.0
   l1_weight: 0.0
   final_loss_weight_when_residual_only: 0.0
@@ -212,10 +212,10 @@ no_data_auxiliary:
 nlos_focus_loss:
   enabled: true
   mode: rmse
-  loss_weight: 0.2
+  loss_weight: 1.0
 pde_residual_loss:
   enabled: true
-  loss_weight: 0.01
+  loss_weight: 0.3
 dual_los_nlos_head:
   enabled: true
 corridor_weighting:
