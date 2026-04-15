@@ -1,0 +1,15 @@
+# Preset 2×GPU — en este repo no hay run_seventieth_try70_2gpu.slurm;
+# usa los mismos recursos que Try 69 2×GPU (16 CPU, 58G) o Try 68 2×GPU (24 CPU, 78G) según el .slurm que copies/adaptes.
+# DataLoader workers / prefetch igual que 4gpu.yml.
+# Copia a data: / training: del try70_expert_*.yaml.
+#
+# data:
+num_workers: 4
+val_num_workers: 2
+persistent_workers: true
+val_persistent_workers: true
+prefetch_factor: 4
+#
+# training:
+batch_size: 1
+gradient_accumulation_steps: 8

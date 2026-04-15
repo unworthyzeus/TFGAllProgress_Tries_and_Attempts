@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Upload Try 66, optionally scancel specific jobs, submit chained 4-GPU Slurm jobs for one or more experts.
+"""Submit chained 4-GPU Slurm jobs for Try66 experts (one job per expert, sequential).
 
-Each job uses ``cluster/run_sixtysixth_try66_4gpu.slurm`` (4 GPUs, 4:00:00). Experts are resolved from
-``experiments/sixtysixth_try66_experts/try66_expert_registry.yaml``. By default no RESUME_CHECKPOINT
-is set (fresh training from the YAML).
+Each job uses ``cluster/run_sixtysixth_try66_4gpu.slurm`` (4 GPUs, 4:00:00 wall-time).
+Experts are resolved from ``experiments/sixtysixth_try66_experts/try66_expert_registry.yaml``.
+
+Default behaviour (no positional args): submit all experts in registry order, each using its own
+``checkpoint`` path from the registry as RESUME_CHECKPOINT.  Pass ``--no-resume`` to skip checkpoints.
+Pass explicit expert_ids to submit a subset (e.g. ``open_sparse_lowrise open_sparse_vertical``).
 """
 from __future__ import annotations
 
@@ -83,11 +86,16 @@ def resolve_expert(expert_id: str, experts: list[dict[str, Any]]) -> dict[str, A
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Submit sequential Try66 4-GPU jobs for given expert_ids.")
+    parser = argparse.ArgumentParser(
+        description="Submit sequential Try66 4-GPU jobs (one per expert, with cleanup between)."
+    )
     parser.add_argument(
         "expert_ids",
-        nargs="+",
-        help="expert_id values from try66_expert_registry.yaml (e.g. open_sparse_vertical).",
+        nargs="*",
+        help=(
+            "expert_id values from try66_expert_registry.yaml. "
+            "Defaults to all experts in registry order."
+        ),
     )
     parser.add_argument("--skip-upload", action="store_true")
     parser.add_argument("--host", default=HOST)
@@ -96,15 +104,20 @@ def main() -> None:
     parser.add_argument("--ssh-key", default=None)
     parser.add_argument("--node", default=TARGET_NODE)
     parser.add_argument(
+        "--cancel-all",
+        action="store_true",
+        help="scancel all user jobs before submitting.",
+    )
+    parser.add_argument(
         "--cancel-job-ids",
         default="",
-        help="Comma-separated Slurm job IDs to scancel before submitting (e.g. 10029675,10029676).",
+        help="Comma-separated Slurm job IDs to scancel before submitting.",
     )
     parser.add_argument("--base-master-port", type=int, default=30266)
     parser.add_argument(
-        "--resume-checkpoint",
-        default="",
-        help="If set, export RESUME_CHECKPOINT for every job (relative to repo on cluster).",
+        "--no-resume",
+        action="store_true",
+        help="Skip RESUME_CHECKPOINT (start fresh from epoch 0).",
     )
     args = parser.parse_args()
 
@@ -112,8 +125,11 @@ def main() -> None:
     if not password and not args.ssh_key:
         raise SystemExit(f"Set environment variable {args.password_env} or pass --ssh-key")
 
-    experts = load_registry()
-    rows = [resolve_expert(eid, experts) for eid in args.expert_ids]
+    all_experts = load_registry()
+    if args.expert_ids:
+        rows = [resolve_expert(eid, all_experts) for eid in args.expert_ids]
+    else:
+        rows = all_experts  # default: all experts in registry order
 
     if not args.skip_upload:
         run_local([
@@ -141,6 +157,8 @@ def main() -> None:
     client.connect(**connect_kwargs)
 
     try:
+        if args.cancel_all:
+            remote_exec(client, f"scancel -u {args.user}", check=False)
         cancel_raw = str(args.cancel_job_ids).strip()
         if cancel_raw:
             for jid in cancel_raw.split(","):
@@ -160,23 +178,37 @@ def main() -> None:
             exports = [
                 f"CONFIG_PATH={config}",
                 "TRAIN_SCRIPT=train_partitioned_pathloss_expert.py",
-                f"MASTER_PORT={args.base_master_port + i}",
+                f"MASTER_PORT={args.base_master_port + i * 2}",
             ]
-            if str(args.resume_checkpoint).strip():
-                exports.append(f"RESUME_CHECKPOINT={args.resume_checkpoint}")
-            cmd = (
+            if not args.no_resume:
+                checkpoint = str(row.get("checkpoint", "")).strip()
+                if checkpoint:
+                    exports.append(f"RESUME_CHECKPOINT={checkpoint}")
+            train_cmd = (
                 f"{sbatch_prefix} {current_dep}-J {job_name} "
                 f"--export=ALL,{','.join(exports)} "
                 "cluster/run_sixtysixth_try66_4gpu.slurm"
             )
-            job_id = remote_sbatch(client, cmd)
-            submitted.append((job_name, job_id))
-            current_dep = f"--dependency=afterany:{job_id} "
+            train_job_id = remote_sbatch(client, train_cmd)
+            submitted.append((job_name, train_job_id))
 
-        print("\n=== Submitted jobs (sequential) ===")
+            # Cleanup job after each expert (1 GPU, kills stray processes)
+            cleanup_name = f"t66-cleanup-{expert_id.replace('_', '-')[:20]}"
+            cleanup_cmd = (
+                f"{sbatch_prefix} --dependency=afterany:{train_job_id} "
+                f"-J {cleanup_name} "
+                "cluster/run_sixtysixth_try66_cleanup_sert2001_1gpu.slurm"
+            )
+            cleanup_job_id = remote_sbatch(client, cleanup_cmd)
+            submitted.append((cleanup_name, cleanup_job_id))
+
+            current_dep = f"--dependency=afterany:{cleanup_job_id} "
+
+        print("\n=== Submitted jobs (train -> cleanup -> train -> ...) ===")
         for name, jid in submitted:
-            print(f"  {name}: job {jid}")
-        print(f"\nTotal: {len(submitted)} jobs.")
+            tag = "  [cleanup]" if "cleanup" in name else "  [train]  "
+            print(f"{tag} {name}: job {jid}")
+        print(f"\nTotal: {len(submitted)} jobs ({len(rows)} experts + {len(rows)} cleanups).")
     finally:
         client.close()
 

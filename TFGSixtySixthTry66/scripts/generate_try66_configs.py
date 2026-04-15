@@ -131,18 +131,18 @@ def _build_expert(cfg: dict, spec: dict, model_spec: dict) -> dict:
 
     # --- Resolution: 513x513 direct, single stage ---
     cfg["data"]["image_size"] = 513
-    cfg["data"]["val_batch_size"] = 1
+    cfg["data"]["val_batch_size"] = 2
 
     # --- Training recipe ---
     t = cfg["training"]
-    t["batch_size"] = 1
+    t["batch_size"] = 2
     t["gradient_accumulation_steps"] = 8
     t["epochs"] = 1000
     t["optimizer"] = "adamw"
-    t["learning_rate"] = 4.0e-4
-    t["weight_decay"] = 1.5e-2
+    t["learning_rate"] = 5.0e-3
+    t["weight_decay"] = 3e-1
 
-    t["ema_decay"] = 0.995
+    t["ema_decay"] = 0.975
 
     t["lr_scheduler"] = "cosine_annealing_lr"
     t["lr_warmup_optimizer_steps"] = 0

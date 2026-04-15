@@ -1,0 +1,14 @@
+# Preset 2×GPU — cluster/run_sixtyeighth_try68_2gpu.slurm (24 CPU, 78G, gres=gpu:rtx2080:2).
+# DataLoader workers / prefetch igual que 4gpu.yml (más CPU por worker en nodo pequeño; vigilar carga).
+# Copia a data: / training: del try68_expert_*.yaml.
+#
+# data:
+num_workers: 4
+val_num_workers: 2
+persistent_workers: true
+val_persistent_workers: true
+prefetch_factor: 4
+#
+# training:
+batch_size: 1
+gradient_accumulation_steps: 8

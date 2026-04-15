@@ -1,0 +1,44 @@
+seed: 42
+data:
+  hdf5_path: ../Datasets/CKM_Dataset_270326.h5
+  input_column: topology_map
+  input_metadata:
+    scale: 255.0
+    offset: 0.0
+  hdf5_scalar_specs:
+  - name: antenna_height_m
+    from_dataset: uav_height
+  non_ground_threshold: 0.0
+  split_mode: city_holdout
+  val_ratio: 0.15
+  test_ratio: 0.15
+  split_seed: 42
+  image_size: 257
+  num_workers: 4
+  path_loss_formula_input:
+    regime_calibration_json: prior_calibration/regime_obstruction_train_only_from_try47.json
+  topology_partitioning:
+    density_q1: 0.12
+    density_q2: 0.28
+    height_q1: 12.0
+    height_q2: 28.0
+  scalar_feature_norms:
+    antenna_height_m: 120.0
+model:
+  base_channels: 24
+  dropout: 0.08
+  norm_type: group
+  use_antenna_scalar: false
+training:
+  batch_size: 8
+  epochs: 500
+  learning_rate: 0.0006
+  weight_decay: 0.0001
+  lr_scheduler_factor: 0.5
+  lr_scheduler_patience: 3
+  lr_scheduler_min_lr: 1.0e-05
+  clip_grad_norm: 1.0
+runtime:
+  device: cuda
+  output_dir: outputs/try66_topology_classifier
+  resume_checkpoint: ''

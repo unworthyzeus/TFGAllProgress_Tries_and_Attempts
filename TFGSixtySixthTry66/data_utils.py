@@ -2487,7 +2487,7 @@ class CKMHDF5Dataset(Dataset):
             half = (self.image_size - 1) / 2.0
             max_dist_px = max(half * (2.0 ** 0.5), 1.0)
             ground_d_m = dist_map.squeeze(0) * max_dist_px * meters_per_pixel
-            h_rx = 1.5
+            h_rx = float(self.path_loss_formula_input.get('receiver_height_m', 1.5))
             theta = torch.atan2(
                 torch.full_like(ground_d_m, ah_m - h_rx),
                 ground_d_m.clamp(min=1.0),

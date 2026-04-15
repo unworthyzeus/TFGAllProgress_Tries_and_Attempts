@@ -1,0 +1,13 @@
+# Preset 4×GPU — cluster/run_sixtyninth_try69_4gpu.slurm (32 CPU, 120G, gres=gpu:rtx2080:4).
+# Copia a data: / training: del try69_expert_*.yaml.
+#
+# data:
+num_workers: 4
+val_num_workers: 2
+persistent_workers: true
+val_persistent_workers: true
+prefetch_factor: 4
+#
+# training:
+batch_size: 1
+gradient_accumulation_steps: 4

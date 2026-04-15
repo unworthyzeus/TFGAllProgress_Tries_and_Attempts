@@ -66,7 +66,7 @@ data:
   tx_depth_map_channel: true
   elevation_angle_map_channel: true
   building_mask_channel: true
-  val_batch_size: 1
+  val_batch_size: 2
 model:
   base_channels: 48
   disc_base_channels: 0
@@ -93,7 +93,7 @@ model:
   use_se_attention: true
   se_reduction: 4
 training:
-  batch_size: 1
+  batch_size: 2
   epochs: 1000
   early_stopping:
     enabled: true
@@ -113,9 +113,9 @@ training:
     safety_factor: 0.9
   optimizer: adamw
   discriminator_optimizer: adam
-  learning_rate: 0.0004
+  learning_rate: 0.005
   discriminator_lr: 3.0e-05
-  weight_decay: 0.015
+  weight_decay: 0.3
   beta1: 0.5
   beta2: 0.999
   lr_scheduler: cosine_annealing_lr
@@ -128,7 +128,7 @@ training:
   regime_reweighting:
     enabled: false
   gradient_accumulation_steps: 8
-  ema_decay: 0.995
+  ema_decay: 0.975
   lr_warmup_optimizer_steps: 0
   lr_warmup_start_factor: 0.5
   lr_scheduler_T_max: 1000

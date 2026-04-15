@@ -53,6 +53,17 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def configure_cuda_training_backends(device: object) -> None:
+    """Best-effort CUDA throughput tuning for fixed-resolution conv training (cluster GPUs)."""
+    if not is_cuda_device(device):
+        return
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("high")
+
+
 def maybe_init_distributed(device: object) -> tuple[bool, int, int, int]:
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     if world_size <= 1:
@@ -117,6 +128,65 @@ def update_ema_model(ema_model: nn.Module, source_model: nn.Module, decay: float
                 ema_value.mul_(decay).add_(source_value, alpha=1.0 - decay)
             else:
                 ema_value.copy_(source_value)
+
+
+_WEIGHT_DECAY_EXEMPT_MODULES = (
+    nn.BatchNorm1d,
+    nn.BatchNorm2d,
+    nn.BatchNorm3d,
+    nn.SyncBatchNorm,
+    nn.GroupNorm,
+    nn.LayerNorm,
+    nn.InstanceNorm1d,
+    nn.InstanceNorm2d,
+    nn.InstanceNorm3d,
+)
+
+
+def _split_weight_decay_parameters(module: nn.Module) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
+    decay_params: list[nn.Parameter] = []
+    no_decay_params: list[nn.Parameter] = []
+    for submodule in module.modules():
+        exempt_module = isinstance(submodule, _WEIGHT_DECAY_EXEMPT_MODULES)
+        for param_name, param in submodule.named_parameters(recurse=False):
+            if not param.requires_grad:
+                continue
+            if exempt_module or param_name == "bias" or param.ndim <= 1:
+                no_decay_params.append(param)
+            else:
+                decay_params.append(param)
+    return decay_params, no_decay_params
+
+
+def configure_optimizer_weight_decay(optimizer: torch.optim.Optimizer, module: nn.Module, weight_decay: float) -> None:
+    decay_params, no_decay_params = _split_weight_decay_parameters(module)
+    setattr(optimizer, "_manual_weight_decay_params", tuple(decay_params))
+    setattr(optimizer, "_manual_no_weight_decay_params", tuple(no_decay_params))
+    setattr(optimizer, "_manual_weight_decay_param_count", len(decay_params))
+    setattr(optimizer, "_manual_no_weight_decay_param_count", len(no_decay_params))
+    setattr(optimizer, "_manual_weight_decay_total_count", len(decay_params) + len(no_decay_params))
+    setattr(optimizer, "_manual_weight_decay_mode", "selective_excluding_bias_and_norm")
+    set_optimizer_weight_decay(optimizer, weight_decay)
+
+
+def apply_optimizer_weight_decay(optimizer: torch.optim.Optimizer) -> None:
+    decay = float(getattr(optimizer, "_manual_weight_decay", 0.0))
+    if decay <= 0.0:
+        return
+    decay_params = getattr(optimizer, "_manual_weight_decay_params", ())
+    if not decay_params:
+        return
+    if not optimizer.param_groups:
+        return
+    lr = float(optimizer.param_groups[0].get("lr", 0.0))
+    if lr <= 0.0:
+        return
+    scale = 1.0 - lr * decay
+    if scale == 1.0:
+        return
+    with torch.no_grad():
+        for param in decay_params:
+            param.mul_(scale)
 
 
 def formula_channel_index(cfg: Dict[str, Any]) -> int:
@@ -407,40 +477,51 @@ def compute_nlos_focus_loss(
     )
 
 
-def build_optimizer(cfg: Dict[str, Any], params: Iterable[torch.nn.Parameter], device: object) -> torch.optim.Optimizer:
-    optimizer_name = str(cfg["training"].get("optimizer", "adamw")).lower()
-    learning_rate = float(cfg["training"].get("learning_rate", cfg["training"].get("generator_lr", 3e-5)))
+def build_optimizer(
+    cfg: Dict[str, Any],
+    module: nn.Module,
+    device: object,
+    *,
+    optimizer_key: str = "optimizer",
+    learning_rate_key: str = "learning_rate",
+) -> torch.optim.Optimizer:
+    optimizer_name = str(cfg["training"].get(optimizer_key, cfg["training"].get("optimizer", "adamw"))).lower()
+    learning_rate = float(cfg["training"].get(learning_rate_key, cfg["training"].get("learning_rate", cfg["training"].get("generator_lr", 3e-5))))
     weight_decay = float(cfg["training"].get("weight_decay", 0.0))
     momentum = float(cfg["training"].get("momentum", 0.0))
 
     if optimizer_name == "adamw":
-        return torch.optim.AdamW(
-            params,
+        optimizer = torch.optim.AdamW(
+            module.parameters(),
             lr=learning_rate,
-            weight_decay=weight_decay,
+            weight_decay=0.0,
             foreach=is_cuda_device(device),
         )
-    if optimizer_name == "adam":
+    elif optimizer_name == "adam":
         betas = (
             float(cfg["training"].get("beta1", 0.9)),
             float(cfg["training"].get("beta2", 0.999)),
         )
-        return torch.optim.Adam(
-            params,
+        optimizer = torch.optim.Adam(
+            module.parameters(),
             lr=learning_rate,
-            weight_decay=weight_decay,
+            weight_decay=0.0,
             betas=betas,
             foreach=is_cuda_device(device),
         )
-    if optimizer_name == "rmsprop":
-        return torch.optim.RMSprop(
-            params,
+    elif optimizer_name == "rmsprop":
+        optimizer = torch.optim.RMSprop(
+            module.parameters(),
             lr=learning_rate,
-            weight_decay=weight_decay,
+            weight_decay=0.0,
             momentum=momentum,
             foreach=is_cuda_device(device),
         )
-    raise ValueError(f"Unsupported optimizer '{optimizer_name}'.")
+    else:
+        raise ValueError(f"Unsupported optimizer '{optimizer_name}'.")
+
+    configure_optimizer_weight_decay(optimizer, module, weight_decay)
+    return optimizer
 
 
 def set_optimizer_learning_rate(optimizer: torch.optim.Optimizer, learning_rate: float) -> None:
@@ -453,10 +534,11 @@ def set_optimizer_learning_rate(optimizer: torch.optim.Optimizer, learning_rate:
 
 def set_optimizer_weight_decay(optimizer: torch.optim.Optimizer, weight_decay: float) -> None:
     decay = float(weight_decay)
+    setattr(optimizer, "_manual_weight_decay", decay)
     for param_group in optimizer.param_groups:
-        param_group["weight_decay"] = decay
+        param_group["weight_decay"] = 0.0
     if isinstance(getattr(optimizer, "defaults", None), dict):
-        optimizer.defaults["weight_decay"] = decay
+        optimizer.defaults["weight_decay"] = 0.0
 
 
 def apply_optimizer_hparams_from_cfg(
@@ -1339,7 +1421,7 @@ def evaluate_validation(
 
     model.eval()
     sample_cursor = 0
-    with torch.no_grad():
+    with torch.inference_mode():
         for _, batch in enumerate(tqdm(loader, desc="val", leave=False, disable=distributed and not is_main_process(rank))):
             x, y, m, scalar_cond = unpack_cgan_batch(batch, device)
             prior = extract_formula_prior_or_zero(x, cfg, y[:, :1])
@@ -1707,6 +1789,7 @@ def train_one_epoch(
             if clip_grad > 0.0:
                 scaler_d.unscale_(optimizer_d)
                 torch.nn.utils.clip_grad_norm_(discriminator.parameters(), clip_grad)
+            apply_optimizer_weight_decay(optimizer_d)
             scaler_d.step(optimizer_d)
             scaler_d.update()
         else:
@@ -1838,6 +1921,7 @@ def train_one_epoch(
             if clip_grad > 0.0:
                 scaler_g.unscale_(optimizer_g)
                 torch.nn.utils.clip_grad_norm_(generator.parameters(), clip_grad)
+            apply_optimizer_weight_decay(optimizer_g)
             scaler_g.step(optimizer_g)
             scaler_g.update()
             optimizer_g.zero_grad(set_to_none=True)
@@ -1942,8 +2026,7 @@ def main() -> None:
     distributed, rank, local_rank, world_size = maybe_init_distributed(device)
     if distributed and is_cuda_device(device):
         device = torch.device("cuda", local_rank)
-    if is_cuda_device(device):
-        torch.backends.cudnn.benchmark = True
+    configure_cuda_training_backends(device)
 
     out_dir = ensure_output_dir(cfg["runtime"]["output_dir"])
     if is_main_process(rank):
@@ -1965,7 +2048,8 @@ def main() -> None:
         sampler=train_sampler,
         num_workers=int(cfg["data"]["num_workers"]),
         pin_memory=pin_memory,
-        persistent_workers=int(cfg["data"]["num_workers"]) > 0,
+        persistent_workers=bool(cfg["data"].get("persistent_workers", True))
+        and int(cfg["data"]["num_workers"]) > 0,
         **train_loader_kwargs,
     )
     city_type_resolver = AutomaticCityTypeResolver(cfg)
@@ -2027,29 +2111,19 @@ def main() -> None:
                 find_unused_parameters=False,
             )
 
-    optimizer_g = build_optimizer(cfg, generator_for_training.parameters(), device)
+    optimizer_g = build_optimizer(cfg, generator_for_training, device)
     generator_beta1 = float(cfg["training"].get("beta1", 0.5))
     generator_beta2 = float(cfg["training"].get("beta2", 0.999))
     generator_momentum = float(cfg["training"].get("momentum", 0.0))
     optimizer_d: Optional[torch.optim.Optimizer] = None
     if discriminator_for_training is not None:
-        opt_name_d = str(cfg["training"].get("discriminator_optimizer", cfg["training"].get("optimizer", "adam"))).lower()
-        if opt_name_d == "adamw":
-            optimizer_d = torch.optim.AdamW(
-                discriminator_for_training.parameters(),
-                lr=float(cfg["training"].get("discriminator_lr", 3e-5)),
-                weight_decay=float(cfg["training"].get("weight_decay", 0.0)),
-                betas=(float(cfg["training"].get("beta1", 0.5)), float(cfg["training"].get("beta2", 0.999))),
-                foreach=is_cuda_device(device),
-            )
-        else:
-            optimizer_d = torch.optim.Adam(
-                discriminator_for_training.parameters(),
-                lr=float(cfg["training"].get("discriminator_lr", 3e-5)),
-                weight_decay=float(cfg["training"].get("weight_decay", 0.0)),
-                betas=(float(cfg["training"].get("beta1", 0.5)), float(cfg["training"].get("beta2", 0.999))),
-                foreach=is_cuda_device(device),
-            )
+        optimizer_d = build_optimizer(
+            cfg,
+            discriminator_for_training,
+            device,
+            optimizer_key="discriminator_optimizer",
+            learning_rate_key="discriminator_lr",
+        )
     scheduler_g = build_scheduler(cfg, optimizer_g)
     scaler_g = amp.GradScaler(enabled=bool(cfg["training"].get("amp", True)) and is_cuda_device(device))
     scaler_d: Optional[amp.GradScaler] = None
@@ -2127,19 +2201,21 @@ def main() -> None:
         if scheduler_g is not None and hasattr(scheduler_g, "base_lrs"):
             old_base = scheduler_g.base_lrs[0] if scheduler_g.base_lrs else None
             scheduler_g.base_lrs = [config_generator_lr for _ in scheduler_g.base_lrs]
+            is_plateau = isinstance(scheduler_g, torch.optim.lr_scheduler.ReduceLROnPlateau)
             if not restored_scheduler_g:
-                for _ff in range(start_epoch - 1):
-                    scheduler_g.step()
+                if not is_plateau:
+                    for _ff in range(start_epoch - 1):
+                        scheduler_g.step()
                 if is_main_process(rank):
                     print(f"[resume] Scheduler fast-forwarded to epoch {start_epoch - 1}, lr={optimizer_g.param_groups[0]['lr']:.2e}")
             else:
-                scheduler_g.step()
+                if not is_plateau:
+                    scheduler_g.step()
                 if is_main_process(rank):
                     print(f"[resume] Scheduler state restored, base_lrs overridden {old_base:.2e} -> {config_generator_lr:.2e}, lr={optimizer_g.param_groups[0]['lr']:.2e}")
         if optimizer_d is not None:
-            resume_discriminator_lr = float(
-                optimizer_d.param_groups[0].get("lr", cfg["training"].get("discriminator_lr", resume_generator_lr))
-            )
+            config_discriminator_lr = float(cfg["training"].get("discriminator_lr", config_generator_lr))
+            resume_discriminator_lr = float(optimizer_d.param_groups[0].get("lr", config_discriminator_lr))
             apply_optimizer_hparams_from_cfg(
                 optimizer_d,
                 learning_rate=resume_discriminator_lr,
@@ -2266,6 +2342,13 @@ def main() -> None:
                         ),
                     },
                     "learning_rate": float(optimizer_g.param_groups[0]["lr"]),
+                    "weight_decay": float(getattr(optimizer_g, "_manual_weight_decay", cfg["training"].get("weight_decay", 0.0))),
+                    "weight_decay_mode": str(getattr(optimizer_g, "_manual_weight_decay_mode", "selective_excluding_bias_and_norm")),
+                    "weight_decay_param_counts": {
+                        "decay": int(getattr(optimizer_g, "_manual_weight_decay_param_count", 0)),
+                        "no_decay": int(getattr(optimizer_g, "_manual_no_weight_decay_param_count", 0)),
+                        "total": int(getattr(optimizer_g, "_manual_weight_decay_total_count", 0)),
+                    },
                     "generator_objective": str(cfg["training"].get("generator_objective", "legacy")),
                     "train_seconds": float(train_seconds),
                     "val_seconds": float(val_seconds),
@@ -2338,17 +2421,18 @@ def main() -> None:
                 if prev_epoch_ckpt_path.exists():
                     prev_epoch_ckpt_path.unlink()
 
-                write_validation_json(
-                    out_dir,
-                    epoch,
-                    val_summary,
-                    best_epoch=best_epoch,
-                    best_score=best_score,
-                    selection_metric=selection_metric,
-                    current_score=current_score,
-                    uses_ema=ema_generator is not None,
-                    ema_decay=ema_decay,
-                )
+                if bool(cfg["training"].get("save_validation_json_each_epoch", True)):
+                    write_validation_json(
+                        out_dir,
+                        epoch,
+                        val_summary,
+                        best_epoch=best_epoch,
+                        best_score=best_score,
+                        selection_metric=selection_metric,
+                        current_score=current_score,
+                        uses_ema=ema_generator is not None,
+                        ema_decay=ema_decay,
+                    )
                 progress_payload = {
                     "epoch": epoch,
                     "generator_loss": train_g_loss,
