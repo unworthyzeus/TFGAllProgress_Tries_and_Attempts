@@ -1,9 +1,10 @@
-# Experiment Versions (Try 1 → Try 71)
+# Experiment Versions (Try 1 → Try 72)
 
-This document summarizes the evolution from `TFG_FirstTry1` through the latest numbered try (`TFGSeventyFirstTry71` as of Try 71), what each family predicts, and why each new branch was opened.
+This document summarizes the evolution from `TFG_FirstTry1` through the latest numbered try (`TFGSeventySecondTry72` as of Try 72), what each family predicts, and why each new branch was opened.
 
 ## Current status
 
+- **`Try 72`** (`TFGSeventySecondTry72`) is a **Try 68** fork with **sparse receiver supervision**: `data_utils.apply_receiver_subsample_mask` keeps roughly **`keep_fraction` of all originally valid ground pixels** (default **1%**, i.e. `0.01`), after a **per–1000 m tile** cap (`max_rx_per_tile`). Train uses a **new random mask each step** (seed from epoch/step); val uses **`val_seed`** for reproducibility. **Primary** `metrics.path_loss` RMSE is on the **sparse** mask; **`metrics.path_loss_dense_reference`** reports the same on **all valid pixels** for comparison to Try 68-style numbers. **Smaller PMHHNet** (`base_channels: 20`, `hf_channels: 10`) and **larger micro-batches** (`batch_size: 4`, `val_batch_size: 4`, `gradient_accumulation_steps: 4`). Configs: `scripts/generate_try72_configs.py` → `experiments/seventysecond_try72_experts/try72_expert_*.yaml`. Cluster: `cluster/submit_try72_experts_*`, `cluster/run_seventysecond_try72_*.slurm`. Plots: `scripts/plot_try72_metrics.py`. Details: `TFGSeventySecondTry72/README.md`.
 - **`Try 71`** (`TFGSeventyFirstTry71`) is a **heteroscedastic uncertainty** fork of Try 68: the model predicts a **mean residual + log-variance** (2 output channels), trained with the Kendall & Gal (NeurIPS 2017) NLL loss `(μ-y)²/σ² + log σ²`. This automatically down-weights unresolvable NLoS pixels (high σ) and produces a **per-pixel confidence map**; evaluation reports RMSE at varying σ-threshold coverage levels. Only `open_sparse_lowrise`; resumes from Try 68 cluster checkpoint. Bootstrap: `TFGpractice/scripts/bootstrap_try71_from_try68.py`.
 - **`Try 70`** (`TFGSeventiethTry70`) is an **experimental multi-scale quad-head** fork of Try 68: auxiliary residuals at 257 / 129 / 65 with quadrant tiling + global low-res branches; `train_try70_multiquad.py`. **Bug fixes applied (2025-04):** (1) global-branch double-counting in `try70_auxiliary_loss` (loops `range(5/17/65)` → `range(4/16/64)`); (2) aux heads supervising full target instead of residual target — fixed by passing `prior` to the loss; (3) blend search now accumulates SSE over the full val set (not just first batch) with alpha sweep [0.0…1.0].
 - **`Try 69`** (`TFGSixtyNinthTry69`) — recipe from **Try 67** (dual LoS/NLoS heads, D4 TTA on val, SOA training stack) with **six `topology_class` experts** (Try 54 partition: `open_sparse_lowrise` … `dense_block_highrise`), **`knife_edge_channel` on**, **`path_loss_obstruction_features` off**; registry `experiments/sixtyninth_try69_experts/try69_expert_registry.yaml`. (Earlier revision used 3-class ITU YAMLs `open_lowrise` / `mixed_midrise` / `dense_highrise`.) **Bug fixes applied (2025-04):** (1) `lambda_recon: 0.0→1.0` and `mse_weight: 0.0→1.0` — the main 513px loss was completely disabled; (2) `generator_objective: full_map_rmse_only→legacy` — removes sqrt-loss instability at high error; (3) `corridor_weighting disabled` — sigma=40 on 513px map was centre-only, degrading edge RMSE; (4) `prior_residual_path_loss.loss_weight: 0→0.5` — no residual supervision; (5) regularisation relaxed (dropout 0.2→0.12, wd 0.03→0.015, cutmix 0.45→0.25); (6) clamp max +25 dB per expert. **SOA training added:** SWA (`start_fraction=0.6`), target label noise (`sigma_db=0.5`), LR score EMA smoothing (0.6). DataLoader: workers 0→6, batch 1→2, grad_accum 16→8.
@@ -991,6 +992,29 @@ Multiscale and NLoS focus losses are computed on `mu` only (not `lv`).
 **Scope:** `open_sparse_lowrise` only (mirrors the Try 68 checkpoint available on the cluster). Cluster script copies `outputs/try68_expert_open_sparse_lowrise/best_model.pt` into `outputs/try71_expert_open_sparse_lowrise/` before the first epoch; `load_state_dict(strict=False)` loads all shared weights (new log_var head initialises randomly).
 
 **Bootstrap script:** `TFGpractice/scripts/bootstrap_try71_from_try68.py`
+
+## Try 72: Try 68 + sparse receivers + smaller model + larger batch
+
+`Try 72` copies the **Try 68** training stack (`train_partitioned_pathloss_expert.py`, six topology experts, PMHHNet, prior + residual, same data channels and splits) and adds **receiver subsampling** to stress generalisation under **fewer supervised pixels per map** (closer in spirit to sparse drive-test links than “every raster cell always counts”).
+
+### Receiver subsample (`data.receiver_subsample`)
+
+| Key | Role |
+|-----|------|
+| `enabled` | If true, loss and primary val metrics use a **sparse** mask. |
+| `keep_fraction` | Target fraction of **original** valid ground pixels kept (after tile cap), default **0.01** (1%). |
+| `tile_side_m` | Tile size in metres for the per-area cap (default 1000). |
+| `max_rx_per_tile` | Max receivers sampled per tile (default 32). |
+| `val_seed` | Base for deterministic val subsampling (+ internal offset per batch index). |
+
+Implementation: `data_utils.apply_receiver_subsample_mask` (numpy grouping per sample). Train multiplies the loss mask by a **new** gate each step (`seed = cfg.seed + epoch×1_000_003 + step×47`). When enabled, JSON includes **`metrics.path_loss_dense_reference`** (RMSE on **dense** valid pixels) alongside sparse `metrics.path_loss`.
+
+### Model / batch (vs Try 68 defaults in repo YAML)
+
+- `base_channels: 20`, `hf_channels: 10` (all six experts).
+- `training.batch_size: 4`, `data.val_batch_size: 4`, `training.gradient_accumulation_steps: 4`.
+
+**Folder:** `TFGpractice/TFGSeventySecondTry72/`. **Docs:** `README.md` (overview + config pointers). **Plots:** `scripts/plot_try72_metrics.py` (val sparse vs dense reference on panel 0).
 
 ## Related documents
 

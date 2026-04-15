@@ -1,0 +1,14 @@
+# Preset 3×GPU + medium_gpu — cluster/run_seventysecond_try72_3gpu_medium_gpu.slurm (24 CPU, 120G, gres=gpu:rtx2080:3).
+# big_gpu en SERT suele imponer un mínimo de GPUs (p. ej. 4); para 3 GPUs usa este preset + ese .slurm.
+# Same data/training knobs as 4gpu.yml (torchrun uses 3 ranks; copy blocks into try72_expert_*.yaml).
+#
+# data:
+num_workers: 4
+val_num_workers: 2
+persistent_workers: true
+val_persistent_workers: true
+prefetch_factor: 4
+#
+# training:
+batch_size: 1
+gradient_accumulation_steps: 4

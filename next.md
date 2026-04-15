@@ -7,6 +7,8 @@ Bring the **effective measurement density** closer to link-style benchmarks (few
 1. **Cap receivers per unit area** — e.g. target roughly *N* valid ground receivers per **1000×1000 m²** of horizontal extent (or per fixed tile on the topology grid), instead of using almost every valid pixel as a supervised / scored point.
 2. **Randomize which pixels survive** — each epoch (or each step), draw a **new** random subset of receivers subject to the cap, so the model cannot overfit a static subset of the map.
 
+**Implemented as Try 72** (`TFGSeventySecondTry72`): `data.receiver_subsample` with `keep_fraction: 0.01` (1% of valid pixels, after per-tile cap), `apply_receiver_subsample_mask` in `data_utils.py`; see `VERSIONS.md` and `TFGSeventySecondTry72/README.md`.
+
 Together this moves evaluation and training pressure toward **sparse, spatially jittered** targets, closer in spirit to “one detector where you place it” than “every raster cell always counts.”
 
 ## Why

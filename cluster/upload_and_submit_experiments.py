@@ -323,6 +323,14 @@ PRESETS: dict[str, Preset] = {
             2: ("cluster/run_fourteenthtry14_film_nlos_2gpu.slurm",),
         },
     ),
+    "seventythird": Preset(
+        local_dir="TFGSeventyThirdTry73",
+        slurms_by_gpus={
+            1: ("cluster/run_try73_cnn_1gpu.slurm",),
+            2: ("cluster/run_try73_cnn_2gpu.slurm",),
+            4: ("cluster/run_try73_cnn_4gpu.slurm",),
+        },
+    ),
 }
 
 
