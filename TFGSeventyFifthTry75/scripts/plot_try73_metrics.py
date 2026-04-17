@@ -13,10 +13,11 @@ JSON schema (from build_validation_payload):
   focus.regimes.path_loss__los__NLoS    .rmse_physical
   focus.topology_class
   runtime.generator_loss / .learning_rate / .train_seconds / .val_seconds
-  runtime.loss_components.{final_loss, residual_loss, multiscale_loss, ...}
+    runtime.loss_components.{final_loss, residual_loss, multiscale_loss, los_*, nlos_*, ...}
   checkpoint.epoch / .best_epoch / .best_score
   selection.metric / .current_score / .is_best_epoch
-  selection_proxy.composite_nlos_weighted_rmse / .nlos_rmse_physical / .alpha
+    selection_proxy.composite_nlos_weighted_rmse / .nlos_rmse_physical / .alpha
+    selection_proxy.los_highpass_rmse_physical
   model_info.val_uses_ema / .ema_decay / .note
   support.sample_count / .los_fraction / .nlos_fraction
 
@@ -149,6 +150,7 @@ def load_rows(output_dir: Path) -> list[dict[str, Any]]:
             "nlos_mae": _f(_nested(data, "focus.regimes.path_loss__los__NLoS.mae_physical")),
             # --- selection proxy ---
             "composite_nlos_weighted": _f(_nested(data, "selection_proxy.composite_nlos_weighted_rmse")),
+            "los_highpass_rmse_proxy": _f(_nested(data, "selection_proxy.los_highpass_rmse_physical")),
             # --- loss ---
             "generator_loss": _f(runtime.get("generator_loss")),
             "lr": _f(runtime.get("learning_rate")),
@@ -165,6 +167,36 @@ def load_rows(output_dir: Path) -> list[dict[str, Any]]:
                 else loss_components.get("multiscale_loss")
             ),
             "nlos_focus_loss": _f(loss_components.get("nlos_focus_loss")),
+            "los_highpass_loss": _f(
+                loss_components["los_highpass_loss"]
+                if "los_highpass_loss" in loss_components
+                else loss_components.get("term_los_highpass")
+            ),
+            "los_gradmag_loss": _f(
+                loss_components["los_gradmag_loss"]
+                if "los_gradmag_loss" in loss_components
+                else loss_components.get("term_los_gradmag")
+            ),
+            "los_laplacian_loss": _f(
+                loss_components["los_laplacian_loss"]
+                if "los_laplacian_loss" in loss_components
+                else loss_components.get("term_los_laplacian")
+            ),
+            "nlos_dog_loss": _f(
+                loss_components["nlos_dog_loss"]
+                if "nlos_dog_loss" in loss_components
+                else loss_components.get("term_nlos_dog")
+            ),
+            "nlos_gradmag_loss": _f(
+                loss_components["nlos_gradmag_loss"]
+                if "nlos_gradmag_loss" in loss_components
+                else loss_components.get("term_nlos_gradmag")
+            ),
+            "nlos_laplacian_loss": _f(
+                loss_components["nlos_laplacian_loss"]
+                if "nlos_laplacian_loss" in loss_components
+                else loss_components.get("term_nlos_laplacian")
+            ),
             # --- support ---
             "los_fraction": _f(_nested(data, "support.los_fraction")),
             "nlos_fraction": _f(_nested(data, "support.nlos_fraction")),
@@ -267,18 +299,22 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
     ax = axes[2]
     rmse_gain = [r["rmse_gain_vs_prior"] for r in rows]
     composite = [r["composite_nlos_weighted"] for r in rows]
+    los_highpass_proxy = [r["los_highpass_rmse_proxy"] for r in rows]
     if any(math.isfinite(v) for v in rmse_gain):
         ax.plot(epochs, rmse_gain, label="RMSE gain vs prior (dB)", color="#5f3dc4", linewidth=1.8)
         ax.axhline(0, color="#adb5bd", linestyle="--", linewidth=0.8)
-    if any(math.isfinite(v) for v in composite):
+    if any(math.isfinite(v) for v in composite) or any(math.isfinite(v) for v in los_highpass_proxy):
         ax_c = ax.twinx()
-        ax_c.plot(epochs, composite, label="composite NLoS-weighted", color="#1c7ed6", linewidth=1.4, alpha=0.7)
-        ax_c.set_ylabel("Composite score", fontsize=8)
+        if any(math.isfinite(v) for v in composite):
+            ax_c.plot(epochs, composite, label="composite NLoS-weighted", color="#1c7ed6", linewidth=1.4, alpha=0.7)
+        if any(math.isfinite(v) for v in los_highpass_proxy):
+            ax_c.plot(epochs, los_highpass_proxy, label="LoS high-pass RMSE", color="#2f9e44", linewidth=1.2, alpha=0.75)
+        ax_c.set_ylabel("Proxy score", fontsize=8)
         lines_c, labels_c = ax_c.get_legend_handles_labels()
     else:
         lines_c, labels_c = [], []
     ax.set_ylabel("RMSE gain (dB)")
-    ax.set_title("Improvement vs Prior + Selection Proxy")
+    ax.set_title("Improvement vs Prior + Selection Proxies")
     ax.grid(alpha=0.25)
     lines_a, labels_a = ax.get_legend_handles_labels()
     ax.legend(lines_a + lines_c, labels_a + labels_c, loc="best", fontsize=8)
@@ -289,6 +325,12 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
     huber = [r["huber_loss"] for r in rows]
     ms_loss = [r["multiscale_loss"] for r in rows]
     nlos_fl = [r["nlos_focus_loss"] for r in rows]
+    los_hp_loss = [r["los_highpass_loss"] for r in rows]
+    los_grad_loss = [r["los_gradmag_loss"] for r in rows]
+    los_lap_loss = [r["los_laplacian_loss"] for r in rows]
+    nlos_dog_loss = [r["nlos_dog_loss"] for r in rows]
+    nlos_grad_loss = [r["nlos_gradmag_loss"] for r in rows]
+    nlos_lap_loss = [r["nlos_laplacian_loss"] for r in rows]
     ax.plot(epochs, gen_loss, label="total generator loss", color="#5f3dc4", linewidth=1.8)
     if any(math.isfinite(v) for v in huber):
         ax.plot(epochs, huber, label="main loss (Huber/RMSE)", color="#e8590c", linewidth=1.3, alpha=0.8)
@@ -296,6 +338,18 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
         ax.plot(epochs, ms_loss, label="multiscale loss", color="#1098ad", linewidth=1.2, alpha=0.7)
     if any(math.isfinite(v) for v in nlos_fl):
         ax.plot(epochs, nlos_fl, label="NLoS focus loss", color="#c2255c", linewidth=1.2, alpha=0.7)
+    if any(math.isfinite(v) for v in los_hp_loss):
+        ax.plot(epochs, los_hp_loss, label="LoS high-pass loss", color="#2f9e44", linewidth=1.2, alpha=0.75)
+    if any(math.isfinite(v) for v in los_grad_loss):
+        ax.plot(epochs, los_grad_loss, label="LoS grad-mag loss", color="#74b816", linewidth=1.1, alpha=0.7)
+    if any(math.isfinite(v) for v in los_lap_loss):
+        ax.plot(epochs, los_lap_loss, label="LoS laplacian loss", color="#a9e34b", linewidth=1.1, alpha=0.7)
+    if any(math.isfinite(v) for v in nlos_dog_loss):
+        ax.plot(epochs, nlos_dog_loss, label="NLoS DoG loss", color="#d9480f", linewidth=1.1, alpha=0.7)
+    if any(math.isfinite(v) for v in nlos_grad_loss):
+        ax.plot(epochs, nlos_grad_loss, label="NLoS grad-mag loss", color="#f76707", linewidth=1.1, alpha=0.7)
+    if any(math.isfinite(v) for v in nlos_lap_loss):
+        ax.plot(epochs, nlos_lap_loss, label="NLoS laplacian loss", color="#ffa94d", linewidth=1.1, alpha=0.7)
     ax_lr = ax.twinx()
     lr = [r["lr"] for r in rows]
     ax_lr.plot(epochs, lr, label="LR", color="#1c7ed6", linestyle="--", linewidth=1.0, alpha=0.6)
@@ -305,7 +359,7 @@ def plot_expert(expert_id: str, output_dir: Path, save_path: Path | None = None)
     ax.grid(alpha=0.25)
     lines_a, labels_a = ax.get_legend_handles_labels()
     lines_b, labels_b = ax_lr.get_legend_handles_labels()
-    ax.legend(lines_a + lines_b, labels_a + labels_b, loc="best", fontsize=8, ncol=2)
+    ax.legend(lines_a + lines_b, labels_a + labels_b, loc="best", fontsize=8, ncol=3)
 
     # ---- Panel 4: Timing ----
     ax = axes[4]

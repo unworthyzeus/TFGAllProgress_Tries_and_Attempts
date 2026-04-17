@@ -178,6 +178,48 @@ def _build_expert(root: Path, spec: dict) -> dict:
     }
 
     cfg["nlos_focus_loss"] = {"enabled": False}
+    cfg["los_highpass_loss"] = {
+        "enabled": True,
+        "loss_weight": 0.10,
+        "sigma_px": 3.0,
+        "mode": "l2",
+        "los_threshold": 0.5,
+    }
+    cfg["los_gradient_magnitude_loss"] = {
+        "enabled": True,
+        "loss_weight": 0.05,
+        "los_threshold": 0.5,
+        "eps": 1.0e-6,
+    }
+    cfg["los_laplacian_pyramid_loss"] = {
+        "enabled": True,
+        "loss_weight": 0.05,
+        "levels": 3,
+        "los_threshold": 0.5,
+        "min_valid_ratio": 0.25,
+    }
+    cfg["nlos_dog_loss"] = {
+        "enabled": True,
+        "loss_weight": 0.08,
+        "sigma_small_px": 2.0,
+        "sigma_large_px": 6.0,
+        "los_threshold": 0.5,
+    }
+    cfg["nlos_gradmag_loss"] = {
+        "enabled": True,
+        "loss_weight": 0.06,
+        "los_threshold": 0.5,
+        "boundary_boost": 2.0,
+        "eps": 1.0e-6,
+    }
+    cfg["nlos_laplacian_pyramid_loss"] = {
+        "enabled": True,
+        "loss_weight": 0.08,
+        "levels": 3,
+        "los_threshold": 0.5,
+        "min_valid_ratio": 0.25,
+        "coarse_emphasis": True,
+    }
     cfg["corridor_weighting"] = {"enabled": False, "sigma": 40.0, "kappa": 150.0, "min_weight": 0.3}
     cfg["no_data_auxiliary"] = {"enabled": False, "loss_weight": 0.0, "positive_weight": 1.0}
     cfg["pde_residual_loss"] = {"enabled": False, "loss_weight": 0.0}

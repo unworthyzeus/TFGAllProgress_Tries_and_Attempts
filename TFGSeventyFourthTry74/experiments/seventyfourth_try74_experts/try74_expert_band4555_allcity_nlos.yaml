@@ -209,6 +209,42 @@ test_time_augmentation:
   transforms: d4
   use_in_validation: false
   use_in_final_test: true
+los_highpass_loss:
+  enabled: true
+  loss_weight: 0.1
+  sigma_px: 3.0
+  mode: l2
+  los_threshold: 0.5
+los_gradient_magnitude_loss:
+  enabled: true
+  loss_weight: 0.05
+  los_threshold: 0.5
+  eps: 1.0e-06
+los_laplacian_pyramid_loss:
+  enabled: true
+  loss_weight: 0.05
+  levels: 3
+  los_threshold: 0.5
+  min_valid_ratio: 0.25
+nlos_dog_loss:
+  enabled: true
+  loss_weight: 0.08
+  sigma_small_px: 2.0
+  sigma_large_px: 6.0
+  los_threshold: 0.5
+nlos_gradmag_loss:
+  enabled: true
+  loss_weight: 0.06
+  los_threshold: 0.5
+  boundary_boost: 2.0
+  eps: 1.0e-06
+nlos_laplacian_pyramid_loss:
+  enabled: true
+  loss_weight: 0.08
+  levels: 3
+  los_threshold: 0.5
+  min_valid_ratio: 0.25
+  coarse_emphasis: true
 corridor_weighting:
   enabled: false
   sigma: 40.0

@@ -418,6 +418,356 @@ def masked_rmse_loss(
     return torch.sqrt(mse + float(eps))
 
 
+def _gaussian_kernel_1d(
+    sigma_px: float,
+    *,
+    dtype: torch.dtype,
+    device: torch.device,
+    truncate: float = 3.0,
+) -> torch.Tensor:
+    sigma = max(float(sigma_px), 1.0e-6)
+    radius = max(int(math.ceil(truncate * sigma)), 1)
+    coords = torch.arange(-radius, radius + 1, dtype=dtype, device=device)
+    kernel = torch.exp(-(coords ** 2) / (2.0 * sigma * sigma))
+    kernel = kernel / kernel.sum().clamp_min(1.0e-12)
+    return kernel
+
+
+def _gaussian_blur_2d(image: torch.Tensor, sigma_px: float) -> torch.Tensor:
+    if sigma_px <= 0.0:
+        return image
+    if image.ndim != 4:
+        raise ValueError("Expected image tensor with shape [B, C, H, W]")
+
+    kernel_1d = _gaussian_kernel_1d(
+        sigma_px,
+        dtype=image.dtype,
+        device=image.device,
+    )
+    radius = int((kernel_1d.numel() - 1) // 2)
+    channels = int(image.shape[1])
+
+    kernel_x = kernel_1d.view(1, 1, 1, -1).repeat(channels, 1, 1, 1)
+    kernel_y = kernel_1d.view(1, 1, -1, 1).repeat(channels, 1, 1, 1)
+
+    pad_mode = "reflect"
+    if image.shape[-1] <= radius or image.shape[-2] <= radius:
+        pad_mode = "replicate"
+
+    blurred = F.conv2d(
+        F.pad(image, (radius, radius, 0, 0), mode=pad_mode),
+        kernel_x,
+        groups=channels,
+    )
+    blurred = F.conv2d(
+        F.pad(blurred, (0, 0, radius, radius), mode=pad_mode),
+        kernel_y,
+        groups=channels,
+    )
+    return blurred
+
+
+def _highpass_residual_db(values_db: torch.Tensor, sigma_px: float) -> torch.Tensor:
+    return values_db - _gaussian_blur_2d(values_db, sigma_px)
+
+
+def compute_los_highpass_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    input_batch: torch.Tensor,
+    metadata: Dict[str, Any],
+    cfg: Dict[str, Any],
+) -> torch.Tensor:
+    hp_cfg = dict(cfg.get("los_highpass_loss", {}))
+    if not bool(hp_cfg.get("enabled", False)):
+        return torch.zeros((), device=pred.device)
+    if not uses_los_input_channel(cfg):
+        return torch.zeros((), device=pred.device)
+    if input_batch.shape[1] < 2:
+        return torch.zeros((), device=pred.device)
+
+    sigma_px = max(float(hp_cfg.get("sigma_px", 3.0)), 0.0)
+    threshold = float(hp_cfg.get("los_threshold", 0.5))
+    los = input_batch[:, 1:2].clamp(0.0, 1.0)
+    los_valid = mask * (los > threshold).to(mask.dtype)
+    denom = los_valid.sum().clamp_min(1.0)
+
+    pred_db = denormalize(pred, metadata)
+    target_db = denormalize(target, metadata)
+    pred_hp = _highpass_residual_db(pred_db, sigma_px)
+    target_hp = _highpass_residual_db(target_db, sigma_px)
+    diff_hp = pred_hp - target_hp
+
+    mode = str(hp_cfg.get("mode", "l2")).lower()
+    if mode == "l1":
+        base = (torch.abs(diff_hp) * los_valid).sum() / denom
+        normalized = base / max(float(metadata.get("scale", 180.0)), 1.0)
+    elif mode == "rmse":
+        mse = ((diff_hp ** 2) * los_valid).sum() / denom
+        base = torch.sqrt(mse + 1.0e-12)
+        normalized = base / max(float(metadata.get("scale", 180.0)), 1.0)
+    else:
+        base = ((diff_hp ** 2) * los_valid).sum() / denom
+        scale_db = max(float(metadata.get("scale", 180.0)), 1.0)
+        normalized = base / (scale_db ** 2)
+
+    loss_weight = float(hp_cfg.get("loss_weight", 0.1))
+    return loss_weight * normalized
+
+
+def _sobel_gradients(values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    if values.ndim != 4:
+        raise ValueError("Expected tensor with shape [B, C, H, W]")
+    channels = int(values.shape[1])
+    kx = torch.tensor(
+        [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]],
+        dtype=values.dtype,
+        device=values.device,
+    ) / 8.0
+    ky = kx.t()
+    wx = kx.view(1, 1, 3, 3).repeat(channels, 1, 1, 1)
+    wy = ky.view(1, 1, 3, 3).repeat(channels, 1, 1, 1)
+
+    pad_mode = "reflect"
+    if values.shape[-2] < 3 or values.shape[-1] < 3:
+        pad_mode = "replicate"
+    padded = F.pad(values, (1, 1, 1, 1), mode=pad_mode)
+    gx = F.conv2d(padded, wx, groups=channels)
+    gy = F.conv2d(padded, wy, groups=channels)
+    return gx, gy
+
+
+def compute_los_gradient_magnitude_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    input_batch: torch.Tensor,
+    metadata: Dict[str, Any],
+    cfg: Dict[str, Any],
+) -> torch.Tensor:
+    grad_cfg = dict(cfg.get("los_gradient_magnitude_loss", {}))
+    if not bool(grad_cfg.get("enabled", False)):
+        return torch.zeros((), device=pred.device)
+    if not uses_los_input_channel(cfg):
+        return torch.zeros((), device=pred.device)
+    if input_batch.shape[1] < 2:
+        return torch.zeros((), device=pred.device)
+
+    threshold = float(grad_cfg.get("los_threshold", 0.5))
+    eps = max(float(grad_cfg.get("eps", 1.0e-6)), 1.0e-12)
+    los = input_batch[:, 1:2].clamp(0.0, 1.0)
+    los_valid = mask * (los > threshold).to(mask.dtype)
+    denom = los_valid.sum().clamp_min(1.0)
+
+    pred_db = denormalize(pred, metadata)
+    target_db = denormalize(target, metadata)
+    pred_gx, pred_gy = _sobel_gradients(pred_db)
+    tgt_gx, tgt_gy = _sobel_gradients(target_db)
+    pred_mag = torch.sqrt(pred_gx.pow(2) + pred_gy.pow(2) + eps)
+    tgt_mag = torch.sqrt(tgt_gx.pow(2) + tgt_gy.pow(2) + eps)
+
+    mse = (((pred_mag - tgt_mag) ** 2) * los_valid).sum() / denom
+    scale_db = max(float(metadata.get("scale", 180.0)), 1.0)
+    normalized = mse / (scale_db ** 2)
+    return float(grad_cfg.get("loss_weight", 0.05)) * normalized
+
+
+def compute_los_laplacian_pyramid_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    input_batch: torch.Tensor,
+    metadata: Dict[str, Any],
+    cfg: Dict[str, Any],
+) -> torch.Tensor:
+    lap_cfg = dict(cfg.get("los_laplacian_pyramid_loss", {}))
+    if not bool(lap_cfg.get("enabled", False)):
+        return torch.zeros((), device=pred.device)
+    if not uses_los_input_channel(cfg):
+        return torch.zeros((), device=pred.device)
+    if input_batch.shape[1] < 2:
+        return torch.zeros((), device=pred.device)
+
+    levels = max(int(lap_cfg.get("levels", 3)), 1)
+    threshold = float(lap_cfg.get("los_threshold", 0.5))
+    min_valid_ratio = float(lap_cfg.get("min_valid_ratio", 0.25))
+    los = input_batch[:, 1:2].clamp(0.0, 1.0)
+
+    pred_level = denormalize(pred, metadata)
+    target_level = denormalize(target, metadata)
+    los_mask_level = mask * (los > threshold).to(mask.dtype)
+
+    total = torch.zeros((), device=pred.device)
+    total_weight = 0.0
+    for level in range(levels):
+        if pred_level.shape[-2] < 2 or pred_level.shape[-1] < 2:
+            break
+
+        pred_down = F.avg_pool2d(pred_level, kernel_size=2, stride=2)
+        target_down = F.avg_pool2d(target_level, kernel_size=2, stride=2)
+        pred_up = F.interpolate(pred_down, size=pred_level.shape[-2:], mode="bilinear", align_corners=False)
+        target_up = F.interpolate(target_down, size=target_level.shape[-2:], mode="bilinear", align_corners=False)
+        lap_pred = pred_level - pred_up
+        lap_tgt = target_level - target_up
+
+        valid = (los_mask_level >= min_valid_ratio).to(los_mask_level.dtype)
+        denom = valid.sum().clamp_min(1.0)
+        mse = (((lap_pred - lap_tgt) ** 2) * valid).sum() / denom
+
+        level_weight = 1.0 / (2.0 ** level)
+        total = total + level_weight * mse
+        total_weight += float(level_weight)
+
+        pred_level = pred_down
+        target_level = target_down
+        los_mask_level = F.avg_pool2d(los_mask_level, kernel_size=2, stride=2)
+
+    if total_weight <= 0.0:
+        return torch.zeros((), device=pred.device)
+    scale_db = max(float(metadata.get("scale", 180.0)), 1.0)
+    normalized = (total / total_weight) / (scale_db ** 2)
+    return float(lap_cfg.get("loss_weight", 0.05)) * normalized
+
+
+def compute_nlos_dog_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    input_batch: torch.Tensor,
+    metadata: Dict[str, Any],
+    cfg: Dict[str, Any],
+) -> torch.Tensor:
+    dog_cfg = dict(cfg.get("nlos_dog_loss", {}))
+    if not bool(dog_cfg.get("enabled", False)):
+        return torch.zeros((), device=pred.device)
+    if not uses_los_input_channel(cfg):
+        return torch.zeros((), device=pred.device)
+    if input_batch.shape[1] < 2:
+        return torch.zeros((), device=pred.device)
+
+    threshold = float(dog_cfg.get("los_threshold", 0.5))
+    sigma_small = max(float(dog_cfg.get("sigma_small_px", 2.0)), 0.0)
+    sigma_large = max(float(dog_cfg.get("sigma_large_px", 6.0)), sigma_small + 1.0e-3)
+    los = input_batch[:, 1:2].clamp(0.0, 1.0)
+    nlos_valid = mask * (los <= threshold).to(mask.dtype)
+    denom = nlos_valid.sum().clamp_min(1.0)
+
+    pred_db = denormalize(pred, metadata)
+    target_db = denormalize(target, metadata)
+    pred_dog = _gaussian_blur_2d(pred_db, sigma_small) - _gaussian_blur_2d(pred_db, sigma_large)
+    target_dog = _gaussian_blur_2d(target_db, sigma_small) - _gaussian_blur_2d(target_db, sigma_large)
+    mse = (((pred_dog - target_dog) ** 2) * nlos_valid).sum() / denom
+
+    scale_db = max(float(metadata.get("scale", 180.0)), 1.0)
+    normalized = mse / (scale_db ** 2)
+    return float(dog_cfg.get("loss_weight", 0.08)) * normalized
+
+
+def compute_nlos_gradient_magnitude_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    input_batch: torch.Tensor,
+    metadata: Dict[str, Any],
+    cfg: Dict[str, Any],
+) -> torch.Tensor:
+    grad_cfg = dict(cfg.get("nlos_gradmag_loss", {}))
+    if not bool(grad_cfg.get("enabled", False)):
+        return torch.zeros((), device=pred.device)
+    if not uses_los_input_channel(cfg):
+        return torch.zeros((), device=pred.device)
+    if input_batch.shape[1] < 2:
+        return torch.zeros((), device=pred.device)
+
+    threshold = float(grad_cfg.get("los_threshold", 0.5))
+    eps = max(float(grad_cfg.get("eps", 1.0e-6)), 1.0e-12)
+    boundary_boost = max(float(grad_cfg.get("boundary_boost", 1.0)), 1.0)
+
+    los = input_batch[:, 1:2].clamp(0.0, 1.0)
+    nlos_valid = mask * (los <= threshold).to(mask.dtype)
+
+    pred_db = denormalize(pred, metadata)
+    target_db = denormalize(target, metadata)
+    pred_gx, pred_gy = _sobel_gradients(pred_db)
+    tgt_gx, tgt_gy = _sobel_gradients(target_db)
+    pred_mag = torch.sqrt(pred_gx.pow(2) + pred_gy.pow(2) + eps)
+    tgt_mag = torch.sqrt(tgt_gx.pow(2) + tgt_gy.pow(2) + eps)
+
+    weight_map = nlos_valid
+    if boundary_boost > 1.0:
+        los_bin = (los > threshold).to(pred.dtype)
+        edge_x, edge_y = _sobel_gradients(los_bin)
+        edge_mag = torch.sqrt(edge_x.pow(2) + edge_y.pow(2) + eps)
+        edge_mag = torch.clamp(edge_mag * 4.0, min=0.0, max=1.0)
+        weight_map = weight_map * (1.0 + (boundary_boost - 1.0) * edge_mag)
+
+    denom = weight_map.sum().clamp_min(1.0)
+    mse = (((pred_mag - tgt_mag) ** 2) * weight_map).sum() / denom
+
+    scale_db = max(float(metadata.get("scale", 180.0)), 1.0)
+    normalized = mse / (scale_db ** 2)
+    return float(grad_cfg.get("loss_weight", 0.06)) * normalized
+
+
+def compute_nlos_laplacian_pyramid_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    input_batch: torch.Tensor,
+    metadata: Dict[str, Any],
+    cfg: Dict[str, Any],
+) -> torch.Tensor:
+    lap_cfg = dict(cfg.get("nlos_laplacian_pyramid_loss", {}))
+    if not bool(lap_cfg.get("enabled", False)):
+        return torch.zeros((), device=pred.device)
+    if not uses_los_input_channel(cfg):
+        return torch.zeros((), device=pred.device)
+    if input_batch.shape[1] < 2:
+        return torch.zeros((), device=pred.device)
+
+    levels = max(int(lap_cfg.get("levels", 3)), 1)
+    threshold = float(lap_cfg.get("los_threshold", 0.5))
+    min_valid_ratio = float(lap_cfg.get("min_valid_ratio", 0.25))
+    coarse_emphasis = bool(lap_cfg.get("coarse_emphasis", True))
+    los = input_batch[:, 1:2].clamp(0.0, 1.0)
+
+    pred_level = denormalize(pred, metadata)
+    target_level = denormalize(target, metadata)
+    nlos_mask_level = mask * (los <= threshold).to(mask.dtype)
+
+    total = torch.zeros((), device=pred.device)
+    total_weight = 0.0
+    for level in range(levels):
+        if pred_level.shape[-2] < 2 or pred_level.shape[-1] < 2:
+            break
+
+        pred_down = F.avg_pool2d(pred_level, kernel_size=2, stride=2)
+        target_down = F.avg_pool2d(target_level, kernel_size=2, stride=2)
+        pred_up = F.interpolate(pred_down, size=pred_level.shape[-2:], mode="bilinear", align_corners=False)
+        target_up = F.interpolate(target_down, size=target_level.shape[-2:], mode="bilinear", align_corners=False)
+        lap_pred = pred_level - pred_up
+        lap_tgt = target_level - target_up
+
+        valid = (nlos_mask_level >= min_valid_ratio).to(nlos_mask_level.dtype)
+        denom = valid.sum().clamp_min(1.0)
+        mse = (((lap_pred - lap_tgt) ** 2) * valid).sum() / denom
+
+        level_weight = (2.0 ** level) if coarse_emphasis else (1.0 / (2.0 ** level))
+        total = total + level_weight * mse
+        total_weight += float(level_weight)
+
+        pred_level = pred_down
+        target_level = target_down
+        nlos_mask_level = F.avg_pool2d(nlos_mask_level, kernel_size=2, stride=2)
+
+    if total_weight <= 0.0:
+        return torch.zeros((), device=pred.device)
+    scale_db = max(float(metadata.get("scale", 180.0)), 1.0)
+    normalized = (total / total_weight) / (scale_db ** 2)
+    return float(lap_cfg.get("loss_weight", 0.08)) * normalized
+
+
 def effective_huber_delta(delta: float, path_loss_meta: Dict[str, Any], loss_cfg: Dict[str, Any]) -> float:
     """Map config ``huber_delta`` to the scale of ``|pred - target|`` (normalized path loss).
 
@@ -1562,6 +1912,7 @@ def filter_regime_summary_for_topology_class(
     keep_exact = {
         "path_loss__los__LoS",
         "path_loss__los__NLoS",
+        "path_loss__los_highpass__LoS",
         "path_loss__prior__los__LoS",
         "path_loss__prior__los__NLoS",
     }
@@ -1716,6 +2067,9 @@ def evaluate_validation(
     aux_cfg = _no_data_aux_cfg(cfg)
     no_data_enabled = bool(aux_cfg.get("enabled", False))
     no_data_totals = init_binary_totals()
+    los_highpass_cfg = dict(cfg.get("los_highpass_loss", {}))
+    los_highpass_sigma_px = max(float(los_highpass_cfg.get("sigma_px", 3.0)), 0.0)
+    los_highpass_threshold = float(los_highpass_cfg.get("los_threshold", 0.5))
 
     model.eval()
     sample_cursor = 0
@@ -1749,6 +2103,13 @@ def evaluate_validation(
             update_metric_total(totals, diff_phys)
             update_metric_total_quantized_u8(totals_quantized, pred_phys, target_phys, valid_mask)
 
+            los = x[:, 1:2].clamp(0.0, 1.0) if uses_los_input_channel(cfg) and x.shape[1] >= 2 else None
+            los_highpass_diff_phys: Optional[torch.Tensor] = None
+            if los is not None:
+                pred_hp_phys = _highpass_residual_db(pred_phys, los_highpass_sigma_px)
+                target_hp_phys = _highpass_residual_db(target_phys, los_highpass_sigma_px)
+                los_highpass_diff_phys = pred_hp_phys - target_hp_phys
+
             if use_formula_prior:
                 prior_phys = denormalize(prior, meta)
                 prior_diff_phys = (prior_phys - target_phys)[valid_mask]
@@ -1759,7 +2120,6 @@ def evaluate_validation(
                 update_binary_totals(no_data_totals, no_data_logits, nd_target)
 
             batch_size = int(x.shape[0])
-            los = x[:, 1:2] if uses_los_input_channel(cfg) else None
             for sample_offset in range(batch_size):
                 base_index = int(sample_indices[sample_cursor + sample_offset])
                 scalar_cond_sample = scalar_cond[sample_offset : sample_offset + 1] if scalar_cond is not None else None
@@ -1783,10 +2143,15 @@ def evaluate_validation(
 
                 if los is not None:
                     sample_los = los[sample_offset : sample_offset + 1]
-                    los_valid = sample_valid_mask & (sample_los > 0.5)
-                    nlos_valid = sample_valid_mask & (sample_los <= 0.5)
+                    los_valid = sample_valid_mask & (sample_los > los_highpass_threshold)
+                    nlos_valid = sample_valid_mask & (sample_los <= los_highpass_threshold)
                     update_metric_total(regime_totals["path_loss__los__LoS"], (pred_phys - target_phys)[sample_offset : sample_offset + 1][los_valid])
                     update_metric_total(regime_totals["path_loss__los__NLoS"], (pred_phys - target_phys)[sample_offset : sample_offset + 1][nlos_valid])
+                    if los_highpass_diff_phys is not None:
+                        update_metric_total(
+                            regime_totals["path_loss__los_highpass__LoS"],
+                            los_highpass_diff_phys[sample_offset : sample_offset + 1][los_valid],
+                        )
                     combo_los = f"path_loss__calibration_regime__{info['city_type']}__LoS__{info['antenna_bin']}"
                     combo_nlos = f"path_loss__calibration_regime__{info['city_type']}__NLoS__{info['antenna_bin']}"
                     update_metric_total(regime_totals[combo_los], (pred_phys - target_phys)[sample_offset : sample_offset + 1][los_valid])
@@ -1856,6 +2221,7 @@ def evaluate_validation(
     fullres_total_count = float(totals_fullres.get("count", 0.0))
     los_count = float(regime_totals.get("path_loss__los__LoS", {}).get("count", 0.0))
     nlos_count = float(regime_totals.get("path_loss__los__NLoS", {}).get("count", 0.0))
+    los_highpass_count = float(regime_totals.get("path_loss__los_highpass__LoS", {}).get("count", 0.0))
     regime_summary = {
         key: finalize_metric_total(val, unit, total_count=total_count)
         for key, val in sorted(regime_totals.items())
@@ -1877,6 +2243,7 @@ def evaluate_validation(
             "valid_pixel_count_513": int(round(fullres_total_count)),
             "los_valid_pixel_count": int(round(los_count)),
             "nlos_valid_pixel_count": int(round(nlos_count)),
+            "los_highpass_valid_pixel_count": int(round(los_highpass_count)),
             "los_fraction": float(los_count / total_count) if total_count > 0.0 else float("nan"),
             "nlos_fraction": float(nlos_count / total_count) if total_count > 0.0 else float("nan"),
         },
@@ -1902,9 +2269,12 @@ def evaluate_validation(
     selection_alpha = float(cfg.get("nlos_focus_loss", {}).get("selection_alpha", cfg.get("training", {}).get("selection_nlos_alpha", 0.25)))
     nlos_rmse = float(regime_summary.get("path_loss__los__NLoS", {}).get("rmse_physical", path_loss_summary.get("rmse_physical", float("nan"))))
     overall_rmse = float(path_loss_summary.get("rmse_physical", float("nan")))
+    los_highpass_rmse = float(regime_summary.get("path_loss__los_highpass__LoS", {}).get("rmse_physical", float("nan")))
+    path_loss_summary["los_highpass_rmse_physical"] = los_highpass_rmse
     summary["selection_proxy"] = {
         "overall_rmse_physical": overall_rmse,
         "nlos_rmse_physical": nlos_rmse,
+        "los_highpass_rmse_physical": los_highpass_rmse,
         "alpha": selection_alpha,
         "composite_nlos_weighted_rmse": float(overall_rmse + selection_alpha * nlos_rmse),
     }
@@ -2006,12 +2376,24 @@ def train_one_epoch(
     running_gate = 0.0
     running_gan = 0.0
     running_nlos_focus = 0.0
+    running_los_highpass = 0.0
+    running_los_gradmag = 0.0
+    running_los_laplacian = 0.0
+    running_nlos_dog = 0.0
+    running_nlos_gradmag = 0.0
+    running_nlos_laplacian = 0.0
     running_term_final = 0.0
     running_term_residual = 0.0
     running_term_multiscale = 0.0
     running_term_gate = 0.0
     running_term_gan = 0.0
     running_term_nlos_focus = 0.0
+    running_term_los_highpass = 0.0
+    running_term_los_gradmag = 0.0
+    running_term_los_laplacian = 0.0
+    running_term_nlos_dog = 0.0
+    running_term_nlos_gradmag = 0.0
+    running_term_nlos_laplacian = 0.0
     running_main_map_regression = 0.0
     train_metric_totals = init_metric_totals()
     train_metric_totals_quantized = init_metric_totals()
@@ -2176,6 +2558,12 @@ def train_one_epoch(
                 )
                 multiscale_loss = compute_multiscale_path_loss_loss(pred, target, mask, meta, cfg)
             nlos_focus_loss = compute_nlos_focus_loss(pred, target, mask, x, cfg)
+            los_highpass_loss = compute_los_highpass_loss(pred, target, mask, x, meta, cfg)
+            los_gradmag_loss = compute_los_gradient_magnitude_loss(pred, target, mask, x, meta, cfg)
+            los_laplacian_loss = compute_los_laplacian_pyramid_loss(pred, target, mask, x, meta, cfg)
+            nlos_dog_loss = compute_nlos_dog_loss(pred, target, mask, x, meta, cfg)
+            nlos_gradmag_loss = compute_nlos_gradient_magnitude_loss(pred, target, mask, x, meta, cfg)
+            nlos_laplacian_loss = compute_nlos_laplacian_pyramid_loss(pred, target, mask, x, meta, cfg)
             no_data_loss = torch.zeros((), device=target.device)
             if use_gate and gate_logits is not None and gate_target is not None:
                 gate_loss_map = F.binary_cross_entropy_with_logits(gate_logits, gate_target, reduction="none")
@@ -2240,6 +2628,18 @@ def train_one_epoch(
             if nlos_focus_weight > 0.0:
                 term_nlos_focus = nlos_focus_weight * nlos_focus_loss
                 g_loss = g_loss + term_nlos_focus
+            term_los_highpass = los_highpass_loss
+            g_loss = g_loss + term_los_highpass
+            term_los_gradmag = los_gradmag_loss
+            g_loss = g_loss + term_los_gradmag
+            term_los_laplacian = los_laplacian_loss
+            g_loss = g_loss + term_los_laplacian
+            term_nlos_dog = nlos_dog_loss
+            g_loss = g_loss + term_nlos_dog
+            term_nlos_gradmag = nlos_gradmag_loss
+            g_loss = g_loss + term_nlos_gradmag
+            term_nlos_laplacian = nlos_laplacian_loss
+            g_loss = g_loss + term_nlos_laplacian
             if bool(_no_data_aux_cfg(cfg).get("enabled", False)) and no_data_logits is not None:
                 no_data_target = _extract_no_data_target(y, m, cfg)
                 no_data_loss = _compute_no_data_loss(no_data_logits, no_data_target, cfg)
@@ -2305,12 +2705,24 @@ def train_one_epoch(
         running_gate += float(gate_loss.item())
         running_gan += float(gan_loss.item())
         running_nlos_focus += float(nlos_focus_loss.item())
+        running_los_highpass += float(los_highpass_loss.item())
+        running_los_gradmag += float(los_gradmag_loss.item())
+        running_los_laplacian += float(los_laplacian_loss.item())
+        running_nlos_dog += float(nlos_dog_loss.item())
+        running_nlos_gradmag += float(nlos_gradmag_loss.item())
+        running_nlos_laplacian += float(nlos_laplacian_loss.item())
         running_term_final += float(term_final.item())
         running_term_residual += float(term_residual.item())
         running_term_multiscale += float(term_multiscale.item())
         running_term_gate += float(term_gate.item())
         running_term_gan += float(term_gan.item())
         running_term_nlos_focus += float(term_nlos_focus.item())
+        running_term_los_highpass += float(term_los_highpass.item())
+        running_term_los_gradmag += float(term_los_gradmag.item())
+        running_term_los_laplacian += float(term_los_laplacian.item())
+        running_term_nlos_dog += float(term_nlos_dog.item())
+        running_term_nlos_gradmag += float(term_nlos_gradmag.item())
+        running_term_nlos_laplacian += float(term_nlos_laplacian.item())
         running_main_map_regression += float(
             (main_map_reg * full_map_scale).detach().item()
             if objective_lower == "full_map_rmse_only"
@@ -2343,12 +2755,24 @@ def train_one_epoch(
                     "gate_loss": float(running_gate / steps),
                     "gan_loss": float(running_gan / steps),
                     "nlos_focus_loss": float(running_nlos_focus / steps),
+                    "los_highpass_loss": float(running_los_highpass / steps),
+                    "los_gradmag_loss": float(running_los_gradmag / steps),
+                    "los_laplacian_loss": float(running_los_laplacian / steps),
+                    "nlos_dog_loss": float(running_nlos_dog / steps),
+                    "nlos_gradmag_loss": float(running_nlos_gradmag / steps),
+                    "nlos_laplacian_loss": float(running_nlos_laplacian / steps),
                     "term_final": float(running_term_final / steps),
                     "term_residual": float(running_term_residual / steps),
                     "term_multiscale": float(running_term_multiscale / steps),
                     "term_gate": float(running_term_gate / steps),
                     "term_gan": float(running_term_gan / steps),
                     "term_nlos_focus": float(running_term_nlos_focus / steps),
+                    "term_los_highpass": float(running_term_los_highpass / steps),
+                    "term_los_gradmag": float(running_term_los_gradmag / steps),
+                    "term_los_laplacian": float(running_term_los_laplacian / steps),
+                    "term_nlos_dog": float(running_term_nlos_dog / steps),
+                    "term_nlos_gradmag": float(running_term_nlos_gradmag / steps),
+                    "term_nlos_laplacian": float(running_term_nlos_laplacian / steps),
                     "generator_loss_total": float(running_g / steps),
                     "main_map_regression_loss": float(running_main_map_regression / steps),
                 },
@@ -2366,12 +2790,24 @@ def train_one_epoch(
         "gate_loss": float(running_gate / denom),
         "gan_loss": float(running_gan / denom),
         "nlos_focus_loss": float(running_nlos_focus / denom),
+        "los_highpass_loss": float(running_los_highpass / denom),
+        "los_gradmag_loss": float(running_los_gradmag / denom),
+        "los_laplacian_loss": float(running_los_laplacian / denom),
+        "nlos_dog_loss": float(running_nlos_dog / denom),
+        "nlos_gradmag_loss": float(running_nlos_gradmag / denom),
+        "nlos_laplacian_loss": float(running_nlos_laplacian / denom),
         "term_final": float(running_term_final / denom),
         "term_residual": float(running_term_residual / denom),
         "term_multiscale": float(running_term_multiscale / denom),
         "term_gate": float(running_term_gate / denom),
         "term_gan": float(running_term_gan / denom),
         "term_nlos_focus": float(running_term_nlos_focus / denom),
+        "term_los_highpass": float(running_term_los_highpass / denom),
+        "term_los_gradmag": float(running_term_los_gradmag / denom),
+        "term_los_laplacian": float(running_term_los_laplacian / denom),
+        "term_nlos_dog": float(running_term_nlos_dog / denom),
+        "term_nlos_gradmag": float(running_term_nlos_gradmag / denom),
+        "term_nlos_laplacian": float(running_term_nlos_laplacian / denom),
         "generator_loss_total": float(running_g / denom),
         "main_map_regression_loss": float(running_main_map_regression / denom),
     }
