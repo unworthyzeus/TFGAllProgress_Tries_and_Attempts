@@ -10,8 +10,8 @@
 #SBATCH --qos=medium_gpu
 #SBATCH --gres=gpu:rtx2080:2
 #SBATCH -w sert-2001
-#SBATCH --cpus-per-task=24
-#SBATCH --mem=78G
+#SBATCH --cpus-per-task=18
+#SBATCH --mem=62G
 #SBATCH --time=2-00:00:00
 #SBATCH --signal=B:TERM@90
 #SBATCH --output=logs_train_try68_%x_%j.out

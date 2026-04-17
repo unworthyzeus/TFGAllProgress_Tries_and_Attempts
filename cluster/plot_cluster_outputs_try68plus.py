@@ -46,6 +46,10 @@ def find_plot_script(try_folder: Path, try_num: int) -> Path | None:
         return None
     candidates = [
         scripts / f"plot_try{try_num}_metrics.py",
+        scripts / "plot_try75_metrics.py",
+        scripts / "plot_try74_metrics.py",
+        scripts / "plot_try73_metrics.py",
+        scripts / "plot_try72_metrics.py",
         scripts / "plot_try68_metrics.py",
         scripts / "plot_try69_metrics.py",
     ]
@@ -69,6 +73,18 @@ def expert_id_from_output_dir(d: Path) -> str:
     return name
 
 
+def display_expert_label(expert_id: str) -> str:
+    eid = expert_id.strip()
+    low = eid.lower()
+    if low.endswith("_los") or "los_only" in low:
+        base = re.sub(r"(_los|_los_only)$", "", eid, flags=re.IGNORECASE)
+        return f"{base} [LoS]"
+    if low.endswith("_nlos") or "nlos_only" in low:
+        base = re.sub(r"(_nlos|_nlos_only)$", "", eid, flags=re.IGNORECASE)
+        return f"{base} [NLoS]"
+    return eid
+
+
 def discover_expert_dirs(cluster_try_dir: Path) -> list[Path]:
     out: list[Path] = []
     for p in cluster_try_dir.rglob("validate_metrics_epoch_*.json"):
@@ -86,7 +102,19 @@ def load_plot_expert(plot_script: Path) -> Callable[..., Any]:
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot load {plot_script}")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    script_dir = str(plot_script.parent.resolve())
+    added = False
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+        added = True
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        if added:
+            try:
+                sys.path.remove(script_dir)
+            except ValueError:
+                pass
     fn = getattr(mod, "plot_expert", None)
     if not callable(fn):
         raise RuntimeError(f"No plot_expert() in {plot_script}")
@@ -165,7 +193,7 @@ def write_summary_csv_and_plot(rows: list[dict[str, Any]], out_dir: Path) -> Non
     except ImportError:
         return
 
-    labels = [f"T{r['try_num']}\n{r['expert_id'][:18]}" for r in rows]
+    labels = [f"T{r['try_num']}\n{display_expert_label(str(r['expert_id']))[:22]}" for r in rows]
     vals = [float(r["best_val_rmse"]) for r in rows]
     fig, ax = plt.subplots(figsize=(max(10, len(rows) * 0.45), 5))
     x = range(len(rows))

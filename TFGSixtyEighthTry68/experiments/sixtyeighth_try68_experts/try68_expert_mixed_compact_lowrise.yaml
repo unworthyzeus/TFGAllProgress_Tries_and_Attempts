@@ -66,9 +66,9 @@ data:
   tx_depth_map_channel: true
   elevation_angle_map_channel: true
   building_mask_channel: true
-  val_batch_size: 2
+  val_batch_size: 1
 model:
-  base_channels: 40
+  base_channels: 80
   disc_base_channels: 0
   disc_norm_type: group
   disc_input_downsample_factor: 1
@@ -88,12 +88,12 @@ model:
   use_scalar_channels: true
   norm_type: group
   arch: pmhhnet
-  hf_channels: 16
+  hf_channels: 32
   use_scalar_film: true
   use_se_attention: true
   se_reduction: 4
 training:
-  batch_size: 2
+  batch_size: 1
   epochs: 1000
   lr_scheduler_score_ema: 0.6
   swa:
@@ -119,6 +119,7 @@ training:
     min_batch_size: 1
     max_batch_size: 5
     safety_factor: 0.9
+  resume_weights_only: true
   optimizer: adamw
   discriminator_optimizer: adam
   learning_rate: 0.002
@@ -194,6 +195,8 @@ target_metadata:
     clip_min: 0.0
     clip_max: 180.0
     predict_linear: false
+    clip_min_db: 40.0
+    clip_max_db: 155.0
 no_data_auxiliary:
   enabled: false
   loss_weight: 0.0

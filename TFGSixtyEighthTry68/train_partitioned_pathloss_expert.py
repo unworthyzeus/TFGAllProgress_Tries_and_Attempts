@@ -46,6 +46,92 @@ from data_utils import (
 from model_pmhhnet import PMHHNetResidualRegressor, PMHNetResidualRegressor, PMNetResidualRegressor, PatchDiscriminator, UNetResidualRefiner, UNetResidualRefinerH
 
 
+class _IndexedDataset(torch.utils.data.Dataset):
+    """Wraps a dataset to append the sample index as the last element of each item."""
+
+    def __init__(self, dataset: torch.utils.data.Dataset) -> None:
+        self._ds = dataset
+
+    def __len__(self) -> int:
+        return len(self._ds)  # type: ignore[arg-type]
+
+    def __getitem__(self, idx: int):
+        item = self._ds[idx]
+        if isinstance(item, tuple):
+            return item + (torch.tensor(idx, dtype=torch.long),)
+        return item, torch.tensor(idx, dtype=torch.long)
+
+
+class SampleRMSEBuffer:
+    """Per-sample RMSE tracker for RL-style prioritized loss reweighting.
+
+    Each training step, the sample's RMSE is recorded via an EMA. At the next
+    step touching that sample the loss is scaled by:
+
+        w_i = clip( (rmse_i / mean_rmse)^gamma,  min_weight, max_weight )
+
+    Harder samples (high RMSE relative to the dataset mean) get more gradient;
+    easy samples get less. Equivalent to prioritized experience replay but for
+    supervised image regression.
+    """
+
+    def __init__(
+        self,
+        n_samples: int,
+        ema_alpha: float = 0.7,
+        gamma: float = 1.5,
+        min_weight: float = 0.5,
+        max_weight: float = 3.0,
+    ) -> None:
+        self.buffer = torch.ones(n_samples, dtype=torch.float32)
+        self.ema_alpha = float(ema_alpha)
+        self.gamma = float(gamma)
+        self.min_weight = float(min_weight)
+        self.max_weight = float(max_weight)
+        self._initialized = torch.zeros(n_samples, dtype=torch.bool)
+
+    def update(self, indices: Sequence[int], rmse_values: Sequence[float]) -> None:
+        for i, rmse in zip(indices, rmse_values):
+            idx = int(i)
+            if not math.isfinite(rmse) or rmse <= 0.0:
+                continue
+            if not self._initialized[idx]:
+                self.buffer[idx] = float(rmse)
+                self._initialized[idx] = True
+            else:
+                self.buffer[idx] = (
+                    self.ema_alpha * self.buffer[idx]
+                    + (1.0 - self.ema_alpha) * float(rmse)
+                )
+
+    def weight_for(self, indices: Sequence[int]) -> float:
+        """Return mean weight for the given sample indices."""
+        vals = self.buffer[list(indices)]
+        mean_val = float(self.buffer[self._initialized].mean().clamp_min(1e-6)) if self._initialized.any() else 1.0
+        weights = (vals / mean_val).pow(self.gamma).clamp(self.min_weight, self.max_weight)
+        return float(weights.mean())
+
+    def sync_distributed(self, distributed: bool) -> None:
+        """All-reduce buffer across DDP ranks (max so each rank contributes its updates)."""
+        if distributed and dist.is_available() and dist.is_initialized():
+            t = self.buffer.cuda()
+            dist.all_reduce(t, op=dist.ReduceOp.MAX)
+            self.buffer = t.cpu()
+
+
+def _unpack_train_batch(
+    batch: Tuple[Any, ...],
+    device: object,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[list]]:
+    """Unpack a training batch that may include sample indices (from _IndexedDataset)."""
+    sample_indices: Optional[list] = None
+    if batch and isinstance(batch[-1], torch.Tensor) and batch[-1].dtype == torch.long and batch[-1].ndim == 1:
+        sample_indices = batch[-1].tolist()
+        batch = batch[:-1]
+    x, y, m, sc = unpack_cgan_batch(batch, device)
+    return x, y, m, sc, sample_indices
+
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -739,6 +825,96 @@ def _checkpoint_model_state(state: Dict[str, Any]) -> Dict[str, Any]:
     raise KeyError("Checkpoint missing model/generator state")
 
 
+def _net2net_widen_tensor(old_t: torch.Tensor, new_shape: tuple[int, ...]) -> torch.Tensor:
+    if old_t.shape == new_shape:
+        return old_t.clone()
+    if old_t.ndim != len(new_shape):
+        raise ValueError(f"ndim mismatch: {tuple(old_t.shape)} vs {new_shape}")
+    result = old_t.clone()
+    for dim, (old_size, new_size) in enumerate(zip(old_t.shape, new_shape)):
+        if old_size == new_size:
+            continue
+        if new_size != 2 * old_size:
+            raise ValueError(f"dim {dim}: not 2x ({old_size}->{new_size})")
+        result = torch.cat([result, result], dim=dim)
+        if dim >= 1 and result.ndim >= 2 and result.is_floating_point():
+            result = result * 0.5
+    return result
+
+
+def _partial_copy_tensor(old_t: torch.Tensor, new_shape: tuple[int, ...], like_t: torch.Tensor) -> torch.Tensor:
+    result = like_t.new_zeros(new_shape)
+    source = old_t.to(device=like_t.device, dtype=like_t.dtype)
+    if source.ndim != len(new_shape):
+        return result
+    slices = tuple(slice(0, min(old_size, new_size)) for old_size, new_size in zip(source.shape, new_shape))
+    result[slices] = source[slices]
+    return result
+
+
+def _remap_checkpoint_tensor(old_t: torch.Tensor, target_t: torch.Tensor) -> tuple[torch.Tensor, str]:
+    source_is_float = torch.is_floating_point(old_t)
+    source = old_t.to(device=target_t.device, dtype=target_t.dtype)
+    if source.shape == target_t.shape:
+        return source.clone(), "copy"
+    if source_is_float and source.ndim == target_t.ndim:
+        try:
+            return _net2net_widen_tensor(source, tuple(target_t.shape)), "net2net"
+        except ValueError:
+            pass
+    return _partial_copy_tensor(source, tuple(target_t.shape), target_t), "partial"
+
+
+def _remap_checkpoint_state(
+    module: nn.Module,
+    checkpoint_state: Dict[str, Any],
+) -> tuple[dict[str, torch.Tensor], dict[str, int], bool]:
+    target_module = unwrap_model(module)
+    target_state = target_module.state_dict()
+    remapped_state: dict[str, torch.Tensor] = {}
+    stats = {"copied": 0, "net2net": 0, "partial": 0, "new": 0, "extra": 0}
+    exact_match = True
+
+    for key, target_tensor in target_state.items():
+        source_tensor = checkpoint_state.get(key)
+        if source_tensor is None or not torch.is_tensor(source_tensor):
+            remapped_state[key] = target_tensor.clone()
+            stats["new"] += 1
+            exact_match = False
+            continue
+
+        remapped_tensor, mode = _remap_checkpoint_tensor(source_tensor, target_tensor)
+        remapped_state[key] = remapped_tensor
+        if mode == "copy":
+            stats["copied"] += 1
+        elif mode == "net2net":
+            stats["net2net"] += 1
+            exact_match = False
+        else:
+            stats["partial"] += 1
+            exact_match = False
+
+    extra_keys = set(checkpoint_state.keys()) - set(target_state.keys())
+    if extra_keys:
+        stats["extra"] = len(extra_keys)
+        exact_match = False
+
+    return remapped_state, stats, exact_match
+
+
+def _format_remap_stats(stats: dict[str, int]) -> str:
+    return (
+        f"copied={stats['copied']} net2net={stats['net2net']} "
+        f"partial={stats['partial']} new={stats['new']} extra={stats['extra']}"
+    )
+
+
+def _load_adaptive_state_dict(module: nn.Module, checkpoint_state: Dict[str, Any]) -> tuple[dict[str, int], bool]:
+    remapped_state, stats, exact_match = _remap_checkpoint_state(module, checkpoint_state)
+    unwrap_model(module).load_state_dict(remapped_state, strict=True)
+    return stats, exact_match
+
+
 def _rewind_training_state_from_checkpoint(
     checkpoint_path: Path,
     device: object,
@@ -750,38 +926,44 @@ def _rewind_training_state_from_checkpoint(
     discriminator: Optional[nn.Module],
     optimizer_d: Optional[torch.optim.Optimizer],
     scaler_d: Optional[amp.GradScaler],
-) -> None:
+) -> bool:
     state = load_torch_checkpoint(checkpoint_path, device)
+    layout_is_exact = True
     target_generator = unwrap_model(generator_model)
-    target_generator.load_state_dict(_checkpoint_model_state(state))
+    _, gen_exact = _load_adaptive_state_dict(target_generator, _checkpoint_model_state(state))
+    layout_is_exact &= gen_exact
     if ema_generator is not None:
         if "generator_ema" in state and state["generator_ema"] is not None:
-            ema_generator.load_state_dict(state["generator_ema"])
+            _, ema_exact = _load_adaptive_state_dict(ema_generator, state["generator_ema"])
+            layout_is_exact &= ema_exact
         else:
             ema_generator.load_state_dict(target_generator.state_dict())
     if discriminator is not None and "discriminator" in state and state["discriminator"] is not None:
         target_discriminator = unwrap_model(discriminator)
-        target_discriminator.load_state_dict(state["discriminator"])
-    if "optimizer_g" in state and state["optimizer_g"] is not None:
-        optimizer_g.load_state_dict(state["optimizer_g"])
-        move_optimizer_state_to_device(optimizer_g, device)
-    elif "optimizer" in state and state["optimizer"] is not None:
-        optimizer_g.load_state_dict(state["optimizer"])
-        move_optimizer_state_to_device(optimizer_g, device)
-    if "optimizer_d" in state and optimizer_d is not None and state["optimizer_d"] is not None:
-        optimizer_d.load_state_dict(state["optimizer_d"])
-        move_optimizer_state_to_device(optimizer_d, device)
-    if "scaler_g" in state and state["scaler_g"] is not None:
-        scaler_g.load_state_dict(state["scaler_g"])
-    elif "scaler" in state and state["scaler"] is not None:
-        scaler_g.load_state_dict(state["scaler"])
-    if "scaler_d" in state and scaler_d is not None and state["scaler_d"] is not None:
-        scaler_d.load_state_dict(state["scaler_d"])
+        _, disc_exact = _load_adaptive_state_dict(target_discriminator, state["discriminator"])
+        layout_is_exact &= disc_exact
+    if layout_is_exact:
+        if "optimizer_g" in state and state["optimizer_g"] is not None:
+            optimizer_g.load_state_dict(state["optimizer_g"])
+            move_optimizer_state_to_device(optimizer_g, device)
+        elif "optimizer" in state and state["optimizer"] is not None:
+            optimizer_g.load_state_dict(state["optimizer"])
+            move_optimizer_state_to_device(optimizer_g, device)
+        if "optimizer_d" in state and optimizer_d is not None and state["optimizer_d"] is not None:
+            optimizer_d.load_state_dict(state["optimizer_d"])
+            move_optimizer_state_to_device(optimizer_d, device)
+        if "scaler_g" in state and state["scaler_g"] is not None:
+            scaler_g.load_state_dict(state["scaler_g"])
+        elif "scaler" in state and state["scaler"] is not None:
+            scaler_g.load_state_dict(state["scaler"])
+        if "scaler_d" in state and scaler_d is not None and state["scaler_d"] is not None:
+            scaler_d.load_state_dict(state["scaler_d"])
+    return layout_is_exact
 
 
-def _load_generator_weights(module: nn.Module, checkpoint_path: Path, device: object) -> None:
+def _load_generator_weights(module: nn.Module, checkpoint_path: Path, device: object) -> tuple[dict[str, int], bool]:
     state = load_torch_checkpoint(checkpoint_path, device)
-    module.load_state_dict(_checkpoint_model_state(state), strict=True)
+    return _load_adaptive_state_dict(module, _checkpoint_model_state(state))
 
 
 def _scalar_feature_names(cfg: Dict[str, Any]) -> list[str]:
@@ -1705,6 +1887,7 @@ def train_one_epoch(
     warmup_start_factor: float = 0.5,
     base_lr: float = 3e-4,
     optimizer_step_offset: int = 0,
+    rmse_buffer: Optional["SampleRMSEBuffer"] = None,
 ) -> tuple[float, float, dict[str, Any], dict[str, float], int]:
     meta = dict(cfg["target_metadata"]["path_loss"])
     loss_cfg = dict(cfg["loss"])
@@ -1762,8 +1945,11 @@ def train_one_epoch(
     accum_count = 0
     optimizer_steps_completed = 0
 
+    _srr_cfg = dict(cfg.get("sample_rmse_reweight", {}))
+    _srr_enabled = bool(_srr_cfg.get("enabled", False)) and rmse_buffer is not None
+
     for batch in tqdm(loader, desc="train", leave=False, disable=distributed and not is_main_process(rank)):
-        x, y, m, scalar_cond = unpack_cgan_batch(batch, device)
+        x, y, m, scalar_cond, _batch_indices = _unpack_train_batch(batch, device)
 
         # --- CutMix: mix with buffered previous sample ---
         # When FiLM uses a global height vector, spatial CutMix pastes another sample's
@@ -1958,6 +2144,23 @@ def train_one_epoch(
                 no_data_loss = _compute_no_data_loss(no_data_logits, no_data_target, cfg)
                 g_loss = g_loss + float(_no_data_aux_cfg(cfg).get("loss_weight", 0.0)) * no_data_loss
 
+        # --- RL-style per-sample loss reweighting ---
+        if _srr_enabled and _batch_indices is not None:
+            _sample_weight = rmse_buffer.weight_for(_batch_indices)  # type: ignore[union-attr]
+            g_loss = g_loss * _sample_weight
+            # Update buffer with current batch RMSE (physical dB, outside autocast)
+            with torch.no_grad():
+                _pred_phys_srr = denormalize(pred.detach(), meta)
+                _tgt_phys_srr = denormalize(target.detach(), meta)
+                _mask_srr = (mask > 0.0).squeeze(1)  # (B, H, W)
+                _batch_size_srr = _pred_phys_srr.shape[0]
+                _per_sample_rmse: list[float] = []
+                for _bi in range(_batch_size_srr):
+                    _valid = _mask_srr[_bi]
+                    _diff = (_pred_phys_srr[_bi, 0] - _tgt_phys_srr[_bi, 0])[_valid]
+                    _per_sample_rmse.append(float(_diff.pow(2).mean().sqrt()) if _valid.any() else float("nan"))
+                rmse_buffer.update(_batch_indices, _per_sample_rmse)
+
         scaled_loss = g_loss / grad_accum_steps
         scaler_g.scale(scaled_loss).backward()
         accum_count += 1
@@ -2071,6 +2274,8 @@ def train_one_epoch(
         "generator_loss_total": float(running_g / denom),
         "main_map_regression_loss": float(running_main_map_regression / denom),
     }
+    if _srr_enabled and rmse_buffer is not None:
+        rmse_buffer.sync_distributed(distributed)
     return running_g / denom, running_d / denom, train_metrics, train_loss_components, optimizer_steps_completed
 
 
@@ -2105,6 +2310,23 @@ def main() -> None:
     train_dataset = splits["train"]
     val_dataset = splits["val"]
 
+    # --- RL-style per-sample reweighting setup ---
+    _srr_main_cfg = dict(cfg.get("sample_rmse_reweight", {}))
+    _srr_main_enabled = bool(_srr_main_cfg.get("enabled", False))
+    rmse_buffer: Optional[SampleRMSEBuffer] = None
+    if _srr_main_enabled:
+        train_dataset = _IndexedDataset(train_dataset)
+        rmse_buffer = SampleRMSEBuffer(
+            n_samples=len(train_dataset),
+            ema_alpha=float(_srr_main_cfg.get("ema_alpha", 0.7)),
+            gamma=float(_srr_main_cfg.get("gamma", 1.5)),
+            min_weight=float(_srr_main_cfg.get("min_weight", 0.5)),
+            max_weight=float(_srr_main_cfg.get("max_weight", 3.0)),
+        )
+        if is_main_process(rank):
+            print(json.dumps({"sample_rmse_reweight": {"enabled": True, "n_samples": len(train_dataset),
+                "ema_alpha": rmse_buffer.ema_alpha, "gamma": rmse_buffer.gamma}}))
+
     pin_memory = is_cuda_device(device)
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if distributed else None
     train_loader_kwargs: dict[str, Any] = {}
@@ -2138,7 +2360,9 @@ def main() -> None:
             base_ckpt = (Path(__file__).resolve().parent / str(base_ckpt_raw)).resolve()
         if not base_ckpt.exists():
             raise FileNotFoundError(f"Base checkpoint not found: {base_ckpt_raw}")
-        _load_generator_weights(base_generator, base_ckpt, device)
+        base_stats, base_exact = _load_generator_weights(base_generator, base_ckpt, device)
+        if is_main_process(rank) and not base_exact:
+            print(f"[base] Adapted checkpoint: {_format_remap_stats(base_stats)}")
         base_generator.eval()
         set_requires_grad(base_generator, False)
         generator = _build_refiner_from_cfg(cfg, input_channels + 2).to(device)
@@ -2219,55 +2443,72 @@ def main() -> None:
     best_epoch = 0
     resume_cfg_key = sep_cfg.get("refiner_resume_checkpoint") if separated_mode else cfg["runtime"].get("resume_checkpoint")
     resume_path = resolve_resume_checkpoint(out_dir, resume_cfg_key)
+    weights_only_resume = bool(cfg.get("training", {}).get("resume_weights_only", False))
+    resume_layout_is_exact = True
     if resume_path and resume_path.exists():
         state = load_torch_checkpoint(resume_path, device)
-        start_epoch = int(state.get("epoch", 0)) + 1
-        best_score = float(state.get("best_score", best_score))
-        best_epoch = int(state.get("best_epoch", best_epoch))
+        if not weights_only_resume:
+            start_epoch = int(state.get("epoch", 0)) + 1
+            best_score = float(state.get("best_score", best_score))
+            best_epoch = int(state.get("best_epoch", best_epoch))
         target_generator = generator_for_training.module if isinstance(generator_for_training, DistributedDataParallel) else generator_for_training
-        target_generator.load_state_dict(_checkpoint_model_state(state))
+        gen_stats, gen_exact = _load_adaptive_state_dict(target_generator, _checkpoint_model_state(state))
+        resume_layout_is_exact &= gen_exact
+        if is_main_process(rank) and not gen_exact:
+            print(f"[resume] Adapted generator checkpoint: {_format_remap_stats(gen_stats)}")
         if "discriminator" in state and discriminator_for_training is not None:
             target_discriminator = discriminator_for_training.module if isinstance(discriminator_for_training, DistributedDataParallel) else discriminator_for_training
-            target_discriminator.load_state_dict(state["discriminator"])
+            disc_stats, disc_exact = _load_adaptive_state_dict(target_discriminator, state["discriminator"])
+            resume_layout_is_exact &= disc_exact
+            if is_main_process(rank) and not disc_exact:
+                print(f"[resume] Adapted discriminator checkpoint: {_format_remap_stats(disc_stats)}")
         if ema_generator is not None:
-            if "generator_ema" in state:
-                ema_generator.load_state_dict(state["generator_ema"])
+            if "generator_ema" in state and state["generator_ema"] is not None:
+                ema_stats, ema_exact = _load_adaptive_state_dict(ema_generator, state["generator_ema"])
+                resume_layout_is_exact &= ema_exact
+                if is_main_process(rank) and not ema_exact:
+                    print(f"[resume] Adapted EMA checkpoint: {_format_remap_stats(ema_stats)}")
             else:
                 ema_generator.load_state_dict(target_generator.state_dict())
-        if "optimizer_g" in state:
-            optimizer_g.load_state_dict(state["optimizer_g"])
-            move_optimizer_state_to_device(optimizer_g, device)
-        elif "optimizer" in state:
-            optimizer_g.load_state_dict(state["optimizer"])
-            move_optimizer_state_to_device(optimizer_g, device)
-        if "optimizer_d" in state and optimizer_d is not None:
-            optimizer_d.load_state_dict(state["optimizer_d"])
-            move_optimizer_state_to_device(optimizer_d, device)
+        if not weights_only_resume and resume_layout_is_exact:
+            if "optimizer_g" in state:
+                optimizer_g.load_state_dict(state["optimizer_g"])
+                move_optimizer_state_to_device(optimizer_g, device)
+            elif "optimizer" in state:
+                optimizer_g.load_state_dict(state["optimizer"])
+                move_optimizer_state_to_device(optimizer_g, device)
+        if not weights_only_resume:
+            if "optimizer_d" in state and optimizer_d is not None:
+                optimizer_d.load_state_dict(state["optimizer_d"])
+                move_optimizer_state_to_device(optimizer_d, device)
         restored_scheduler_g = False
-        if "scheduler_g" in state and scheduler_g is not None:
-            scheduler_state = state["scheduler_g"]
-            if scheduler_state is not None:
-                try:
-                    scheduler_g.load_state_dict(scheduler_state)
-                    restored_scheduler_g = True
-                except Exception as e:
-                    if is_main_process(rank):
-                        print(f"[resume] Scheduler state incompatible (type changed?), reinitializing: {e}")
-        elif "scheduler" in state and scheduler_g is not None:
-            scheduler_state = state["scheduler"]
-            if scheduler_state is not None:
-                try:
-                    scheduler_g.load_state_dict(scheduler_state)
-                    restored_scheduler_g = True
-                except Exception as e:
-                    if is_main_process(rank):
-                        print(f"[resume] Scheduler state incompatible (type changed?), reinitializing: {e}")
-        if "scaler_g" in state:
-            scaler_g.load_state_dict(state["scaler_g"])
-        elif "scaler" in state:
-            scaler_g.load_state_dict(state["scaler"])
-        if "scaler_d" in state and scaler_d is not None:
-            scaler_d.load_state_dict(state["scaler_d"])
+        if not weights_only_resume:
+            if "scheduler_g" in state and scheduler_g is not None:
+                scheduler_state = state["scheduler_g"]
+                if scheduler_state is not None:
+                    try:
+                        scheduler_g.load_state_dict(scheduler_state)
+                        restored_scheduler_g = True
+                    except Exception as e:
+                        if is_main_process(rank):
+                            print(f"[resume] Scheduler state incompatible (type changed?), reinitializing: {e}")
+            elif "scheduler" in state and scheduler_g is not None:
+                scheduler_state = state["scheduler"]
+                if scheduler_state is not None:
+                    try:
+                        scheduler_g.load_state_dict(scheduler_state)
+                        restored_scheduler_g = True
+                    except Exception as e:
+                        if is_main_process(rank):
+                            print(f"[resume] Scheduler state incompatible (type changed?), reinitializing: {e}")
+            if "scaler_g" in state:
+                scaler_g.load_state_dict(state["scaler_g"])
+            elif "scaler" in state:
+                scaler_g.load_state_dict(state["scaler"])
+            if "scaler_d" in state and scaler_d is not None:
+                scaler_d.load_state_dict(state["scaler_d"])
+        elif not weights_only_resume and is_main_process(rank) and not resume_layout_is_exact:
+            print("[resume] Checkpoint layout differs from the current model; optimizer/scheduler/scaler state will be reinitialized.")
         config_generator_lr = float(cfg["training"].get("learning_rate", cfg["training"].get("generator_lr", 3e-5)))
         resume_weight_decay = float(cfg["training"].get("weight_decay", 0.0))
         apply_optimizer_hparams_from_cfg(
@@ -2324,6 +2565,7 @@ def main() -> None:
                 json.dumps(
                     {
                         "resume_from": str(resume_path),
+                        "weights_only": weights_only_resume,
                         "start_epoch": start_epoch,
                         "learning_rate_config": config_generator_lr,
                         "weight_decay": resume_weight_decay,
@@ -2385,6 +2627,7 @@ def main() -> None:
                 warmup_start_factor=warmup_start_factor,
                 base_lr=base_lr,
                 optimizer_step_offset=optimizer_step_offset,
+                rmse_buffer=rmse_buffer,
             )
             optimizer_step_offset += optimizer_steps_this_epoch
             train_seconds = time.perf_counter() - train_started
@@ -2592,7 +2835,7 @@ def main() -> None:
                 best_path = out_dir / "best_model.pt"
                 if not best_path.exists():
                     raise FileNotFoundError(f"Best checkpoint not found for rewind: {best_path}")
-                _rewind_training_state_from_checkpoint(
+                rewind_layout_is_exact = _rewind_training_state_from_checkpoint(
                     best_path,
                     device,
                     generator_for_training,
@@ -2604,6 +2847,8 @@ def main() -> None:
                     optimizer_d,
                     scaler_d,
                 )
+                if not rewind_layout_is_exact and is_main_process(rank):
+                    print("[rewind] Best checkpoint layout differs from the current model; optimizer/scheduler/scaler state was reinitialized.")
                 apply_optimizer_hparams_from_cfg(
                     optimizer_g,
                     learning_rate=float(cfg["training"].get("learning_rate", cfg["training"].get("generator_lr", 3e-5))),
