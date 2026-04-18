@@ -471,6 +471,41 @@ def _highpass_residual_db(values_db: torch.Tensor, sigma_px: float) -> torch.Ten
     return values_db - _gaussian_blur_2d(values_db, sigma_px)
 
 
+def _local_std_2d(image: torch.Tensor, sigma_px: float) -> torch.Tensor:
+    mean = _gaussian_blur_2d(image, sigma_px)
+    var = _gaussian_blur_2d((image - mean) ** 2, sigma_px)
+    return torch.sqrt(var.clamp_min(0.0) + 1.0e-8)
+
+
+def _resolve_region_mask(
+    mask: torch.Tensor,
+    input_batch: torch.Tensor,
+    cfg: Dict[str, Any],
+    threshold: float,
+    region: str,
+) -> torch.Tensor:
+    """Return a [B,1,H,W] mask for the target region (los|nlos).
+
+    If the LoS input channel is present (use_los_as_input=true and cfg/input
+    agree), combine ``mask`` with the LoS channel thresholded accordingly.
+    Otherwise fall back to ``mask`` alone -- appropriate when the caller has
+    already filtered pixels via the expert's region mask (e.g. los_region_mask_mode).
+    """
+    has_los_channel = (
+        uses_los_input_channel(cfg)
+        and input_batch.ndim == 4
+        and input_batch.shape[1] >= 2
+    )
+    if not has_los_channel:
+        return mask
+    los = input_batch[:, 1:2].clamp(0.0, 1.0)
+    if region == "los":
+        sel = (los > threshold).to(mask.dtype)
+    else:
+        sel = (los <= threshold).to(mask.dtype)
+    return mask * sel
+
+
 def compute_los_highpass_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -482,38 +517,53 @@ def compute_los_highpass_loss(
     hp_cfg = dict(cfg.get("los_highpass_loss", {}))
     if not bool(hp_cfg.get("enabled", False)):
         return torch.zeros((), device=pred.device)
-    if not uses_los_input_channel(cfg):
-        return torch.zeros((), device=pred.device)
-    if input_batch.shape[1] < 2:
-        return torch.zeros((), device=pred.device)
 
-    sigma_px = max(float(hp_cfg.get("sigma_px", 3.0)), 0.0)
+    # Multi-scale: sigma_px_list takes precedence; else fall back to sigma_px.
+    sigma_list = hp_cfg.get("sigma_px_list", None)
+    if sigma_list is None:
+        sigma_list = [float(hp_cfg.get("sigma_px", 3.0))]
+    sigma_list = [max(float(s), 0.0) for s in sigma_list]
     threshold = float(hp_cfg.get("los_threshold", 0.5))
-    los = input_batch[:, 1:2].clamp(0.0, 1.0)
-    los_valid = mask * (los > threshold).to(mask.dtype)
+    los_valid = _resolve_region_mask(mask, input_batch, cfg, threshold, "los")
     denom = los_valid.sum().clamp_min(1.0)
 
     pred_db = denormalize(pred, metadata)
     target_db = denormalize(target, metadata)
-    pred_hp = _highpass_residual_db(pred_db, sigma_px)
-    target_hp = _highpass_residual_db(target_db, sigma_px)
-    diff_hp = pred_hp - target_hp
+    scale_db = max(float(metadata.get("scale", 180.0)), 1.0)
 
     mode = str(hp_cfg.get("mode", "l2")).lower()
-    if mode == "l1":
-        base = (torch.abs(diff_hp) * los_valid).sum() / denom
-        normalized = base / max(float(metadata.get("scale", 180.0)), 1.0)
-    elif mode == "rmse":
-        mse = ((diff_hp ** 2) * los_valid).sum() / denom
-        base = torch.sqrt(mse + 1.0e-12)
-        normalized = base / max(float(metadata.get("scale", 180.0)), 1.0)
-    else:
-        base = ((diff_hp ** 2) * los_valid).sum() / denom
-        scale_db = max(float(metadata.get("scale", 180.0)), 1.0)
-        normalized = base / (scale_db ** 2)
+    std_window_px = float(hp_cfg.get("local_std_window_px", 7.0))
 
+    total = torch.zeros((), device=pred.device)
+    for sigma_px in sigma_list:
+        pred_hp = _highpass_residual_db(pred_db, sigma_px)
+        target_hp = _highpass_residual_db(target_db, sigma_px)
+
+        if mode == "local_std":
+            # Phase-insensitive: match local std of the highpass residual.
+            pred_std = _local_std_2d(pred_hp, std_window_px)
+            tgt_std = _local_std_2d(target_hp, std_window_px)
+            diff = pred_std - tgt_std
+            base = ((diff ** 2) * los_valid).sum() / denom
+            normalized = base / scale_db  # dB² -> dB-like via /scale
+        elif mode == "l1":
+            diff_hp = pred_hp - target_hp
+            base = (torch.abs(diff_hp) * los_valid).sum() / denom
+            normalized = base / scale_db
+        elif mode == "rmse":
+            diff_hp = pred_hp - target_hp
+            mse = ((diff_hp ** 2) * los_valid).sum() / denom
+            normalized = torch.sqrt(mse + 1.0e-12) / scale_db
+        else:  # l2
+            diff_hp = pred_hp - target_hp
+            base = ((diff_hp ** 2) * los_valid).sum() / denom
+            normalized = base / scale_db
+
+        total = total + normalized
+
+    total = total / max(len(sigma_list), 1)
     loss_weight = float(hp_cfg.get("loss_weight", 0.1))
-    return loss_weight * normalized
+    return loss_weight * total
 
 
 def _sobel_gradients(values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -549,15 +599,10 @@ def compute_los_gradient_magnitude_loss(
     grad_cfg = dict(cfg.get("los_gradient_magnitude_loss", {}))
     if not bool(grad_cfg.get("enabled", False)):
         return torch.zeros((), device=pred.device)
-    if not uses_los_input_channel(cfg):
-        return torch.zeros((), device=pred.device)
-    if input_batch.shape[1] < 2:
-        return torch.zeros((), device=pred.device)
 
     threshold = float(grad_cfg.get("los_threshold", 0.5))
     eps = max(float(grad_cfg.get("eps", 1.0e-6)), 1.0e-12)
-    los = input_batch[:, 1:2].clamp(0.0, 1.0)
-    los_valid = mask * (los > threshold).to(mask.dtype)
+    los_valid = _resolve_region_mask(mask, input_batch, cfg, threshold, "los")
     denom = los_valid.sum().clamp_min(1.0)
 
     pred_db = denormalize(pred, metadata)
@@ -569,7 +614,7 @@ def compute_los_gradient_magnitude_loss(
 
     mse = (((pred_mag - tgt_mag) ** 2) * los_valid).sum() / denom
     scale_db = max(float(metadata.get("scale", 180.0)), 1.0)
-    normalized = mse / (scale_db ** 2)
+    normalized = mse / scale_db
     return float(grad_cfg.get("loss_weight", 0.05)) * normalized
 
 
@@ -584,19 +629,15 @@ def compute_los_laplacian_pyramid_loss(
     lap_cfg = dict(cfg.get("los_laplacian_pyramid_loss", {}))
     if not bool(lap_cfg.get("enabled", False)):
         return torch.zeros((), device=pred.device)
-    if not uses_los_input_channel(cfg):
-        return torch.zeros((), device=pred.device)
-    if input_batch.shape[1] < 2:
-        return torch.zeros((), device=pred.device)
 
     levels = max(int(lap_cfg.get("levels", 3)), 1)
     threshold = float(lap_cfg.get("los_threshold", 0.5))
     min_valid_ratio = float(lap_cfg.get("min_valid_ratio", 0.25))
-    los = input_batch[:, 1:2].clamp(0.0, 1.0)
+    coarse_emphasis = bool(lap_cfg.get("coarse_emphasis", True))
 
     pred_level = denormalize(pred, metadata)
     target_level = denormalize(target, metadata)
-    los_mask_level = mask * (los > threshold).to(mask.dtype)
+    los_mask_level = _resolve_region_mask(mask, input_batch, cfg, threshold, "los")
 
     total = torch.zeros((), device=pred.device)
     total_weight = 0.0
@@ -615,7 +656,7 @@ def compute_los_laplacian_pyramid_loss(
         denom = valid.sum().clamp_min(1.0)
         mse = (((lap_pred - lap_tgt) ** 2) * valid).sum() / denom
 
-        level_weight = 1.0 / (2.0 ** level)
+        level_weight = (2.0 ** level) if coarse_emphasis else (1.0 / (2.0 ** level))
         total = total + level_weight * mse
         total_weight += float(level_weight)
 
@@ -626,7 +667,7 @@ def compute_los_laplacian_pyramid_loss(
     if total_weight <= 0.0:
         return torch.zeros((), device=pred.device)
     scale_db = max(float(metadata.get("scale", 180.0)), 1.0)
-    normalized = (total / total_weight) / (scale_db ** 2)
+    normalized = (total / total_weight) / scale_db
     return float(lap_cfg.get("loss_weight", 0.05)) * normalized
 
 
@@ -641,16 +682,11 @@ def compute_nlos_dog_loss(
     dog_cfg = dict(cfg.get("nlos_dog_loss", {}))
     if not bool(dog_cfg.get("enabled", False)):
         return torch.zeros((), device=pred.device)
-    if not uses_los_input_channel(cfg):
-        return torch.zeros((), device=pred.device)
-    if input_batch.shape[1] < 2:
-        return torch.zeros((), device=pred.device)
 
     threshold = float(dog_cfg.get("los_threshold", 0.5))
     sigma_small = max(float(dog_cfg.get("sigma_small_px", 2.0)), 0.0)
     sigma_large = max(float(dog_cfg.get("sigma_large_px", 6.0)), sigma_small + 1.0e-3)
-    los = input_batch[:, 1:2].clamp(0.0, 1.0)
-    nlos_valid = mask * (los <= threshold).to(mask.dtype)
+    nlos_valid = _resolve_region_mask(mask, input_batch, cfg, threshold, "nlos")
     denom = nlos_valid.sum().clamp_min(1.0)
 
     pred_db = denormalize(pred, metadata)
@@ -675,17 +711,12 @@ def compute_nlos_gradient_magnitude_loss(
     grad_cfg = dict(cfg.get("nlos_gradmag_loss", {}))
     if not bool(grad_cfg.get("enabled", False)):
         return torch.zeros((), device=pred.device)
-    if not uses_los_input_channel(cfg):
-        return torch.zeros((), device=pred.device)
-    if input_batch.shape[1] < 2:
-        return torch.zeros((), device=pred.device)
 
     threshold = float(grad_cfg.get("los_threshold", 0.5))
     eps = max(float(grad_cfg.get("eps", 1.0e-6)), 1.0e-12)
     boundary_boost = max(float(grad_cfg.get("boundary_boost", 1.0)), 1.0)
 
-    los = input_batch[:, 1:2].clamp(0.0, 1.0)
-    nlos_valid = mask * (los <= threshold).to(mask.dtype)
+    nlos_valid = _resolve_region_mask(mask, input_batch, cfg, threshold, "nlos")
 
     pred_db = denormalize(pred, metadata)
     target_db = denormalize(target, metadata)
@@ -695,7 +726,8 @@ def compute_nlos_gradient_magnitude_loss(
     tgt_mag = torch.sqrt(tgt_gx.pow(2) + tgt_gy.pow(2) + eps)
 
     weight_map = nlos_valid
-    if boundary_boost > 1.0:
+    if boundary_boost > 1.0 and uses_los_input_channel(cfg) and input_batch.shape[1] >= 2:
+        los = input_batch[:, 1:2].clamp(0.0, 1.0)
         los_bin = (los > threshold).to(pred.dtype)
         edge_x, edge_y = _sobel_gradients(los_bin)
         edge_mag = torch.sqrt(edge_x.pow(2) + edge_y.pow(2) + eps)
@@ -721,20 +753,15 @@ def compute_nlos_laplacian_pyramid_loss(
     lap_cfg = dict(cfg.get("nlos_laplacian_pyramid_loss", {}))
     if not bool(lap_cfg.get("enabled", False)):
         return torch.zeros((), device=pred.device)
-    if not uses_los_input_channel(cfg):
-        return torch.zeros((), device=pred.device)
-    if input_batch.shape[1] < 2:
-        return torch.zeros((), device=pred.device)
 
     levels = max(int(lap_cfg.get("levels", 3)), 1)
     threshold = float(lap_cfg.get("los_threshold", 0.5))
     min_valid_ratio = float(lap_cfg.get("min_valid_ratio", 0.25))
     coarse_emphasis = bool(lap_cfg.get("coarse_emphasis", True))
-    los = input_batch[:, 1:2].clamp(0.0, 1.0)
 
     pred_level = denormalize(pred, metadata)
     target_level = denormalize(target, metadata)
-    nlos_mask_level = mask * (los <= threshold).to(mask.dtype)
+    nlos_mask_level = _resolve_region_mask(mask, input_batch, cfg, threshold, "nlos")
 
     total = torch.zeros((), device=pred.device)
     total_weight = 0.0

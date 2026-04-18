@@ -283,6 +283,60 @@ def merge_csv_heights_into_index(
     return n
 
 
+def build_scene_stats_index(hdf5_path: Path) -> Dict[Tuple[str, str], Dict[str, float]]:
+    """Index scene-level stats from los_mask/topology_map in HDF5."""
+    import h5py
+
+    idx: Dict[Tuple[str, str], Dict[str, float]] = {}
+    if not hdf5_path.is_file():
+        return idx
+
+    with h5py.File(hdf5_path, "r") as handle:
+        for city in handle.keys():
+            cg = handle[city]
+            if not isinstance(cg, h5py.Group):
+                continue
+            for sample in cg.keys():
+                grp = cg[sample]
+                if not isinstance(grp, h5py.Group):
+                    continue
+                if "los_mask" not in grp or "topology_map" not in grp:
+                    continue
+                try:
+                    los = np.asarray(grp["los_mask"][...], dtype=np.float32)
+                    topo = np.asarray(grp["topology_map"][...], dtype=np.float32)
+                except (OSError, TypeError, ValueError):
+                    continue
+                if los.shape != topo.shape or los.size == 0:
+                    continue
+
+                valid = np.isfinite(los) & np.isfinite(topo)
+                n_valid = int(valid.sum())
+                if n_valid <= 0:
+                    continue
+
+                los_m = los > 0.5
+                building_m = topo > 0.0
+
+                los_pct = float(100.0 * np.mean(los_m[valid]))
+                nlos_pct = float(100.0 - los_pct)
+                building_pct = float(100.0 * np.mean(building_m[valid]))
+                non_building_pct = float(100.0 - building_pct)
+
+                b_valid = building_m & valid
+                mean_building_h = float(np.mean(topo[b_valid])) if np.any(b_valid) else float("nan")
+
+                key = (_sanitize(str(city)), _sanitize(str(sample)))
+                idx[key] = {
+                    "los_pct": los_pct,
+                    "nlos_pct": nlos_pct,
+                    "building_pct": building_pct,
+                    "non_building_pct": non_building_pct,
+                    "mean_building_height_m": mean_building_h,
+                }
+    return idx
+
+
 def lookup_uav_height_m(
     height_idx: Dict[Tuple[str, str], float],
     city: str,
@@ -296,6 +350,21 @@ def lookup_uav_height_m(
     for (kc, ks), v in height_idx.items():
         if kc.lower() == c_l and ks.lower() == s_l:
             return v
+    return None
+
+
+def lookup_scene_stats(
+    stats_idx: Dict[Tuple[str, str], Dict[str, float]],
+    city: str,
+    sample: str,
+) -> Optional[Dict[str, float]]:
+    key = (city, sample)
+    if key in stats_idx:
+        return stats_idx[key]
+    c_l, s_l = city.lower(), sample.lower()
+    for (kc, ks), stats in stats_idx.items():
+        if kc.lower() == c_l and ks.lower() == s_l:
+            return stats
     return None
 
 
@@ -370,6 +439,7 @@ def build_panel_for_sample(
     label_bar_h: int,
     uav_height_m: Optional[float] = None,
     map_size_px: Optional[Tuple[int, int]] = None,
+    scene_stats: Optional[Dict[str, float]] = None,
 ) -> Image.Image:
     """Build 2×4 grid with a readable title on each tile."""
     # Row 0: inputs / GT context
@@ -435,6 +505,16 @@ def build_panel_for_sample(
         "Row 1: topology, LoS, and ground-truth reference maps\n"
         "Row 2: angular spread (GT) and model predictions (path loss, delay spread, angular spread)\n"
         f"{h_txt}\n"
+        + (
+            "LoS/NLoS: "
+            f"{scene_stats.get('los_pct', float('nan')):.2f}% / {scene_stats.get('nlos_pct', float('nan')):.2f}% | "
+            "Buildings/non-buildings: "
+            f"{scene_stats.get('building_pct', float('nan')):.2f}% / {scene_stats.get('non_building_pct', float('nan')):.2f}% | "
+            "Mean building height: "
+            f"{scene_stats.get('mean_building_height_m', float('nan')):.2f} m\n"
+            if scene_stats is not None
+            else "LoS/NLoS + building stats: unavailable\n"
+        )
         f"{ms_txt}\n"
         "Filename tag 2x4 = this 2-by-4 tile grid; h…m suffix = same UAV height rounded for the file name."
     )
@@ -529,6 +609,7 @@ def main() -> None:
 
     hdf5_path = Path(args.hdf5)
     height_idx = build_antenna_height_index_m(hdf5_path)
+    scene_stats_idx = build_scene_stats_index(hdf5_path)
     if not height_idx and hdf5_path.is_file():
         print(f"[warn] HDF5 found but no uav_height entries indexed: {hdf5_path}")
     elif not hdf5_path.is_file():
@@ -598,6 +679,7 @@ def main() -> None:
             args.label_bar_h,
             uav_height_m=h_m,
             map_size_px=map_wh,
+            scene_stats=lookup_scene_stats(scene_stats_idx, city, sample),
         )
         dest_dir = out_root / city
         dest_dir.mkdir(parents=True, exist_ok=True)

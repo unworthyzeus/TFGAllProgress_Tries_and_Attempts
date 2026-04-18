@@ -36,10 +36,12 @@ from build_alltogether_panel import (
     DEFAULT_SCALAR_CSV,
     build_antenna_height_from_csv,
     build_antenna_height_index_m,
+    build_scene_stats_index,
     cell_with_label_bar,
     height_suffix_for_filename,
     iter_samples,
     load_rgb,
+    lookup_scene_stats,
     lookup_uav_height_m,
     merge_csv_heights_into_index,
     prediction_map_from_gt_pred_png,
@@ -209,6 +211,7 @@ def build_panel(
     cell_h: int,
     label_bar_h: int,
     uav_height_m: Optional[float],
+    scene_stats: Optional[dict[str, float]],
 ) -> Image.Image:
     topology = load_rgb(sample_dir / "topology_map.png")
     los_mask = load_rgb(sample_dir / "los_mask.png")
@@ -283,6 +286,17 @@ def build_panel(
     )
     if uav_height_m is not None and np.isfinite(float(uav_height_m)):
         header += f"\nUAV / antenna height: {float(uav_height_m):.4f} m"
+    if scene_stats is not None:
+        header += (
+            "\nLoS/NLoS: "
+            f"{scene_stats.get('los_pct', float('nan')):.2f}% / {scene_stats.get('nlos_pct', float('nan')):.2f}%"
+            " | Buildings/non-buildings: "
+            f"{scene_stats.get('building_pct', float('nan')):.2f}% / {scene_stats.get('non_building_pct', float('nan')):.2f}%"
+            " | Mean building height: "
+            f"{scene_stats.get('mean_building_height_m', float('nan')):.2f} m"
+        )
+    else:
+        header += "\nLoS/NLoS + building stats: unavailable"
     font = _pick_font(header, grid_w, header_h - 4, max_size=12)
     _draw_multiline(draw, grid_w, header_h, header, font)
     draw.line((0, header_h - 1, grid_w, header_h - 1), fill=(140, 145, 155), width=1)
@@ -313,6 +327,7 @@ def main() -> None:
 
     hdf5_path = Path(args.hdf5)
     height_idx = build_antenna_height_index_m(hdf5_path) if hdf5_path.is_file() else {}
+    scene_stats_idx = build_scene_stats_index(hdf5_path) if hdf5_path.is_file() else {}
     csv_path = Path(args.scalar_csv)
     if csv_path.is_file():
         if args.prefer_hdf5_uav_height:
@@ -341,6 +356,7 @@ def main() -> None:
             cell_h=args.cell_h,
             label_bar_h=args.label_bar_h,
             uav_height_m=uav_height_m,
+            scene_stats=lookup_scene_stats(scene_stats_idx, city, sample),
         )
         city_out = out_root / city
         city_out.mkdir(parents=True, exist_ok=True)

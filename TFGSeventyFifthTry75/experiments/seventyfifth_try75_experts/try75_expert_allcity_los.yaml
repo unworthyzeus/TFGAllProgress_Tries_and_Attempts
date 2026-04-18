@@ -61,11 +61,11 @@ data:
   elevation_angle_map_channel: true
   building_mask_channel: true
   val_batch_size: 1
-  use_los_as_input: false
+  use_los_as_input: true
   los_region_mask_mode: los_only
   los_region_mask_threshold: 0.5
 model:
-  base_channels: 48
+  base_channels: 60
   disc_base_channels: 0
   disc_norm_type: group
   disc_input_downsample_factor: 1
@@ -80,12 +80,12 @@ model:
   - 4
   - 8
   dropout: 0.12
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   out_channels: 1
   use_scalar_channels: true
   norm_type: group
   arch: pmhhnet
-  in_channels: 9
+  in_channels: 10
   hf_channels: 20
   use_scalar_film: true
   use_se_attention: true
@@ -178,8 +178,8 @@ augmentation:
   rot90_prob: 0.5
 runtime:
   device: cuda
-  output_dir: outputs/try75_expert_allcity_los
-  resume_checkpoint: ../TFGSeventyFourthTry74/outputs/try74_expert_band4555_allcity_los/best_model.pt
+  output_dir: outputs/try75_expert_allcity_los_small
+  resume_checkpoint: ''
 target_columns:
 - path_loss
 target_losses:
@@ -199,8 +199,8 @@ no_data_auxiliary:
 nlos_focus_loss:
   enabled: false
 pde_residual_loss:
-  enabled: true
-  loss_weight: 0.01
+  enabled: false
+  loss_weight: 0.0
 dual_los_nlos_head:
   enabled: false
 test_time_augmentation:
@@ -209,37 +209,39 @@ test_time_augmentation:
   use_in_validation: false
   use_in_final_test: true
 los_highpass_loss:
-  enabled: true
-  loss_weight: 0.1
-  sigma_px: 3.0
-  mode: l2
+  enabled: false
+  loss_weight: 0.0
+  mode: local_std
+  sigma_px_list: [2.0, 4.0, 8.0]
+  local_std_window_px: 7.0
   los_threshold: 0.5
 los_gradient_magnitude_loss:
-  enabled: true
-  loss_weight: 0.05
+  enabled: false
+  loss_weight: 0.0
   los_threshold: 0.5
   eps: 1.0e-06
 los_laplacian_pyramid_loss:
-  enabled: true
-  loss_weight: 0.05
+  enabled: false
+  loss_weight: 0.0
   levels: 3
   los_threshold: 0.5
   min_valid_ratio: 0.25
+  coarse_emphasis: true
 nlos_dog_loss:
-  enabled: true
-  loss_weight: 0.08
+  enabled: false
+  loss_weight: 0.0
   sigma_small_px: 2.0
   sigma_large_px: 6.0
   los_threshold: 0.5
 nlos_gradmag_loss:
-  enabled: true
-  loss_weight: 0.06
+  enabled: false
+  loss_weight: 0.0
   los_threshold: 0.5
   boundary_boost: 2.0
   eps: 1.0e-06
 nlos_laplacian_pyramid_loss:
-  enabled: true
-  loss_weight: 0.08
+  enabled: false
+  loss_weight: 0.0
   levels: 3
   los_threshold: 0.5
   min_valid_ratio: 0.25

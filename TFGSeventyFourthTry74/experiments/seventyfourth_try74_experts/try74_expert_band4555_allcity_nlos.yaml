@@ -66,7 +66,7 @@ data:
   los_region_mask_mode: nlos_only
   los_region_mask_threshold: 0.5
 model:
-  base_channels: 48
+  base_channels: 60
   disc_base_channels: 0
   disc_norm_type: group
   disc_input_downsample_factor: 1
@@ -210,37 +210,37 @@ test_time_augmentation:
   use_in_validation: false
   use_in_final_test: true
 los_highpass_loss:
-  enabled: true
-  loss_weight: 0.1
+  enabled: false
+  loss_weight: 0.0
   sigma_px: 3.0
   mode: l2
   los_threshold: 0.5
 los_gradient_magnitude_loss:
-  enabled: true
-  loss_weight: 0.05
+  enabled: false
+  loss_weight: 0.0
   los_threshold: 0.5
   eps: 1.0e-06
 los_laplacian_pyramid_loss:
-  enabled: true
-  loss_weight: 0.05
+  enabled: false
+  loss_weight: 0.0
   levels: 3
   los_threshold: 0.5
   min_valid_ratio: 0.25
 nlos_dog_loss:
-  enabled: true
-  loss_weight: 0.08
+  enabled: false
+  loss_weight: 0.0
   sigma_small_px: 2.0
   sigma_large_px: 6.0
   los_threshold: 0.5
 nlos_gradmag_loss:
-  enabled: true
-  loss_weight: 0.06
+  enabled: false
+  loss_weight: 0.0
   los_threshold: 0.5
   boundary_boost: 2.0
   eps: 1.0e-06
 nlos_laplacian_pyramid_loss:
-  enabled: true
-  loss_weight: 0.08
+  enabled: false
+  loss_weight: 0.0
   levels: 3
   los_threshold: 0.5
   min_valid_ratio: 0.25
