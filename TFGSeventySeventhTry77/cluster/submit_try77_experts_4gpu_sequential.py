@@ -97,6 +97,10 @@ def main() -> None:
     parser.add_argument("--base-master-port", type=int, default=DEFAULT_BASE_MASTER_PORT)
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--wipe-outputs", action="store_true")
+    parser.add_argument("--depend-on-job", default="",
+                        help="Optional existing Slurm job id to depend on before starting the chain.")
+    parser.add_argument("--dependency-type", default="afterany", choices=("afterany", "afterok"),
+                        help="Dependency type used with --depend-on-job (default: afterany).")
     args = parser.parse_args()
 
     password = os.environ.get(args.password_env, "")
@@ -135,7 +139,8 @@ def main() -> None:
         remote_exec(client, f"squeue -u {args.user}", check=False)
 
         sbatch_prefix = f"sbatch --nodelist={args.node}"
-        current_dep = ""
+        dep_job = str(args.depend_on_job).strip()
+        current_dep = f"--dependency={args.dependency_type}:{dep_job} " if dep_job else ""
         submitted: list[tuple[str, str]] = []
 
         for i, row in enumerate(rows):

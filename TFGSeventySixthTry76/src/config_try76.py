@@ -13,8 +13,8 @@ YAML schema (minimal, no inheritance from Try 75):
         topology_class: open_sparse_lowrise
       region_mode: los_only        # or nlos_only
     model:
-      clamp_lo: 60.0
-      clamp_hi: 125.0
+      clamp_lo: 30.0
+      clamp_hi: 178.0
       base_width: 48
       K: 3
       outlier_sigma_floor: 15.0
@@ -56,8 +56,8 @@ class DataSection:
 
 @dataclass
 class ModelSection:
-    clamp_lo: float = 60.0
-    clamp_hi: float = 125.0
+    clamp_lo: float = 30.0
+    clamp_hi: float = 178.0
     base_width: int = 48
     K: int = 5
     outlier_sigma_floor: float = 15.0
@@ -123,8 +123,8 @@ class Try76Cfg:
 
         m = raw.get("model", {}) or {}
         model = ModelSection(
-            clamp_lo=float(m.get("clamp_lo", 60.0)),
-            clamp_hi=float(m.get("clamp_hi", 125.0)),
+            clamp_lo=float(m.get("clamp_lo", 30.0)),
+            clamp_hi=float(m.get("clamp_hi", 178.0)),
             base_width=int(m.get("base_width", 48)),
             K=int(m.get("K", 5)),
             outlier_sigma_floor=float(m.get("outlier_sigma_floor", 15.0)),

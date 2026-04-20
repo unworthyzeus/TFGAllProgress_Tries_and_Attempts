@@ -87,8 +87,8 @@ class GMMHead(nn.Module):
         self,
         feat_dim: int,
         K: int = 3,
-        clamp_lo: float = 60.0,
-        clamp_hi: float = 140.0,
+        clamp_lo: float = 30.0,
+        clamp_hi: float = 178.0,
         sigma_min: float = 1.0,
         sigma_max: float = 30.0,
         outlier_sigma_floor: float = 15.0,
@@ -206,8 +206,8 @@ class Try76ModelConfig:
     height_embed_dim: int = 32  # = 2 * n_freq (16 freqs -> 32 dims)
     base_width: int = 48
     K: int = 5
-    clamp_lo: float = 60.0
-    clamp_hi: float = 140.0
+    clamp_lo: float = 30.0
+    clamp_hi: float = 178.0
     outlier_sigma_floor: float = 15.0
 
 
