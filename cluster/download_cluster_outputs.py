@@ -26,9 +26,10 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import os
+import re
 import sys
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Tuple
 
 try:
     import paramiko
@@ -107,6 +108,67 @@ def should_download(rel_path: str, mode: str) -> bool:
 
 def mkdir_p(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def try_number(try_name: str) -> int | None:
+    match = re.search(r"Try(\d+)$", try_name)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def discover_nested_output_roots(
+    sftp: "paramiko.SFTPClient",
+    try_root: str,
+    max_depth: int = 4,
+) -> List[str]:
+    import stat
+
+    found: List[str] = []
+    stack: List[Tuple[str, int]] = [(try_root, 0)]
+    seen: set[str] = set()
+
+    while stack:
+        remote_dir, depth = stack.pop()
+        if remote_dir in seen or depth > max_depth:
+            continue
+        seen.add(remote_dir)
+        try:
+            entries = sftp.listdir_attr(remote_dir)
+        except FileNotFoundError:
+            continue
+        for ent in entries:
+            if not stat.S_ISDIR(ent.st_mode):
+                continue
+            child = f"{remote_dir}/{ent.filename}"
+            if ent.filename == "outputs":
+                found.append(child)
+                continue
+            stack.append((child, depth + 1))
+
+    return sorted(set(found))
+
+
+def remote_output_roots_for_try(
+    sftp: "paramiko.SFTPClient",
+    try_name: str,
+    remote_root: str,
+) -> List[str]:
+    try_root = f"{remote_root}/{try_name}"
+    roots: List[str] = []
+
+    default_root = f"{try_root}/outputs"
+    if sftp_isdir(sftp, default_root):
+        roots.append(default_root)
+
+    n_try = try_number(try_name)
+    if n_try is None or n_try < 76:
+        return roots
+
+    # Try 76+ sometimes stores outputs nested inside the try folder
+    # (for example under experiments/.../outputs).
+    roots.extend(discover_nested_output_roots(sftp, try_root=try_root))
+    return sorted(set(roots))
 
 
 def download_tree_filtered(
@@ -194,12 +256,12 @@ def main() -> None:
             return
 
         for t in tries:
-            remote_outputs = f"{args.remote_root}/{t}/outputs"
             local_outputs = local_root / t
             total_files = 0
             total_bytes = 0
 
-            if sftp_isdir(sftp, remote_outputs):
+            remote_roots = remote_output_roots_for_try(sftp, t, args.remote_root)
+            for remote_outputs in remote_roots:
                 files, nbytes = download_tree_filtered(
                     sftp,
                     remote_outputs,
@@ -225,7 +287,10 @@ def main() -> None:
             if total_files:
                 print(f"{t}: downloaded {total_files} files ({total_bytes/1024/1024:.1f} MiB) into {local_outputs}")
             else:
-                print(f"{t}: nothing new to download")
+                if remote_roots:
+                    print(f"{t}: nothing new to download")
+                else:
+                    print(f"{t}: no outputs directory found")
         sftp.close()
     finally:
         client.close()

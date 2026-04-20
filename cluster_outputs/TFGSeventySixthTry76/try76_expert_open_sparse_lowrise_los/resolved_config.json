@@ -1,0 +1,38 @@
+{
+  "code_marker": "try76_nanfix_2026-04-20a",
+  "seed": 42,
+  "data": {
+    "hdf5_path": "/scratch/nas/3/gmoreno/TFGpractice/Datasets/CKM_Dataset_270326.h5",
+    "topology_class": "open_sparse_lowrise",
+    "region_mode": "los_only",
+    "val_ratio": 0.15,
+    "test_ratio": 0.15,
+    "split_seed": 42,
+    "image_size": 513,
+    "path_loss_no_data_mask_column": "path_loss_no_data_mask",
+    "derive_no_data_from_non_ground": true
+  },
+  "model": {
+    "clamp_lo": 60.0,
+    "clamp_hi": 125.0,
+    "base_width": 48,
+    "K": 5,
+    "outlier_sigma_floor": 15.0
+  },
+  "training": {
+    "optimizer": "adamw",
+    "lr": 0.0003,
+    "weight_decay": 0.01,
+    "warmup_epochs": 1,
+    "epochs": 120,
+    "batch_size": 1,
+    "grad_accum_steps": 8,
+    "patience": 15,
+    "num_workers": 4
+  },
+  "runtime": {
+    "device": "cuda",
+    "output_dir": "/scratch/nas/3/gmoreno/TFGpractice/TFGSeventySixthTry76/experiments/seventysixth_try76_experts/outputs/try76_expert_open_sparse_lowrise_los",
+    "resume_checkpoint": null
+  }
+}
