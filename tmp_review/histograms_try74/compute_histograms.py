@@ -39,9 +39,11 @@ import argparse
 import csv
 import re
 import sys
+import time
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
+import h5py
 import numpy as np
 import torch
 import yaml
@@ -50,6 +52,20 @@ from torch.utils.data import DataLoader, Subset
 
 ROOT = Path(r"c:/TFG/TFGPractice")
 EVAL_DIR = ROOT / "tmp_review" / "try74_local_eval"
+BASE_COLUMNS = [
+    "city", "sample", "altitude_m", "city_type", "city_type_3", "city_type_6",
+    "try_dir", "expert_mode", "exclude_non_ground_targets",
+]
+ROW_KIND_ORDER = {
+    "target_los": 0,
+    "target_nlos": 1,
+    "pred_los": 2,
+    "pred_nlos": 3,
+    "target_delay_spread": 4,
+    "pred_delay_spread": 5,
+    "target_angular_spread": 6,
+    "pred_angular_spread": 7,
+}
 
 # (try_dir_name, experiments_subdir, registry_filename)
 TRY_CANDIDATES = [
@@ -83,6 +99,7 @@ SPREAD_TRIES = {
         "registry_name": "fiftyninthtry59_expert_registry.yaml",
     },
 }
+REFRESHABLE_SPREAD_METRICS = ("delay_spread", "angular_spread")
 
 
 def histogram_db(values_db: np.ndarray, lo: int, hi: int) -> np.ndarray:
@@ -143,6 +160,274 @@ def infer_city_types_from_topology(topo_meters: np.ndarray, non_ground_threshold
     heights = topo_meters[non_ground]
     mean_h = float(np.mean(heights)) if heights.size else 0.0
     return infer_city_type_3(density, mean_h), infer_city_type_6(density, mean_h)
+
+
+def normalize_device_name(device_str: str, resolved_device: Any | None = None) -> str:
+    raw = str(device_str).lower()
+    if raw in {"directml", "dml", "amd"}:
+        return "directml"
+    if raw in {"cuda", "cpu"}:
+        return raw
+
+    resolved = str(getattr(resolved_device, "type", resolved_device)).lower() if resolved_device is not None else raw
+    if "cuda" in resolved:
+        return "cuda"
+    if "directml" in resolved or "dml" in resolved or "privateuseone" in resolved:
+        return "directml"
+    if "cpu" in resolved:
+        return "cpu"
+    return raw
+
+
+def choose_eval_batch_size(device_str: str, resolved_device: Any, requested_batch_size: int) -> int:
+    if requested_batch_size and requested_batch_size > 0:
+        return int(requested_batch_size)
+    device_name = normalize_device_name(device_str, resolved_device)
+    if device_name == "cuda":
+        return 8
+    if device_name == "directml":
+        return 4
+    return 1
+
+
+def inference_context(device_str: str, resolved_device: Any):
+    device_name = normalize_device_name(device_str, resolved_device)
+    if device_name == "directml":
+        # DirectML can fail with inference tensors inside some model forwards.
+        return torch.no_grad()
+    return torch.inference_mode()
+
+
+def should_log_progress(processed: int, total: int, every: int, last_logged: int) -> bool:
+    if total <= 0:
+        return False
+    if processed >= total:
+        return processed != last_logged
+    if every <= 0:
+        return False
+    return (processed - last_logged) >= every
+
+
+def format_progress_line(prefix: str, processed: int, total: int, elapsed_s: float) -> str:
+    pct = (100.0 * processed / total) if total > 0 else 0.0
+    rate = (processed / elapsed_s) if elapsed_s > 0 else 0.0
+    return (
+        f"{prefix} {processed}/{total} "
+        f"({pct:5.1f}%) elapsed={elapsed_s:7.1f}s rate={rate:6.2f} samples/s"
+    )
+
+
+def infer_base_channels_from_state_dict(sd: dict[str, Any]) -> int | None:
+    probe_keys = [
+        "stem.0.block.0.weight",
+        "stem.block.0.weight",
+        "lat1.block.0.weight",
+        "head.2.weight",
+    ]
+    for key in probe_keys:
+        tensor = sd.get(key)
+        if not isinstance(tensor, torch.Tensor):
+            continue
+        if key == "head.2.weight":
+            if tensor.ndim >= 2 and int(tensor.shape[1]) > 0:
+                return int(tensor.shape[1]) // 2
+        elif tensor.ndim >= 1 and int(tensor.shape[0]) > 0:
+            return int(tensor.shape[0])
+    return None
+
+
+def sort_rows_for_sample(rows: list[list]) -> list[list]:
+    return sorted(
+        rows,
+        key=lambda row: (
+            ROW_KIND_ORDER.get(str(row[12]), 99),
+            str(row[11]),
+            str(row[9]),
+            str(row[10]),
+        ),
+    )
+
+
+def load_preserved_rows(
+    csv_path: Path,
+    header: list[str],
+    drop_metrics: set[str] | None = None,
+) -> tuple[
+    dict[str, list[list]],
+    dict[str, list],
+    dict[str, str],
+    list[str],
+]:
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV not found: {csv_path}")
+
+    drop_metrics = set(drop_metrics or set())
+
+    sample_rows: dict[str, list[list]] = {}
+    sample_base: dict[str, list] = {}
+    sample_city_type_6: dict[str, str] = {}
+    sample_order: list[str] = []
+
+    with csv_path.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = list(reader.fieldnames or [])
+        missing = [col for col in header if col not in fieldnames and not (col.startswith("b") and col[1:].lstrip("-").isdigit())]
+        if missing:
+            raise RuntimeError(f"Input CSV is missing required columns: {missing}")
+
+        for row in reader:
+            metric = str(row.get("metric", "")).strip()
+            if metric in drop_metrics:
+                continue
+            city = str(row.get("city", ""))
+            sample = str(row.get("sample", ""))
+            if not city or not sample:
+                continue
+            key = f"{city}/{sample}"
+            row_list = []
+            for col in header:
+                if col in fieldnames:
+                    row_list.append(row.get(col, ""))
+                elif col.startswith("b") and col[1:].lstrip("-").isdigit():
+                    row_list.append("0")
+                else:
+                    row_list.append("")
+            if key not in sample_rows:
+                sample_rows[key] = []
+                sample_order.append(key)
+                sample_base[key] = [row.get(col, "") for col in BASE_COLUMNS]
+                sample_city_type_6[key] = str(row.get("city_type_6", ""))
+            sample_rows[key].append(row_list)
+
+    for key in sample_order:
+        sample_rows[key] = sort_rows_for_sample(sample_rows.get(key, []))
+
+    return sample_rows, sample_base, sample_city_type_6, sample_order
+
+
+def metric_selection_mask(metric: str, values: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
+    sel = valid_mask & np.isfinite(values)
+    if metric == "delay_spread":
+        sel &= values > 0.0
+    return sel
+
+
+def resolve_hdf5_path_from_config(config_path: Path) -> Path:
+    with config_path.open("r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    hdf5_rel = str(cfg.get("data", {}).get("hdf5_path", "")).strip()
+    if not hdf5_rel:
+        raise RuntimeError(f"Could not resolve data.hdf5_path from {config_path}")
+    candidate = (config_path.parent / hdf5_rel).resolve()
+    if candidate.exists():
+        return candidate
+
+    fallback = ROOT / "datasets" / Path(hdf5_rel).name
+    if fallback.exists():
+        print(f"[hdf5] config path missing, using datasets fallback: {fallback}")
+        return fallback
+
+    raise FileNotFoundError(
+        "Unable to resolve HDF5 path from config. Tried: "
+        f"{candidate} and {fallback}"
+    )
+
+
+def append_histogram_row(
+    sample_rows: dict[str, list[list]],
+    key: str,
+    base: list,
+    expert_id: str,
+    expert_region: str,
+    metric: str,
+    kind: str,
+    total_pixels: int,
+    histogram: np.ndarray,
+) -> None:
+    sample_rows.setdefault(key, []).append([
+        *base,
+        expert_id,
+        expert_region,
+        metric,
+        kind,
+        int(total_pixels),
+        *[int(v) for v in histogram],
+    ])
+
+
+def collect_sample_contexts(
+    try_root: Path,
+    config_path: Path,
+    split: str,
+    required_keys: set[str],
+    exclude_building_pixels: bool,
+) -> dict[str, dict[str, Any]]:
+    if not required_keys:
+        return {}
+
+    del try_root, split
+    hdf5_path = resolve_hdf5_path_from_config(config_path)
+    with config_path.open("r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    non_ground_threshold = float(cfg.get("data", {}).get("non_ground_threshold", 0.0))
+    contexts: dict[str, dict[str, Any]] = {}
+
+    required_list = sorted(required_keys)
+    print("[spread-refresh] context from raw HDF5 only; no model features/precomputed obstruction inputs")
+    print(f"[spread-refresh] loading sample context directly from HDF5: {len(required_list)} sample(s)")
+    with h5py.File(hdf5_path, "r") as handle:
+        for idx, key in enumerate(required_list, start=1):
+            city, sample_ref = key.split("/", 1)
+            if city not in handle or sample_ref not in handle[city]:
+                continue
+            grp = handle[city][sample_ref]
+            ant_h = float("nan")
+            if "uav_height" in grp:
+                arr = np.asarray(grp["uav_height"][...], dtype=np.float64).reshape(-1)
+                if arr.size:
+                    ant_h = float(arr[0])
+
+            path_loss = None
+            delay_gt = None
+            angular_gt = None
+            city_type_3 = ""
+            city_type_6 = ""
+            ground_mask = None
+            if "path_loss" in grp:
+                path_loss = np.asarray(grp["path_loss"][...], dtype=np.float32)
+            if "topology_map" in grp:
+                topo = np.asarray(grp["topology_map"][...], dtype=np.float32)
+                ground_mask = topo == 0.0
+                city_type_3, city_type_6 = infer_city_types_from_topology(
+                    topo,
+                    non_ground_threshold=non_ground_threshold,
+                )
+            if "delay_spread" in grp:
+                delay_gt = np.asarray(grp["delay_spread"][...], dtype=np.float32)
+            if "angular_spread" in grp:
+                angular_gt = np.asarray(grp["angular_spread"][...], dtype=np.float32)
+
+            if path_loss is None:
+                continue
+            vm_np = np.isfinite(path_loss) & (path_loss > 0.0)
+            if exclude_building_pixels and ground_mask is not None and ground_mask.shape == vm_np.shape:
+                vm_np &= ground_mask
+
+            contexts[key] = {
+                "altitude_m": ant_h,
+                "city_type_3": city_type_3,
+                "city_type_6": city_type_6,
+                "vm_np": vm_np,
+                "delay_gt": delay_gt,
+                "angular_gt": angular_gt,
+            }
+            if idx % 250 == 0 or idx == len(required_list):
+                print(f"[spread-refresh] loaded {idx}/{len(required_list)} sample(s)")
+
+    missing = sorted(required_keys - set(contexts.keys()))
+    if missing:
+        print(f"[warn] sample context missing for {len(missing)} sample(s)")
+    return contexts
 
 
 def _resolve_spread_checkpoint_path(
@@ -239,6 +524,9 @@ def run_spread_checkpoint(
     split: str,
     device_str: str,
     max_samples: int,
+    eval_batch_size: int,
+    eval_num_workers: int,
+    progress_every: int,
     required_keys: set[str] | None = None,
 ) -> dict[str, np.ndarray]:
     """Return sample_key -> predicted physical map for a spread expert checkpoint."""
@@ -257,6 +545,7 @@ def run_spread_checkpoint(
 
     from config_utils import load_config, anchor_data_paths_to_config_file, resolve_device, load_torch_checkpoint  # type: ignore
     from data_utils import (  # type: ignore
+        build_dataset_splits_from_config,
         build_datasets_from_config,
         unpack_expert_batch,
         forward_expert_model,
@@ -270,11 +559,14 @@ def run_spread_checkpoint(
     cfg = load_config(str(config_path))
     anchor_data_paths_to_config_file(cfg, str(config_path))
     cfg.setdefault("runtime", {})["device"] = device_str
-    cfg.setdefault("training", {})["batch_size"] = 1
     cfg.setdefault("augmentation", {})["enable"] = False
-    cfg["data"]["num_workers"] = 0
 
-    datasets_obj = build_datasets_from_config(cfg)
+    datasets: dict[str, Any]
+    try:
+        datasets_obj = build_dataset_splits_from_config(cfg)
+    except Exception:
+        datasets_obj = build_datasets_from_config(cfg)
+
     if isinstance(datasets_obj, dict):
         datasets = datasets_obj
     elif isinstance(datasets_obj, (tuple, list)):
@@ -289,41 +581,45 @@ def run_spread_checkpoint(
         print(f"[warn] spread {metric}: unsupported datasets type {type(datasets_obj)!r}")
         return {}
 
-    if split not in datasets:
-        return {}
-    dataset = datasets[split]
-
-    selected_keys_in_order: list[str] | None = None
-    if required_keys:
-        refs = getattr(dataset, "sample_refs", None)
-        if refs is None:
-            print(f"[warn] spread {metric}: dataset has no sample_refs; cannot filter required keys")
-            return {}
-        key_to_idx = {f"{city}/{sample}": i for i, (city, sample) in enumerate(refs)}
-        selected: list[tuple[int, str]] = []
-        for key in required_keys:
-            idx = key_to_idx.get(key)
-            if idx is not None:
-                selected.append((idx, key))
-        if not selected:
-            return {}
-        selected.sort(key=lambda t: t[0])
-        selected_indices = [idx for idx, _ in selected]
-        selected_keys_in_order = [key for _, key in selected]
-        dataset_for_loader = Subset(dataset, selected_indices)
-    else:
-        dataset_for_loader = dataset
-
-    loader = DataLoader(
-        dataset_for_loader,
-        batch_size=1,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=False,
-        persistent_workers=False,
-    )
-
     device = resolve_device(device_str)
+    actual_batch_size = choose_eval_batch_size(device_str, device, eval_batch_size)
+
+    dataset_segments: list[tuple[str, Any, list[str] | None, Any]] = []
+    if required_keys:
+        remaining_keys = set(required_keys)
+        for split_name, dataset in datasets.items():
+            refs = getattr(dataset, "sample_refs", None)
+            if refs is None:
+                continue
+            selected: list[tuple[int, str]] = []
+            for idx, (city, sample) in enumerate(refs):
+                key = f"{city}/{sample}"
+                if key in remaining_keys:
+                    selected.append((idx, key))
+            if not selected:
+                continue
+            selected.sort(key=lambda t: t[0])
+            selected_indices = [idx for idx, _ in selected]
+            selected_keys_in_order = [key for _, key in selected]
+            dataset_segments.append(
+                (
+                    split_name,
+                    dataset,
+                    selected_keys_in_order,
+                    Subset(dataset, selected_indices),
+                )
+            )
+            remaining_keys.difference_update(selected_keys_in_order)
+        if remaining_keys:
+            print(f"[warn] spread {metric}: {len(remaining_keys)} required sample(s) not found across splits")
+        if not dataset_segments:
+            return {}
+    else:
+        if split not in datasets:
+            return {}
+        dataset = datasets[split]
+        dataset_segments.append((split, dataset, None, dataset))
+
     in_channels = int(compute_input_channels(cfg))
     sc_dim = int(compute_scalar_cond_dim(cfg)) if uses_scalar_film_conditioning(cfg) else 0
     model = UNetGenerator(
@@ -353,31 +649,66 @@ def run_spread_checkpoint(
     metric_meta = dict(cfg.get("target_metadata", {}).get(metric, {}))
 
     out: dict[str, np.ndarray] = {}
-    cursor = 0
     amp_enabled = (getattr(device, "type", str(device)) == "cuda")
-    with torch.no_grad():
-        for batch in loader:
-            if selected_keys_in_order is None and max_samples and len(out) >= max_samples:
-                break
-            x, _y, _m, sc = unpack_expert_batch(batch, device)
-            if amp_enabled:
-                with torch.amp.autocast(device_type="cuda", enabled=True):
-                    pred = forward_expert_model(model, x, sc)
-            else:
-                pred = forward_expert_model(model, x, sc)
-
-            pred_metric = denormalize_channel(pred[:, metric_idx : metric_idx + 1], metric_meta).float()
-            bsz = int(pred_metric.shape[0])
-            for off in range(bsz):
-                if selected_keys_in_order is not None:
-                    key = selected_keys_in_order[cursor + off]
+    total_items = 0
+    for _split_name, _dataset, selected_keys_in_order, dataset_for_loader in dataset_segments:
+        total_items += len(selected_keys_in_order) if selected_keys_in_order is not None else len(dataset_for_loader)
+    started_at = time.perf_counter()
+    last_logged = 0
+    total_processed = 0
+    with inference_context(device_str, device):
+        for split_name, dataset, selected_keys_in_order, dataset_for_loader in dataset_segments:
+            loader_kwargs: dict[str, Any] = {}
+            if eval_num_workers > 0:
+                loader_kwargs["prefetch_factor"] = 2
+            loader = DataLoader(
+                dataset_for_loader,
+                batch_size=actual_batch_size,
+                shuffle=False,
+                num_workers=eval_num_workers,
+                pin_memory=False,
+                persistent_workers=eval_num_workers > 0,
+                **loader_kwargs,
+            )
+            cursor = 0
+            for batch in loader:
+                if max_samples and len(out) >= max_samples:
+                    break
+                x, _y, _m, sc = unpack_expert_batch(batch, device)
+                if amp_enabled:
+                    with torch.amp.autocast(device_type="cuda", enabled=True):
+                        pred = forward_expert_model(model, x, sc)
                 else:
-                    sample_idx = cursor + off
-                    city, sample_ref = dataset.sample_refs[sample_idx]
-                    key = f"{city}/{sample_ref}"
-                out[key] = pred_metric[off, 0].detach().cpu().numpy().astype(np.float32)
-            cursor += bsz
-            if selected_keys_in_order is None and max_samples and len(out) >= max_samples:
+                    pred = forward_expert_model(model, x, sc)
+
+                pred_metric = denormalize_channel(pred[:, metric_idx : metric_idx + 1], metric_meta).float()
+                pred_metric_np = pred_metric[:, 0].detach().cpu().numpy().astype(np.float32, copy=False)
+                bsz = int(pred_metric_np.shape[0])
+                for off in range(bsz):
+                    if selected_keys_in_order is not None:
+                        key = selected_keys_in_order[cursor + off]
+                    else:
+                        sample_idx = cursor + off
+                        city, sample_ref = dataset.sample_refs[sample_idx]
+                        key = f"{city}/{sample_ref}"
+                    out[key] = pred_metric_np[off]
+                cursor += bsz
+                total_processed = min(total_processed + bsz, total_items)
+                if should_log_progress(total_processed, total_items, progress_every, last_logged):
+                    print(
+                        format_progress_line(
+                            prefix=f"[spread:{metric}]",
+                            processed=total_processed,
+                            total=total_items,
+                            elapsed_s=time.perf_counter() - started_at,
+                        )
+                    )
+                    last_logged = total_processed
+                if max_samples and len(out) >= max_samples:
+                    break
+            if selected_keys_in_order is not None:
+                print(f"[spread:{metric}] matched {cursor} sample(s) in split={split_name}")
+            if max_samples and len(out) >= max_samples:
                 break
 
     del model
@@ -391,11 +722,16 @@ def collect_spread_predictions(
     device_str: str,
     checkpoint_name: str,
     max_samples: int,
+    eval_batch_size: int,
+    eval_num_workers: int,
+    progress_every: int,
     required_keys_by_topology: dict[str, set[str]] | None = None,
+    metrics: list[str] | None = None,
 ) -> dict[str, dict[str, np.ndarray]]:
     """Collect sample_key -> pred map for delay and angular from Try58/Try59 experts."""
     all_preds: dict[str, dict[str, np.ndarray]] = {"delay_spread": {}, "angular_spread": {}}
-    for metric in ("delay_spread", "angular_spread"):
+    metric_list = metrics or list(REFRESHABLE_SPREAD_METRICS)
+    for metric in metric_list:
         entries = discover_spread_experts(metric, checkpoint_name=checkpoint_name)
         preds_metric: dict[str, np.ndarray] = {}
         needed_topologies = set(required_keys_by_topology.keys()) if required_keys_by_topology else None
@@ -411,6 +747,9 @@ def collect_spread_predictions(
                 split=split,
                 device_str=device_str,
                 max_samples=max_samples,
+                eval_batch_size=eval_batch_size,
+                eval_num_workers=eval_num_workers,
+                progress_every=progress_every,
                 required_keys=(required_keys_by_topology or {}).get(topology_class),
             )
             preds_metric.update(chunk)
@@ -496,6 +835,7 @@ def discover_try(cli_try: str | None) -> tuple[Path, list[dict]]:
     else:
         order = TRY_CANDIDATES
 
+    discovered_per_try: list[tuple[Path, list[dict]]] = []
     for try_dir, exp_subdir, registry_name in order:
         try_root = ROOT / try_dir
         reg_path = try_root / "experiments" / exp_subdir / registry_name
@@ -525,6 +865,7 @@ def discover_try(cli_try: str | None) -> tuple[Path, list[dict]]:
             region = str((cfg.get("data", {}) or {}).get("los_region_mask_mode", "full"))
             resolved.append({
                 "try_dir": try_dir,
+                "try_root": str(try_root),
                 "expert_mode": expert_mode,
                 "expert_id": expert_id,
                 "config": str(cfg_path),
@@ -532,12 +873,46 @@ def discover_try(cli_try: str | None) -> tuple[Path, list[dict]]:
                 "region": region,
             })
         if resolved:
-            print(f"[try] using {try_dir}: {len(resolved)} expert(s) with checkpoints")
+            discovered_per_try.append((try_root, resolved))
+        else:
+            print(f"[try] {try_dir}: registry found but no usable checkpoints")
+
+    if cli_try:
+        if discovered_per_try:
+            try_root, resolved = discovered_per_try[0]
+            print(f"[try] using {Path(try_root).name}: {len(resolved)} expert(s) with checkpoints")
             for r in resolved:
                 print(f"    - {r['expert_id']}  region={r['region']}")
             return try_root, resolved
-        else:
-            print(f"[try] {try_dir}: registry found but no usable checkpoints")
+        raise SystemExit("No try with available checkpoints in cluster_outputs/<try>/<expert>/best_model.pt")
+
+    if discovered_per_try:
+        first_root, first_resolved = discovered_per_try[0]
+        selected = list(first_resolved)
+        covered_regions = {str(r.get("region", "full")) for r in selected}
+        needed_regions = {"los_only", "nlos_only"}
+
+        if covered_regions != needed_regions:
+            for _fallback_root, fallback_resolved in discovered_per_try[1:]:
+                for entry in fallback_resolved:
+                    region = str(entry.get("region", "full"))
+                    if region in needed_regions and region not in covered_regions:
+                        selected.append(entry)
+                        covered_regions.add(region)
+                if covered_regions == needed_regions:
+                    break
+
+        # Keep a stable ordering: LoS, NLoS, then anything else.
+        region_order = {"los_only": 0, "nlos_only": 1, "full": 2}
+        selected.sort(key=lambda r: (region_order.get(str(r.get("region", "full")), 9), str(r.get("expert_id", ""))))
+
+        print(f"[try] using {Path(first_root).name}: {len(selected)} expert(s) with checkpoints")
+        for r in selected:
+            extra = ""
+            if str(r.get("try_dir")) != Path(first_root).name:
+                extra = f"  fallback_from={r['try_dir']}"
+            print(f"    - {r['expert_id']}  region={r['region']}{extra}")
+        return first_root, selected
 
     raise SystemExit("No try with available checkpoints in cluster_outputs/<try>/<expert>/best_model.pt")
 
@@ -549,9 +924,13 @@ def run_checkpoint(
     split: str,
     max_samples: int,
     device_str: str,
+    eval_batch_size: int,
+    eval_num_workers: int,
+    progress_every: int,
     all_samples: bool,
     force_full_region_mask: bool,
     exclude_building_pixels: bool,
+    sample_meta_cache: dict[str, dict[str, Any]] | None = None,
 ) -> Iterable[tuple]:
     """Yield per-sample arrays for path_loss (+ delay/angular GT maps from HDF5)."""
     # Inject this try's root so we pick up its own train_partitioned_pathloss_expert.py.
@@ -561,7 +940,13 @@ def run_checkpoint(
 
     # IMPORTANT: different tries have distinct but same-named modules; reset cache between runs.
     for mod in list(sys.modules):
-        if mod in {"train_partitioned_pathloss_expert", "data_utils", "config_utils", "eval_per_sample"}:
+        if mod in {
+            "train_partitioned_pathloss_expert",
+            "data_utils",
+            "config_utils",
+            "eval_per_sample",
+            "model_pmhhnet",
+        }:
             del sys.modules[mod]
 
     from train_partitioned_pathloss_expert import (  # type: ignore
@@ -583,12 +968,6 @@ def run_checkpoint(
 
     cfg = load_config(str(config_path))
     anchor_data_paths_to_config_file(cfg, str(config_path))
-    cfg.setdefault("training", {})["batch_size"] = 1
-    cfg["data"]["val_batch_size"] = 1
-    cfg["data"]["num_workers"] = 0
-    cfg["data"]["val_num_workers"] = 0
-    cfg["data"]["persistent_workers"] = False
-    cfg["data"]["val_persistent_workers"] = False
     cfg.setdefault("model", {})["gradient_checkpointing"] = False
     # Override runtime device.
     cfg.setdefault("runtime", {})["device"] = device_str
@@ -606,14 +985,21 @@ def run_checkpoint(
         cfg["data"]["exclude_non_ground_targets"] = False
 
     device = resolve_device(device_str)
-    print(f"[run] device={device} split={split} config={config_path.name}")
+    actual_batch_size = choose_eval_batch_size(device_str, device, eval_batch_size)
+    cfg.setdefault("training", {})["batch_size"] = actual_batch_size
+    cfg["data"]["val_batch_size"] = actual_batch_size
+    cfg["data"]["num_workers"] = eval_num_workers
+    cfg["data"]["val_num_workers"] = eval_num_workers
+    cfg["data"]["persistent_workers"] = eval_num_workers > 0
+    cfg["data"]["val_persistent_workers"] = eval_num_workers > 0
+    print(
+        f"[run] device={device} split={split} batch={actual_batch_size} "
+        f"workers={eval_num_workers} config={config_path.name}"
+    )
 
     splits = build_dataset_splits_from_config(cfg)
     dataset = splits[split]
     print(f"[run] {split} samples: {len(dataset)}")
-
-    in_ch = int(compute_input_channels(cfg))
-    model = _build_pmnet_from_cfg(cfg, in_ch).to(device)
 
     # Load checkpoint with device-agnostic map_location (DirectML isn't a torch map_location string).
     state = load_torch_checkpoint(str(checkpoint_path), device)
@@ -629,6 +1015,19 @@ def run_checkpoint(
         raise RuntimeError(f"Could not find state_dict in checkpoint {checkpoint_path}")
     # Strip DDP 'module.' prefix if present.
     sd = { (k[7:] if k.startswith("module.") else k): v for k, v in sd.items() }
+
+    inferred_base_channels = infer_base_channels_from_state_dict(sd)
+    cfg_base_channels = int(cfg.get("model", {}).get("base_channels", 0) or 0)
+    if inferred_base_channels is not None and inferred_base_channels > 0 and inferred_base_channels != cfg_base_channels:
+        cfg.setdefault("model", {})["base_channels"] = inferred_base_channels
+        print(
+            f"[run] overriding model.base_channels from {cfg_base_channels} "
+            f"to {inferred_base_channels} based on checkpoint"
+        )
+
+    in_ch = int(compute_input_channels(cfg))
+    model = _build_pmnet_from_cfg(cfg, in_ch).to(device)
+
     missing, unexpected = model.load_state_dict(sd, strict=False)
     if missing:
         print(f"[warn] missing keys: {len(missing)} (e.g. {missing[:3]})")
@@ -643,11 +1042,11 @@ def run_checkpoint(
         subset = Subset(dataset, sample_indices)
         loader = DataLoader(
             subset,
-            batch_size=1,
+            batch_size=actual_batch_size,
             shuffle=False,
-            num_workers=0,
+            num_workers=eval_num_workers,
             pin_memory=False,
-            persistent_workers=False,
+            persistent_workers=eval_num_workers > 0,
         )
         print(f"[run] random sample subset: {len(sample_indices)} / {total_split_samples}")
     else:
@@ -664,7 +1063,10 @@ def run_checkpoint(
 
     cursor = 0
     seen = 0
-    with torch.no_grad():
+    total_items = len(sample_indices)
+    started_at = time.perf_counter()
+    last_logged = 0
+    with inference_context(device_str, device):
         for batch in loader:
             if max_samples and seen >= max_samples:
                 break
@@ -691,12 +1093,16 @@ def run_checkpoint(
             target_phys = denormalize(safe_target, meta).float()
             valid_mask = m[:, :1] > 0.0
 
+            pred_batch_np = pred_phys[:, 0].detach().float().cpu().numpy().astype(np.float32, copy=False)
+            tgt_batch_np = target_phys[:, 0].detach().float().cpu().numpy().astype(np.float32, copy=False)
+            vm_batch_np = valid_mask[:, 0].detach().cpu().numpy().astype(bool, copy=False)
             B = x.shape[0]
             for off in range(B):
                 idx = int(sample_indices[cursor + off])
                 city = sample_ref = ""
                 if hasattr(dataset, "sample_refs") and idx < len(dataset.sample_refs):
                     city, sample_ref = dataset.sample_refs[idx]
+                key = f"{city}/{sample_ref}"
                 ant_h = float("nan")
                 if scalar_cond is not None and scalar_cond.numel() > 0:
                     cols = list(cfg["data"].get("scalar_feature_columns", []))
@@ -704,50 +1110,66 @@ def run_checkpoint(
                         j = cols.index("antenna_height_m")
                         norm = float(cfg["data"].get("scalar_feature_norms", {}).get("antenna_height_m", 1.0))
                         ant_h = float(scalar_cond[off, j].item()) * norm
-                los_arr = None
-                topo_arr = None
+                cached = sample_meta_cache.get(key) if sample_meta_cache is not None else None
+                los_bool_cached = None
+                ground_mask = None
                 city_type_3 = ""
                 city_type_6 = ""
                 delay_gt = None
                 angular_gt = None
-                try:
-                    h = dataset._get_handle()
-                    grp = h[city][sample_ref]
-                    if (not np.isfinite(ant_h)) and "uav_height" in grp:
-                        arr = np.asarray(grp["uav_height"][...], dtype=np.float64).reshape(-1)
-                        if arr.size:
-                            ant_h = float(arr[0])
-                    if "los_mask" in grp:
-                        los_arr = np.asarray(grp["los_mask"][...], dtype=np.float32)
-                    if "topology_map" in grp:
-                        topo = np.asarray(grp["topology_map"][...], dtype=np.float32)
-                        topo_arr = topo
-                        city_type_3, city_type_6 = infer_city_types_from_topology(
-                            topo,
-                            non_ground_threshold=non_ground_threshold,
-                        )
-                    if "delay_spread" in grp:
-                        delay_gt = np.asarray(grp["delay_spread"][...], dtype=np.float32)
-                    if "angular_spread" in grp:
-                        angular_gt = np.asarray(grp["angular_spread"][...], dtype=np.float32)
-                except Exception:
-                    pass
+                if cached is not None:
+                    ant_h = float(cached["ant_h"]) if np.isfinite(float(cached["ant_h"])) else ant_h
+                    los_bool_cached = cached["los_bool"]
+                    ground_mask = cached["ground_mask"]
+                    city_type_3 = str(cached["city_type_3"])
+                    city_type_6 = str(cached["city_type_6"])
+                else:
+                    try:
+                        h = dataset._get_handle()
+                        grp = h[city][sample_ref]
+                        if (not np.isfinite(ant_h)) and "uav_height" in grp:
+                            arr = np.asarray(grp["uav_height"][...], dtype=np.float64).reshape(-1)
+                            if arr.size:
+                                ant_h = float(arr[0])
+                        if "los_mask" in grp:
+                            los_bool_cached = np.asarray(grp["los_mask"][...], dtype=np.float32) > 0.5
+                        if "topology_map" in grp:
+                            topo = np.asarray(grp["topology_map"][...], dtype=np.float32)
+                            ground_mask = topo == 0.0
+                            city_type_3, city_type_6 = infer_city_types_from_topology(
+                                topo,
+                                non_ground_threshold=non_ground_threshold,
+                            )
+                        if "delay_spread" in grp:
+                            delay_gt = np.asarray(grp["delay_spread"][...], dtype=np.float32)
+                        if "angular_spread" in grp:
+                            angular_gt = np.asarray(grp["angular_spread"][...], dtype=np.float32)
+                    except Exception:
+                        pass
+                    if sample_meta_cache is not None:
+                        sample_meta_cache[key] = {
+                            "ant_h": ant_h,
+                            "los_bool": los_bool_cached,
+                            "ground_mask": ground_mask,
+                            "city_type_3": city_type_3,
+                            "city_type_6": city_type_6,
+                        }
 
-                pred_np = pred_phys[off, 0].detach().float().cpu().numpy().astype(np.float32)
-                tgt_np = target_phys[off, 0].detach().float().cpu().numpy().astype(np.float32)
-                vm_np = valid_mask[off, 0].detach().cpu().numpy().astype(bool)
+                pred_np = pred_batch_np[off]
+                tgt_np = tgt_batch_np[off]
+                vm_np = vm_batch_np[off].copy()
                 # Keep only physically valid GT pixels for histogram accounting.
                 vm_np &= np.isfinite(tgt_np) & (tgt_np > 0.0)
-                if exclude_building_pixels and topo_arr is not None and topo_arr.shape == vm_np.shape:
+                if exclude_building_pixels and ground_mask is not None and ground_mask.shape == vm_np.shape:
                     # User-requested mask: keep only pixels where topology == 0.
-                    vm_np &= (topo_arr == 0.0)
-                if los_arr is None or los_arr.shape != tgt_np.shape:
+                    vm_np &= ground_mask
+                if los_bool_cached is None or los_bool_cached.shape != tgt_np.shape:
                     los_bool = np.zeros_like(tgt_np, dtype=bool)
                 else:
-                    los_bool = los_arr > 0.5
+                    los_bool = los_bool_cached
 
                 yield (
-                    f"{city}/{sample_ref}", pred_np, tgt_np, los_bool, vm_np,
+                    key, pred_np, tgt_np, los_bool, vm_np,
                     city, sample_ref, ant_h, city_type_3, city_type_6, exclude_non_ground_targets,
                     delay_gt, angular_gt,
                 )
@@ -755,6 +1177,17 @@ def run_checkpoint(
                 if max_samples and seen >= max_samples:
                     break
             cursor += B
+            processed = min(seen, total_items)
+            if should_log_progress(processed, total_items, progress_every, last_logged):
+                print(
+                    format_progress_line(
+                        prefix="[path-loss]",
+                        processed=processed,
+                        total=total_items,
+                        elapsed_s=time.perf_counter() - started_at,
+                    )
+                )
+                last_logged = processed
 
     # Release GPU memory between experts.
     del model
@@ -771,10 +1204,10 @@ def main() -> None:
     ap.add_argument("--max-samples", type=int, default=0,
                     help="0 = all samples (default).")
     ap.add_argument("--device", default="auto", choices=["auto", "cuda", "directml", "dml", "cpu"])
-    ap.add_argument("--db-lo", type=int, default=0)
+    ap.add_argument("--db-lo", type=int, default=-360)
     ap.add_argument("--db-hi-path-loss", type=int, default=180)
     ap.add_argument("--db-hi-delay-spread", type=int, default=360)
-    ap.add_argument("--db-hi-angular-spread", type=int, default=180)
+    ap.add_argument("--db-hi-angular-spread", type=int, default=361)
     ap.add_argument(
         "--spread-checkpoint-name",
         default="auto",
@@ -783,6 +1216,59 @@ def main() -> None:
     )
     ap.add_argument("--skip-spread-predictions", action="store_true",
                     help="If set, only spread target rows are emitted (no spread prediction rows).")
+    ap.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="Inference batch size for path-loss experts. 0 = auto (CUDA: 8, DirectML: 4, CPU: 1).",
+    )
+    ap.add_argument(
+        "--spread-batch-size",
+        type=int,
+        default=0,
+        help="Inference batch size for spread experts. 0 = same auto heuristic as --batch-size.",
+    )
+    ap.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="DataLoader workers for path-loss experts. Keep 0 if HDF5 gives trouble.",
+    )
+    ap.add_argument(
+        "--spread-num-workers",
+        type=int,
+        default=0,
+        help="DataLoader workers for spread experts. Keep 0 if HDF5 gives trouble.",
+    )
+    ap.add_argument(
+        "--progress-every",
+        type=int,
+        default=100,
+        help="Emit a progress log every N processed samples for path-loss experts. 0 disables periodic logs.",
+    )
+    ap.add_argument(
+        "--spread-progress-every",
+        type=int,
+        default=100,
+        help="Emit a progress log every N processed samples for spread experts. 0 disables periodic logs.",
+    )
+    ap.add_argument(
+        "--refresh-spread-only",
+        action="store_true",
+        help="Reuse existing path-loss rows from CSV, regenerate only delay/angular rows, and rewrite grouped by sample.",
+    )
+    ap.add_argument(
+        "--refresh-metrics",
+        nargs="+",
+        default=list(REFRESHABLE_SPREAD_METRICS),
+        choices=list(REFRESHABLE_SPREAD_METRICS),
+        help="With --refresh-spread-only, choose which spread metrics to regenerate.",
+    )
+    ap.add_argument(
+        "--in-csv",
+        default=None,
+        help="Input CSV for --refresh-spread-only. Defaults to --out-csv.",
+    )
     ap.add_argument("--out-csv", default=str(Path(__file__).parent / "histograms.csv"))
     args = ap.parse_args()
 
@@ -795,6 +1281,7 @@ def main() -> None:
     db_hi = max(db_hi_path, db_hi_delay, db_hi_ang)
     n_bins = db_hi - db_lo
     bin_cols = [f"b{db_lo + i}" for i in range(n_bins)]
+    refresh_metrics = set(args.refresh_metrics or list(REFRESHABLE_SPREAD_METRICS))
 
     spread_preds: dict[str, dict[str, np.ndarray]] = {"delay_spread": {}, "angular_spread": {}}
     if args.skip_spread_predictions:
@@ -807,200 +1294,246 @@ def main() -> None:
         "try_dir", "expert_mode", "exclude_non_ground_targets",
         "expert_id", "expert_region", "metric", "kind", "total_pixels", *bin_cols,
     ]
+    skipped_experts: list[tuple[str, str, str]] = []
 
-    # Write streaming so long runs don't lose data on crash.
-    with out_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(header)
-        f.flush()
+    sample_rows: dict[str, list[list]] = {}
+    sample_base: dict[str, list] = {}
+    sample_valid_mask: dict[str, np.ndarray] = {}
+    sample_city_type_6: dict[str, str] = {}
+    sample_order: list[str] = []
+    sample_meta_cache: dict[str, dict[str, Any]] = {}
 
-        # Collect rows per sample first, then flush in sample order to keep groups contiguous.
-        sample_rows: dict[str, list[list]] = {}
-        sample_base: dict[str, list] = {}
-        sample_valid_mask: dict[str, np.ndarray] = {}
-        sample_city_type_6: dict[str, str] = {}
-        sample_order: list[str] = []
+    if args.refresh_spread_only:
+        src_csv = Path(args.in_csv) if args.in_csv else out_path
+        print(f"[refresh] preserving existing rows from {src_csv} except metrics={sorted(refresh_metrics)}")
+        sample_rows, sample_base, sample_city_type_6, sample_order = load_preserved_rows(
+            src_csv,
+            header,
+            drop_metrics=refresh_metrics,
+        )
+        contexts = collect_sample_contexts(
+            try_root=Path(str(experts[0].get("try_root", try_root))),
+            config_path=Path(experts[0]["config"]),
+            split=args.split,
+            required_keys=set(sample_order),
+            exclude_building_pixels=True,
+        )
+        for key in sample_order:
+            ctx = contexts.get(key)
+            if ctx is None:
+                continue
+            base = sample_base.get(key)
+            if base is None:
+                continue
+            sample_valid_mask[key] = np.asarray(ctx["vm_np"]).copy()
+            sample_city_type_6[key] = str(ctx.get("city_type_6", sample_city_type_6.get(key, "")))
+            try_dir = base[6]
+            expert_mode = base[7]
+            exclude_non_ground_targets = int(str(base[8]))
+            altitude_m = float(ctx.get("altitude_m", float(base[2] or "nan")))
+            city = base[0]
+            sample_ref = base[1]
+            city_type_3 = str(ctx.get("city_type_3", base[4]))
+            city_type_6 = str(ctx.get("city_type_6", base[5]))
+            sample_base[key] = [
+                city,
+                sample_ref,
+                f"{altitude_m:.3f}",
+                city_type_3,
+                city_type_3,
+                city_type_6,
+                try_dir,
+                expert_mode,
+                exclude_non_ground_targets,
+            ] 
 
+            delay_gt = ctx.get("delay_gt")
+            angular_gt = ctx.get("angular_gt")
+            vm_np = sample_valid_mask[key]
+            if "delay_spread" in refresh_metrics and delay_gt is not None and delay_gt.shape == vm_np.shape:
+                sel = metric_selection_mask("delay_spread", delay_gt, vm_np)
+                vals = round_metric_values(delay_gt[sel])
+                h = histogram_db_padded(vals, db_lo, db_hi_delay, db_hi)
+                append_histogram_row(
+                    sample_rows, key, sample_base[key], "ground_truth", "full",
+                    "delay_spread", "target_delay_spread", int(sel.sum()), h,
+                )
+            if "angular_spread" in refresh_metrics and angular_gt is not None and angular_gt.shape == vm_np.shape:
+                sel = metric_selection_mask("angular_spread", angular_gt, vm_np)
+                vals = round_metric_values(angular_gt[sel])
+                h = histogram_db_padded(vals, db_lo, db_hi_ang, db_hi)
+                append_histogram_row(
+                    sample_rows, key, sample_base[key], "ground_truth", "full",
+                    "angular_spread", "target_angular_spread", int(sel.sum()), h,
+                )
+    else:
         for exp in experts:
             print(f"\n=== Expert {exp['expert_id']} ({exp['region']}) ===")
             pred_los_pixels = 0
             pred_nlos_pixels = 0
-            for (
-                key,
-                pred_np,
-                tgt_np,
-                los_bool,
-                vm_np,
-                city,
-                sample_ref,
-                ant_h,
-                city_type_3,
-                city_type_6,
-                exclude_non_ground_targets,
-                delay_gt,
-                angular_gt,
-            ) in run_checkpoint(
-                try_root=try_root,
-                config_path=Path(exp["config"]),
-                checkpoint_path=Path(exp["checkpoint"]),
-                split=args.split,
-                max_samples=args.max_samples,
-                device_str=args.device,
-                all_samples=True,
-                force_full_region_mask=True,
-                exclude_building_pixels=True,
-            ):
-                los_valid = los_bool & vm_np
-                nlos_valid = (~los_bool) & vm_np
-                base = [
+            try:
+                for (
+                    key,
+                    pred_np,
+                    tgt_np,
+                    los_bool,
+                    vm_np,
                     city,
                     sample_ref,
-                    f"{ant_h:.3f}",
-                    city_type_3,
+                    ant_h,
                     city_type_3,
                     city_type_6,
-                    exp["try_dir"],
-                    exp["expert_mode"],
-                    int(exclude_non_ground_targets),
-                ]
+                    exclude_non_ground_targets,
+                    delay_gt,
+                    angular_gt,
+                ) in run_checkpoint(
+                    try_root=Path(str(exp.get("try_root", try_root))),
+                    config_path=Path(exp["config"]),
+                    checkpoint_path=Path(exp["checkpoint"]),
+                    split=args.split,
+                    max_samples=args.max_samples,
+                    device_str=args.device,
+                    eval_batch_size=args.batch_size,
+                    eval_num_workers=args.num_workers,
+                    progress_every=args.progress_every,
+                    all_samples=True,
+                    force_full_region_mask=True,
+                    exclude_building_pixels=True,
+                    sample_meta_cache=sample_meta_cache,
+                ):
+                    los_valid = los_bool & vm_np
+                    nlos_valid = (~los_bool) & vm_np
+                    base = [
+                        city,
+                        sample_ref,
+                        f"{ant_h:.3f}",
+                        city_type_3,
+                        city_type_3,
+                        city_type_6,
+                        exp["try_dir"],
+                        exp["expert_mode"],
+                        int(exclude_non_ground_targets),
+                    ]
 
-                if key not in sample_rows:
-                    sample_rows[key] = []
-                    sample_order.append(key)
-                    sample_base[key] = list(base)
-                    sample_valid_mask[key] = vm_np.copy()
-                    sample_city_type_6[key] = city_type_6
+                    if key not in sample_rows:
+                        sample_rows[key] = []
+                        sample_order.append(key)
+                        sample_base[key] = list(base)
+                        sample_valid_mask[key] = vm_np.copy()
+                        sample_city_type_6[key] = city_type_6
 
-                    # Path-loss GT rows.
-                    for kind, sel in (("target_los", los_valid), ("target_nlos", nlos_valid)):
-                        h = histogram_db_padded(tgt_np[sel], db_lo, db_hi_path, db_hi)
-                        sample_rows[key].append([
-                            *base,
-                            "ground_truth",
-                            "full",
-                            "path_loss",
-                            kind,
-                            int(sel.sum()),
-                            *[int(v) for v in h],
-                        ])
+                        for kind, sel in (("target_los", los_valid), ("target_nlos", nlos_valid)):
+                            h = histogram_db_padded(tgt_np[sel], db_lo, db_hi_path, db_hi)
+                            append_histogram_row(
+                                sample_rows, key, base, "ground_truth", "full",
+                                "path_loss", kind, int(sel.sum()), h,
+                            )
 
-                    # Spread GT rows.
-                    if delay_gt is not None and delay_gt.shape == vm_np.shape:
-                        sel = vm_np & np.isfinite(delay_gt) & (delay_gt > 0.0)
-                        vals = round_metric_values(delay_gt[sel])
-                        h = histogram_db_padded(vals, db_lo, db_hi_delay, db_hi)
-                        sample_rows[key].append([
-                            *base,
-                            "ground_truth",
-                            "full",
-                            "delay_spread",
-                            "target_delay_spread",
-                            int(sel.sum()),
-                            *[int(v) for v in h],
-                        ])
+                        if delay_gt is not None and delay_gt.shape == vm_np.shape:
+                            sel = metric_selection_mask("delay_spread", delay_gt, vm_np)
+                            vals = round_metric_values(delay_gt[sel])
+                            h = histogram_db_padded(vals, db_lo, db_hi_delay, db_hi)
+                            append_histogram_row(
+                                sample_rows, key, base, "ground_truth", "full",
+                                "delay_spread", "target_delay_spread", int(sel.sum()), h,
+                            )
 
-                    if angular_gt is not None and angular_gt.shape == vm_np.shape:
-                        sel = vm_np & np.isfinite(angular_gt) & (angular_gt > 0.0)
-                        vals = round_metric_values(angular_gt[sel])
-                        h = histogram_db_padded(vals, db_lo, db_hi_ang, db_hi)
-                        sample_rows[key].append([
-                            *base,
-                            "ground_truth",
-                            "full",
-                            "angular_spread",
-                            "target_angular_spread",
-                            int(sel.sum()),
-                            *[int(v) for v in h],
-                        ])
+                        if angular_gt is not None and angular_gt.shape == vm_np.shape:
+                            sel = metric_selection_mask("angular_spread", angular_gt, vm_np)
+                            vals = round_metric_values(angular_gt[sel])
+                            h = histogram_db_padded(vals, db_lo, db_hi_ang, db_hi)
+                            append_histogram_row(
+                                sample_rows, key, base, "ground_truth", "full",
+                                "angular_spread", "target_angular_spread", int(sel.sum()), h,
+                            )
 
-                # Path-loss prediction rows scoped by expert region.
-                if exp["region"] in ("los_only", "full"):
-                    los_count = int(los_valid.sum())
-                    h = histogram_db_padded(pred_np[los_valid], db_lo, db_hi_path, db_hi)
-                    sample_rows[key].append([
-                        *base,
-                        exp["expert_id"],
-                        exp["region"],
-                        "path_loss",
-                        "pred_los",
-                        los_count,
-                        *[int(v) for v in h],
-                    ])
-                    pred_los_pixels += los_count
-                if exp["region"] in ("nlos_only", "full"):
-                    nlos_count = int(nlos_valid.sum())
-                    h = histogram_db_padded(pred_np[nlos_valid], db_lo, db_hi_path, db_hi)
-                    sample_rows[key].append([
-                        *base,
-                        exp["expert_id"],
-                        exp["region"],
-                        "path_loss",
-                        "pred_nlos",
-                        nlos_count,
-                        *[int(v) for v in h],
-                    ])
-                    pred_nlos_pixels += nlos_count
+                    if exp["region"] in ("los_only", "full"):
+                        los_count = int(los_valid.sum())
+                        h = histogram_db_padded(pred_np[los_valid], db_lo, db_hi_path, db_hi)
+                        append_histogram_row(
+                            sample_rows, key, base, str(exp["expert_id"]), str(exp["region"]),
+                            "path_loss", "pred_los", los_count, h,
+                        )
+                        pred_los_pixels += los_count
+                    if exp["region"] in ("nlos_only", "full"):
+                        nlos_count = int(nlos_valid.sum())
+                        h = histogram_db_padded(pred_np[nlos_valid], db_lo, db_hi_path, db_hi)
+                        append_histogram_row(
+                            sample_rows, key, base, str(exp["expert_id"]), str(exp["region"]),
+                            "path_loss", "pred_nlos", nlos_count, h,
+                        )
+                        pred_nlos_pixels += nlos_count
+            except RuntimeError as exc:
+                msg = str(exc)
+                if "size mismatch" in msg:
+                    skipped_experts.append((str(exp["expert_id"]), str(exp["try_dir"]), str(exp["checkpoint"])))
+                    print(
+                        f"[skip] incompatible expert checkpoint for {exp['expert_id']} "
+                        f"from {exp['try_dir']}: shape mismatch between config and checkpoint"
+                    )
+                    print(f"       checkpoint={exp['checkpoint']}")
+                    continue
+                raise
 
             print(
                 f"[expert-summary] {exp['expert_id']} "
                 f"pred_los_pixels={pred_los_pixels} pred_nlos_pixels={pred_nlos_pixels}"
             )
 
-        if not args.skip_spread_predictions and sample_order:
-            required_keys_by_topology: dict[str, set[str]] = {}
-            for key in sample_order:
-                topo = str(sample_city_type_6.get(key, "")).strip()
-                if topo:
-                    required_keys_by_topology.setdefault(topo, set()).add(key)
+    if not args.skip_spread_predictions and sample_order:
+        required_keys_by_topology: dict[str, set[str]] = {}
+        for key in sample_order:
+            topo = str(sample_city_type_6.get(key, "")).strip()
+            if topo:
+                required_keys_by_topology.setdefault(topo, set()).add(key)
 
-            spread_preds = collect_spread_predictions(
-                split=args.split,
-                device_str=args.device,
-                checkpoint_name=args.spread_checkpoint_name,
-                max_samples=0,
-                required_keys_by_topology=required_keys_by_topology,
-            )
-
-            for key in sample_order:
-                if key not in sample_rows:
-                    continue
-                base = sample_base.get(key)
-                vm_np = sample_valid_mask.get(key)
-                if base is None or vm_np is None:
-                    continue
-
-                delay_pred = spread_preds.get("delay_spread", {}).get(key)
-                if delay_pred is not None and delay_pred.shape == vm_np.shape:
-                    sel = vm_np & np.isfinite(delay_pred) & (delay_pred > 0.0)
-                    vals = round_metric_values(delay_pred[sel])
-                    h = histogram_db_padded(vals, db_lo, db_hi_delay, db_hi)
-                    sample_rows[key].append([
-                        *base,
-                        "spread_prediction",
-                        "full",
-                        "delay_spread",
-                        "pred_delay_spread",
-                        int(sel.sum()),
-                        *[int(v) for v in h],
-                    ])
-
-                angular_pred = spread_preds.get("angular_spread", {}).get(key)
-                if angular_pred is not None and angular_pred.shape == vm_np.shape:
-                    sel = vm_np & np.isfinite(angular_pred) & (angular_pred > 0.0)
-                    vals = round_metric_values(angular_pred[sel])
-                    h = histogram_db_padded(vals, db_lo, db_hi_ang, db_hi)
-                    sample_rows[key].append([
-                        *base,
-                        "spread_prediction",
-                        "full",
-                        "angular_spread",
-                        "pred_angular_spread",
-                        int(sel.sum()),
-                        *[int(v) for v in h],
-                    ])
+        spread_preds = collect_spread_predictions(
+            split=args.split,
+            device_str=args.device,
+            checkpoint_name=args.spread_checkpoint_name,
+            max_samples=0,
+            eval_batch_size=args.spread_batch_size,
+            eval_num_workers=args.spread_num_workers,
+            progress_every=args.spread_progress_every,
+            required_keys_by_topology=required_keys_by_topology,
+            metrics=sorted(refresh_metrics) if args.refresh_spread_only else list(REFRESHABLE_SPREAD_METRICS),
+        )
 
         for key in sample_order:
-            for row in sample_rows.get(key, []):
+            if key not in sample_rows:
+                continue
+            base = sample_base.get(key)
+            vm_np = sample_valid_mask.get(key)
+            if base is None or vm_np is None:
+                continue
+
+            delay_pred = spread_preds.get("delay_spread", {}).get(key)
+            if "delay_spread" in refresh_metrics and delay_pred is not None and delay_pred.shape == vm_np.shape:
+                sel = metric_selection_mask("delay_spread", delay_pred, vm_np)
+                vals = round_metric_values(delay_pred[sel])
+                h = histogram_db_padded(vals, db_lo, db_hi_delay, db_hi)
+                append_histogram_row(
+                    sample_rows, key, base, "spread_prediction", "full",
+                    "delay_spread", "pred_delay_spread", int(sel.sum()), h,
+                )
+
+            angular_pred = spread_preds.get("angular_spread", {}).get(key)
+            if "angular_spread" in refresh_metrics and angular_pred is not None and angular_pred.shape == vm_np.shape:
+                sel = metric_selection_mask("angular_spread", angular_pred, vm_np)
+                vals = round_metric_values(angular_pred[sel])
+                h = histogram_db_padded(vals, db_lo, db_hi_ang, db_hi)
+                append_histogram_row(
+                    sample_rows, key, base, "spread_prediction", "full",
+                    "angular_spread", "pred_angular_spread", int(sel.sum()), h,
+                )
+
+    with out_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        for key in sample_order:
+            rows = sort_rows_for_sample(sample_rows.get(key, []))
+            sample_rows[key] = rows
+            for row in rows:
                 w.writerow(row)
         f.flush()
 
@@ -1009,6 +1542,10 @@ def main() -> None:
         f"Bins: {db_lo}..{db_hi} ({n_bins} cols, 1 dB each) "
         f"[path_loss_hi={db_hi_path}, delay_hi={db_hi_delay}, angular_hi={db_hi_ang}]"
     )
+    if skipped_experts:
+        print("[summary] skipped incompatible experts:")
+        for expert_id, try_dir, checkpoint in skipped_experts:
+            print(f"    - {expert_id} ({try_dir}) checkpoint={checkpoint}")
 
 
 if __name__ == "__main__":
