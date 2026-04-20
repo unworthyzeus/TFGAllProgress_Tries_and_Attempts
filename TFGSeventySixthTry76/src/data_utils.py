@@ -196,6 +196,9 @@ class Try76Config:
     derive_no_data_from_non_ground: bool = False
 
 
+_PATH_LOSS_MIN_DB = 20.0  # physical floor; anything < 20 dB is sentinel noise
+
+
 def _valid_target_mask(
     grp: h5py.Group,
     path_loss: np.ndarray,
@@ -203,9 +206,10 @@ def _valid_target_mask(
     no_data_mask_column: Optional[str],
     derive_no_data_from_non_ground: bool,
 ) -> np.ndarray:
-    # Path loss is strictly positive in valid pixels; zeros are used as no-data
-    # placeholders in this dataset (especially visible in some NLoS slices).
-    valid = np.isfinite(path_loss) & (path_loss > 0.0)
+    # Path loss is physical in dB; anything below _PATH_LOSS_MIN_DB is a
+    # sentinel/quantisation artefact (prev check `> 0.0` leaked tiny-positive
+    # values that then blew up the NLL as target-mu² overflowed).
+    valid = np.isfinite(path_loss) & (path_loss >= _PATH_LOSS_MIN_DB)
     if no_data_mask_column:
         key = str(no_data_mask_column).strip()
         if key and key in grp:
@@ -228,12 +232,32 @@ class Try76ExpertDataset(Dataset):
         self,
         cfg: Try76Config,
         sample_refs: Sequence[SampleRef],
+        augment: bool = False,
     ) -> None:
         self.cfg = cfg
         self._refs = list(sample_refs)
+        self.augment = bool(augment)
 
     def __len__(self) -> int:
         return len(self._refs)
+
+    @staticmethod
+    def _apply_aug(arrays: List[np.ndarray]) -> List[np.ndarray]:
+        # D4 symmetries on 2-D maps: the path-loss/target field is rotation- and
+        # reflection-equivariant w.r.t. rotating the whole scene, so applying
+        # the same transform to every channel + target + mask is label-safe.
+        k = random.randint(0, 3)
+        flip_h = random.random() < 0.5
+        flip_v = random.random() < 0.5
+        out: List[np.ndarray] = []
+        for a in arrays:
+            b = np.rot90(a, k=k, axes=(-2, -1)) if k else a
+            if flip_h:
+                b = b[..., :, ::-1]
+            if flip_v:
+                b = b[..., ::-1, :]
+            out.append(np.ascontiguousarray(b))
+        return out
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         city, sample = self._refs[idx]
@@ -267,6 +291,11 @@ class Try76ExpertDataset(Dataset):
         path_loss = np.where(valid_target, path_loss, 0.0).astype(np.float32)
 
         channels = np.stack([topology_input, los, nlos, ground], axis=0)  # (4, H, W)
+
+        if self.augment:
+            channels, path_loss, loss_mask, ground = self._apply_aug(
+                [channels, path_loss, loss_mask, ground]
+            )
 
         return {
             "city": city,
@@ -334,14 +363,16 @@ def build_expert_datasets(
                 cfg.derive_no_data_from_non_ground,
             )
             expert_mask = region & valid_target
-            # Drop degenerate samples with no valid pixels for the selected expert.
-            if int(expert_mask.sum()) == 0:
+            # Drop degenerate samples: <64 valid pixels is both a risk for
+            # GroupNorm numerics (all-zero inputs) and a near-useless training
+            # signal. 64 ≈ one 8×8 patch on the 513² grid.
+            if int(expert_mask.sum()) < 64:
                 continue
             filtered.append(ref)
         return filtered
 
     return (
-        Try76ExpertDataset(cfg, _filter(train_refs)),
-        Try76ExpertDataset(cfg, _filter(val_refs)),
-        Try76ExpertDataset(cfg, _filter(test_refs)),
+        Try76ExpertDataset(cfg, _filter(train_refs), augment=True),
+        Try76ExpertDataset(cfg, _filter(val_refs), augment=False),
+        Try76ExpertDataset(cfg, _filter(test_refs), augment=False),
     )

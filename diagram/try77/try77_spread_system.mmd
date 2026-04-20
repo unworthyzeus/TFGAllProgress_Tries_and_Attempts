@@ -1,0 +1,68 @@
+%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 36}} }%%
+flowchart TB
+    subgraph IN["Inputs and routing"]
+      direction TB
+      A1["topology_map / 90"]
+      A2["los_mask, nlos_mask, ground_mask"]
+      A3["UAV height embedding"]
+      A4["Invalid target filter"]
+      A5["valid_target = finite and >= 0"]
+      A6["6 topology classes"]
+      A7["12 experts = 6 classes x {delay_spread, angular_spread}"]
+      A1 --> A6 --> A7
+      A2 --> A7
+      A3 --> A7
+      A4 --> A5
+    end
+
+    subgraph SA["Stage A for spreads"]
+      direction TB
+      B1["Encoder with FiLM(height)"]
+      B2["Global pooled context"]
+      B3["Spike + tail mixture head"]
+      B4["Component 0 = narrow near-zero spike"]
+      B5["Components 1..K = free heavy-tail mixture"]
+      B3 --> B4
+      B3 --> B5
+      B1 --> B2 --> B3
+    end
+
+    subgraph SB["Stage B decoder"]
+      direction TB
+      C1["U-Net decoder"]
+      C2["Condition on height + mixture summary"]
+      C3["Per-pixel p_k(i,j), z(i,j), log sigma_tilde(i,j)"]
+      C4["yhat(i,j) = sum p_k * (mu_k + z * sigma_k)"]
+      C1 --> C2 --> C3 --> C4
+    end
+
+    subgraph LOSS["Objective"]
+      direction TB
+      D1["loss_mask = ground_mask x valid_target"]
+      D2["map_nll"]
+      D3["dist_kl"]
+      D4["moment_match"]
+      D5["outlier_budget"]
+      D6["rmse and mae"]
+    end
+
+    A7 --> B1
+    B3 --> C2
+    B1 --> C1
+    A5 --> D1
+    A2 --> D1
+    C4 --> D2
+    C4 --> D3
+    C4 --> D4
+    C3 --> D5
+    C4 --> D6
+
+    classDef in fill:#d8eefc,stroke:#0f6c8d,stroke-width:1px,color:#083344;
+    classDef sa fill:#fde7d8,stroke:#c2410c,stroke-width:1px,color:#431407;
+    classDef sb fill:#e0f7e9,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef loss fill:#fff5cc,stroke:#a16207,stroke-width:1px,color:#422006;
+
+    class A1,A2,A3,A4,A5,A6,A7 in;
+    class B1,B2,B3,B4,B5 sa;
+    class C1,C2,C3,C4 sb;
+    class D1,D2,D3,D4,D5,D6 loss;

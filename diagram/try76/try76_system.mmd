@@ -1,0 +1,75 @@
+%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 34, 'curve': 'basis'}} }%%
+flowchart TB
+    subgraph IN["Inputs per sample"]
+      direction TB
+      A1["topology_map / 90"]
+      A2["los_mask"]
+      A3["nlos_mask = 1 - los"]
+      A4["ground_mask = topology == 0"]
+      A5["UAV height scalar"]
+    end
+
+    subgraph ROUTE["Expert routing"]
+      direction TB
+      B1["classify_topology(topology_map)"]
+      B2["6 topology classes"]
+      B3["LoS or NLoS region filter"]
+      B4["12 experts total"]
+      B1 --> B2 --> B3 --> B4
+    end
+
+    subgraph STAGEA["Stage A: distribution head"]
+      direction TB
+      C1["Encoder with FiLM(height)"]
+      C2["Global average pooling"]
+      C3["GMM head"]
+      C4["pi_k, mu_k, sigma_k"]
+      C1 --> C2 --> C3 --> C4
+    end
+
+    subgraph STAGEB["Stage B: map head"]
+      direction TB
+      D1["U-Net decoder"]
+      D2["Condition on height + GMM summary"]
+      D3["Per-pixel p_k(i,j), z(i,j), log sigma_tilde(i,j)"]
+      D4["yhat(i,j) = sum p_k * (mu_k + z * sigma_k)"]
+      D1 --> D2 --> D3 --> D4
+    end
+
+    subgraph LOSS["Training signals on valid ground pixels"]
+      direction TB
+      E1["dist_kl on empirical histogram"]
+      E2["map_nll under predicted mixture"]
+      E3["moment_match on image mean/variance"]
+      E4["outlier_budget on heavy component"]
+      E5["rmse_db metric"]
+    end
+
+    A1 --> B1
+    A2 --> B3
+    A1 --> C1
+    A2 --> C1
+    A3 --> C1
+    A4 --> C1
+    A5 --> C1
+    B4 --> C1
+    C4 --> D2
+    A5 --> D2
+    C1 --> D1
+    D4 --> E1
+    D4 --> E2
+    D4 --> E3
+    D3 --> E4
+    D4 --> E5
+
+    classDef in fill:#d8eefc,stroke:#0f6c8d,stroke-width:1px,color:#083344;
+    classDef route fill:#efe4ff,stroke:#6d28d9,stroke-width:1px,color:#2e1065;
+    classDef stagea fill:#fde7d8,stroke:#c2410c,stroke-width:1px,color:#431407;
+    classDef stageb fill:#e0f7e9,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef loss fill:#fff5cc,stroke:#a16207,stroke-width:1px,color:#422006;
+
+    class A1,A2,A3,A4,A5 in;
+    class B1,B2,B3,B4 route;
+    class C1,C2,C3,C4 stagea;
+    class D1,D2,D3,D4 stageb;
+    class E1,E2,E3,E4,E5 loss;

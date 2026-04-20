@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Submit chained 2-GPU Slurm jobs for Try 77 experts (train -> cleanup -> train ...).
-
-Resolves experts from ``experiments/seventyseventh_try77_experts/try77_expert_registry.yaml``
-and submits them in registry order, with a cleanup job between each train step.
-"""
+"""Submit chained 1-GPU Slurm jobs for Try 76 experts (train -> cleanup -> ...)."""
 from __future__ import annotations
 
 import argparse
@@ -23,12 +19,16 @@ except ImportError:
     import paramiko
 
 ROOT = Path(__file__).resolve().parents[2]
-LOCAL_DIR = ROOT / "TFGSeventySeventhTry77"
-REGISTRY = LOCAL_DIR / "experiments" / "seventyseventh_try77_experts" / "try77_expert_registry.yaml"
-REMOTE_DIR = "/scratch/nas/3/gmoreno/TFGpractice/TFGSeventySeventhTry77"
+LOCAL_DIR = ROOT / "TFGSeventySixthTry76"
+REGISTRY = LOCAL_DIR / "experiments" / "seventysixth_try76_experts" / "try76_expert_registry.yaml"
+REMOTE_DIR = "/scratch/nas/3/gmoreno/TFGpractice/TFGSeventySixthTry76"
 HOST = "sert.ac.upc.edu"
 USER = "gmoreno"
 TARGET_NODE = "sert-2001"
+
+TRAIN_SLURM = "cluster/run_seventysixth_try76_1gpu.slurm"
+CLEANUP_SLURM = "cluster/run_seventysixth_try76_cleanup_sert2001_1gpu.slurm"
+DEFAULT_BASE_MASTER_PORT = 30788
 
 
 def run_local(command: list[str]) -> None:
@@ -83,10 +83,9 @@ def resolve_expert(expert_id: str, experts: list[dict[str, Any]]) -> dict[str, A
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Submit chained Try 77 2-GPU jobs (one per expert, with cleanup between)."
+        description="Submit chained Try 76 1-GPU jobs (one per expert, with cleanup between)."
     )
-    parser.add_argument("expert_ids", nargs="*",
-                        help="expert_id values from try77_expert_registry.yaml; default = all.")
+    parser.add_argument("expert_ids", nargs="*")
     parser.add_argument("--skip-upload", action="store_true")
     parser.add_argument("--host", default=HOST)
     parser.add_argument("--user", default=USER)
@@ -95,10 +94,9 @@ def main() -> None:
     parser.add_argument("--node", default=TARGET_NODE)
     parser.add_argument("--cancel-all", action="store_true")
     parser.add_argument("--cancel-job-ids", default="")
-    parser.add_argument("--base-master-port", type=int, default=31888)
+    parser.add_argument("--base-master-port", type=int, default=DEFAULT_BASE_MASTER_PORT)
     parser.add_argument("--no-resume", action="store_true")
-    parser.add_argument("--wipe-outputs", action="store_true",
-                        help="Remove each expert output_dir before training; implies a fresh run.")
+    parser.add_argument("--wipe-outputs", action="store_true")
     args = parser.parse_args()
 
     password = os.environ.get(args.password_env, "")
@@ -106,29 +104,22 @@ def main() -> None:
         raise SystemExit(f"Set environment variable {args.password_env} or pass --ssh-key")
 
     all_experts = load_registry()
-    if args.expert_ids:
-        rows = [resolve_expert(eid, all_experts) for eid in args.expert_ids]
-    else:
-        rows = all_experts
+    rows = [resolve_expert(eid, all_experts) for eid in args.expert_ids] if args.expert_ids else all_experts
 
     if not args.skip_upload:
-        upload_cmd = [
+        run_local([
             sys.executable,
             str(ROOT / "cluster" / "upload_and_submit_experiments.py"),
             "--local-dir", str(LOCAL_DIR),
             "--upload-only",
             "--skip-datasets",
-        ]
-        run_local(upload_cmd)
+        ])
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     connect_kwargs: dict[str, Any] = {
-        "hostname": args.host,
-        "username": args.user,
-        "timeout": 30,
-        "allow_agent": True,
-        "look_for_keys": True,
+        "hostname": args.host, "username": args.user, "timeout": 30,
+        "allow_agent": True, "look_for_keys": True,
     }
     if password:
         connect_kwargs["password"] = password
@@ -139,12 +130,8 @@ def main() -> None:
     try:
         if args.cancel_all:
             remote_exec(client, f"scancel -u {args.user}", check=False)
-        cancel_raw = str(args.cancel_job_ids).strip()
-        if cancel_raw:
-            for jid in cancel_raw.split(","):
-                jid = jid.strip()
-                if jid:
-                    remote_exec(client, f"scancel {jid}", check=False)
+        for jid in (s.strip() for s in str(args.cancel_job_ids).split(",") if s.strip()):
+            remote_exec(client, f"scancel {jid}", check=False)
         remote_exec(client, f"squeue -u {args.user}", check=False)
 
         sbatch_prefix = f"sbatch --nodelist={args.node}"
@@ -154,11 +141,11 @@ def main() -> None:
         for i, row in enumerate(rows):
             expert_id = str(row["expert_id"])
             config = str(row["config"])
-            job_name = f"t77-{expert_id.replace('_', '-')[:28]}"
+            job_name = f"t76-{expert_id.replace('_', '-')[:28]}"
             exports = [
                 f"CONFIG_PATH={config}",
-                "TRAIN_SCRIPT=train_try77.py",
-                f"MASTER_PORT={args.base_master_port + i * 2}",
+                "TRAIN_SCRIPT=train_try76.py",
+                f"MASTER_PORT={args.base_master_port + i}",
             ]
             if args.wipe_outputs:
                 exports.append("WIPE_OUTPUTS=1")
@@ -169,17 +156,17 @@ def main() -> None:
             train_cmd = (
                 f"{sbatch_prefix} {current_dep}-J {job_name} "
                 f"--export=ALL,{','.join(exports)} "
-                "cluster/run_seventyseventh_try77_2gpu.slurm"
+                f"{TRAIN_SLURM}"
             )
             train_job_id = remote_sbatch(client, train_cmd)
             submitted.append((job_name, train_job_id))
 
-            cleanup_name = f"t77-cleanup-{expert_id.replace('_', '-')[:20]}"
+            cleanup_name = f"t76-cleanup-{expert_id.replace('_', '-')[:20]}"
             cleanup_cmd = (
                 f"{sbatch_prefix} --dependency=afterany:{train_job_id} "
                 f"-J {cleanup_name} "
                 f"--export=ALL,PREV_JOB_ID={train_job_id} "
-                "cluster/run_seventyseventh_try77_cleanup_sert2001_1gpu.slurm"
+                f"{CLEANUP_SLURM}"
             )
             cleanup_job_id = remote_sbatch(client, cleanup_cmd)
             submitted.append((cleanup_name, cleanup_job_id))

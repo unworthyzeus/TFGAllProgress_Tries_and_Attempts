@@ -3,6 +3,8 @@
 
 Resolves experts from ``experiments/seventysixth_try76_experts/try76_expert_registry.yaml``
 and submits them in registry order, with a cleanup job between each train step.
+The cleanup slurm receives ``PREV_JOB_ID`` so it only touches processes of the
+previous train job (see run_seventysixth_try76_cleanup_sert2001_1gpu.slurm).
 """
 from __future__ import annotations
 
@@ -29,6 +31,11 @@ REMOTE_DIR = "/scratch/nas/3/gmoreno/TFGpractice/TFGSeventySixthTry76"
 HOST = "sert.ac.upc.edu"
 USER = "gmoreno"
 TARGET_NODE = "sert-2001"
+
+GPUS = 2
+TRAIN_SLURM = "cluster/run_seventysixth_try76_2gpu.slurm"
+CLEANUP_SLURM = "cluster/run_seventysixth_try76_cleanup_sert2001_1gpu.slurm"
+DEFAULT_BASE_MASTER_PORT = 30888
 
 
 def run_local(command: list[str]) -> None:
@@ -83,7 +90,7 @@ def resolve_expert(expert_id: str, experts: list[dict[str, Any]]) -> dict[str, A
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Submit chained Try 76 2-GPU jobs (one per expert, with cleanup between)."
+        description=f"Submit chained Try 76 {GPUS}-GPU jobs (one per expert, with cleanup between)."
     )
     parser.add_argument("expert_ids", nargs="*",
                         help="expert_id values from try76_expert_registry.yaml; default = all.")
@@ -95,7 +102,7 @@ def main() -> None:
     parser.add_argument("--node", default=TARGET_NODE)
     parser.add_argument("--cancel-all", action="store_true")
     parser.add_argument("--cancel-job-ids", default="")
-    parser.add_argument("--base-master-port", type=int, default=30888)
+    parser.add_argument("--base-master-port", type=int, default=DEFAULT_BASE_MASTER_PORT)
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--wipe-outputs", action="store_true",
                         help="Remove each expert output_dir before training; implies a fresh run.")
@@ -169,7 +176,7 @@ def main() -> None:
             train_cmd = (
                 f"{sbatch_prefix} {current_dep}-J {job_name} "
                 f"--export=ALL,{','.join(exports)} "
-                "cluster/run_seventysixth_try76_2gpu.slurm"
+                f"{TRAIN_SLURM}"
             )
             train_job_id = remote_sbatch(client, train_cmd)
             submitted.append((job_name, train_job_id))
@@ -178,7 +185,8 @@ def main() -> None:
             cleanup_cmd = (
                 f"{sbatch_prefix} --dependency=afterany:{train_job_id} "
                 f"-J {cleanup_name} "
-                "cluster/run_seventysixth_try76_cleanup_sert2001_1gpu.slurm"
+                f"--export=ALL,PREV_JOB_ID={train_job_id} "
+                f"{CLEANUP_SLURM}"
             )
             cleanup_job_id = remote_sbatch(client, cleanup_cmd)
             submitted.append((cleanup_name, cleanup_job_id))

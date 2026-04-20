@@ -1,0 +1,58 @@
+%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 40}} }%%
+flowchart TB
+    subgraph H["Height path"]
+      direction TB
+      A1["UAV height h in meters"]
+      A2["16 log-spaced frequencies over 12..478 m"]
+      A3["sin(h / f_k) and cos(h / f_k)"]
+      A4["32-d sinusoidal embedding"]
+      A5["height MLP"]
+      A1 --> A2 --> A3 --> A4 --> A5
+    end
+
+    subgraph SA["Stage A conditioning"]
+      direction TB
+      B1["FiLM at encoder mid depth"]
+      B2["FiLM at encoder deep depth"]
+      B3["Height-conditioned pooled context"]
+      B4["GMM params: pi_k(h), mu_k(h), sigma_k(h)"]
+      B1 --> B3
+      B2 --> B3
+      B3 --> B4
+    end
+
+    subgraph VAR["How height variance enters"]
+      direction TB
+      C1["height_stratified study"]
+      C2["LoS mean shifts +5 to +11 dB from lowA to high"]
+      C3["LoS spread shrinks with height"]
+      C4["NLoS mean flatter, but tail component still moves"]
+      C5["Model must change mu and sigma with height"]
+      C1 --> C2 --> C3 --> C5
+      C1 --> C4 --> C5
+    end
+
+    subgraph SB["Stage B reuse"]
+      direction TB
+      D1["Concatenate GMM summary"]
+      D2["Fuse height embedding + GMM embedding"]
+      D3["FiLM decoder blocks"]
+      D4["Per-pixel assignments respect sample-level drift"]
+      D1 --> D2 --> D3 --> D4
+    end
+
+    A5 --> B1
+    A5 --> B2
+    A5 --> D2
+    B4 --> D1
+    C5 --> B4
+
+    classDef h fill:#d8eefc,stroke:#0f6c8d,stroke-width:1px,color:#083344;
+    classDef sa fill:#fde7d8,stroke:#c2410c,stroke-width:1px,color:#431407;
+    classDef var fill:#fff5cc,stroke:#a16207,stroke-width:1px,color:#422006;
+    classDef sb fill:#e0f7e9,stroke:#15803d,stroke-width:1px,color:#052e16;
+
+    class A1,A2,A3,A4,A5 h;
+    class B1,B2,B3,B4 sa;
+    class C1,C2,C3,C4,C5 var;
+    class D1,D2,D3,D4 sb;

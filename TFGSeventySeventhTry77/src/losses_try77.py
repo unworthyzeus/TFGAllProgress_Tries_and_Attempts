@@ -23,6 +23,7 @@ EPS = 1e-6
 LOG_2PI = math.log(2 * math.pi)
 LOG_SIGMA_TILDE_MIN = math.log(1.0e-3)
 LOG_SIGMA_TILDE_MAX = math.log(30.0)
+MAX_SQUARED_Z = 100.0  # caps (diff/σ)^2 so a bad target pixel can't overflow log-pdf
 
 
 @dataclass
@@ -54,7 +55,8 @@ def map_nll_loss(
     sigma_tilde = torch.exp(log_sigma_tilde.clamp(min=LOG_SIGMA_TILDE_MIN, max=LOG_SIGMA_TILDE_MAX)).clamp_min(EPS)
     var_total = sigma.pow(2) + sigma_tilde.pow(2)
     diff = target - mu
-    log_pdf = -0.5 * (diff.pow(2) / var_total + var_total.log() + LOG_2PI)
+    squared_z = (diff.pow(2) / var_total).clamp(max=MAX_SQUARED_Z)
+    log_pdf = -0.5 * (squared_z + var_total.log() + LOG_2PI)
     log_weighted = log_pdf + (p.clamp_min(EPS)).log()
     log_mix = torch.logsumexp(log_weighted, dim=1, keepdim=True)
     return _masked_mean(-log_mix, loss_mask)
@@ -184,6 +186,7 @@ def combined_loss(
         + weights.rmse * l_rmse
         + weights.mae * l_mae
     )
+    total = torch.nan_to_num(total, nan=0.0, posinf=1e6, neginf=-1e6)
     return {
         "total": total,
         "map_nll": l_map.detach(),

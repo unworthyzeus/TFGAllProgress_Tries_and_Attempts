@@ -185,14 +185,30 @@ def _read_field(grp, name: str) -> np.ndarray:
 class Try77ExpertDataset(Dataset):
     """Loads (topology, los, nlos, ground_mask, h_tx) -> spread map."""
 
-    def __init__(self, cfg: Try77Config, sample_refs: Sequence[SampleRef]) -> None:
+    def __init__(self, cfg: Try77Config, sample_refs: Sequence[SampleRef], augment: bool = False) -> None:
         self.cfg = cfg
         self._refs = list(sample_refs)
+        self.augment = bool(augment)
         if cfg.metric not in METRIC_FIELDS:
             raise ValueError(f"Unknown metric {cfg.metric!r}; expected one of {list(METRIC_FIELDS)}")
 
     def __len__(self) -> int:
         return len(self._refs)
+
+    @staticmethod
+    def _apply_aug(arrays: List[np.ndarray]) -> List[np.ndarray]:
+        k = random.randint(0, 3)
+        flip_h = random.random() < 0.5
+        flip_v = random.random() < 0.5
+        out: List[np.ndarray] = []
+        for a in arrays:
+            b = np.rot90(a, k=k, axes=(-2, -1)) if k else a
+            if flip_h:
+                b = b[..., :, ::-1]
+            if flip_v:
+                b = b[..., ::-1, :]
+            out.append(np.ascontiguousarray(b))
+        return out
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         city, sample = self._refs[idx]
@@ -214,6 +230,11 @@ class Try77ExpertDataset(Dataset):
         target = np.where(valid_target, target, 0.0).astype(np.float32)
 
         channels = np.stack([topology_input, los, nlos, ground], axis=0)
+
+        if self.augment:
+            channels, target, loss_mask, ground = self._apply_aug(
+                [channels, target, loss_mask, ground]
+            )
 
         return {
             "city": city,
@@ -258,13 +279,15 @@ def build_expert_datasets(
                 target = _read_field(grp, METRIC_FIELDS[cfg.metric])
             ground = topo == 0.0
             valid_target = np.isfinite(target) & (target >= 0.0)
-            if int((ground & valid_target).sum()) == 0:
+            # Drop degenerate samples: <64 valid pixels risks GroupNorm numerics
+            # (all-zero inputs) and provides negligible training signal.
+            if int((ground & valid_target).sum()) < 64:
                 continue
             filtered.append(ref)
         return filtered
 
     return (
-        Try77ExpertDataset(cfg, _filter(train_refs)),
-        Try77ExpertDataset(cfg, _filter(val_refs)),
-        Try77ExpertDataset(cfg, _filter(test_refs)),
+        Try77ExpertDataset(cfg, _filter(train_refs), augment=True),
+        Try77ExpertDataset(cfg, _filter(val_refs), augment=False),
+        Try77ExpertDataset(cfg, _filter(test_refs), augment=False),
     )

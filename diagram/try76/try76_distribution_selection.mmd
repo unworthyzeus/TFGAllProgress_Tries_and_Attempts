@@ -1,0 +1,62 @@
+%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 38}} }%%
+flowchart TB
+    subgraph EVID["Evidence from histogram study"]
+      direction TB
+      A1["Aggregate histograms by metric, regime, and topology"]
+      A2["Compare gaussian, laplace, skew_normal, lognormal, gamma, weibull, spike_plus_exp, gmm2..gmm5"]
+      A3["Rank by KL(empirical || model)"]
+      A1 --> A2 --> A3
+    end
+
+    subgraph TRY76["Path-loss choice for Try 76"]
+      direction TB
+      B1["target_los: gmm3/gmm4/gmm5 all very close"]
+      B2["target_nlos: heavy tails, Laplace beats Gaussian"]
+      B3["Global default = K=5 GMM"]
+      B4["Extra components can collapse harmlessly on easy LoS cases"]
+      B1 --> B3
+      B2 --> B3 --> B4
+    end
+
+    subgraph TRY77["Spread choice for Try 77"]
+      direction TB
+      C1["delay_spread and angular_spread are spike + heavy tail"]
+      C2["spike_plus_exp or high-order GMM wins"]
+      C3["Model uses constrained spike component + tail mixture"]
+      C1 --> C2 --> C3
+    end
+
+    subgraph RANGE["Expert-specific output range"]
+      direction TB
+      D1["Support in histogram study gives nonzero_lo / nonzero_hi"]
+      D2["build_expert_clamps.py adds margin"]
+      D3["Examples: LoS 60..125 dB, NLoS 90..140 dB"]
+      D1 --> D2 --> D3
+    end
+
+    subgraph WHY["Why not plain regression"]
+      direction TB
+      E1["Try 67..75 NLoS predictions collapsed badly"]
+      E2["Need to model full marginal first"]
+      E3["Then let decoder place pixels spatially"]
+      E1 --> E2 --> E3
+    end
+
+    A3 --> B1
+    A3 --> B2
+    A3 --> C1
+    A1 --> D1
+    E3 --> B3
+    E3 --> C3
+
+    classDef evid fill:#d8eefc,stroke:#0f6c8d,stroke-width:1px,color:#083344;
+    classDef t76 fill:#fde7d8,stroke:#c2410c,stroke-width:1px,color:#431407;
+    classDef t77 fill:#e0f7e9,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef range fill:#efe4ff,stroke:#6d28d9,stroke-width:1px,color:#2e1065;
+    classDef why fill:#fff5cc,stroke:#a16207,stroke-width:1px,color:#422006;
+
+    class A1,A2,A3 evid;
+    class B1,B2,B3,B4 t76;
+    class C1,C2,C3 t77;
+    class D1,D2,D3 range;
+    class E1,E2,E3 why;

@@ -1,0 +1,40 @@
+%%{init: {'flowchart': {'nodeSpacing': 26, 'rankSpacing': 34}} }%%
+flowchart LR
+    subgraph OBS["Observed spread distributions"]
+      direction TB
+      A1["delay_spread target"]
+      A2["angular_spread target"]
+      A3["large spike near zero"]
+      A4["rare but important heavy tail"]
+      A1 --> A3
+      A1 --> A4
+      A2 --> A3
+      A2 --> A4
+    end
+
+    subgraph EVID["Family ranking evidence"]
+      direction TB
+      B1["Try76 histogram study"]
+      B2["spike_plus_exp often wins for target spreads"]
+      B3["gmm4/gmm5 also competitive in some classes"]
+      B1 --> B2 --> B3
+    end
+
+    subgraph MODEL["Try77 design choice"]
+      direction TB
+      C1["Constrained spike component"]
+      C2["Plus K learned tail components"]
+      C3["Better match than single Gaussian or plain MSE"]
+      C1 --> C2 --> C3
+    end
+
+    A4 --> B1
+    B3 --> C1
+
+    classDef obs fill:#d8eefc,stroke:#0f6c8d,stroke-width:1px,color:#083344;
+    classDef evid fill:#efe4ff,stroke:#6d28d9,stroke-width:1px,color:#2e1065;
+    classDef model fill:#e0f7e9,stroke:#15803d,stroke-width:1px,color:#052e16;
+
+    class A1,A2,A3,A4 obs;
+    class B1,B2,B3 evid;
+    class C1,C2,C3 model;

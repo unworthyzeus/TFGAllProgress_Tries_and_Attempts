@@ -1,0 +1,77 @@
+%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 36}} }%%
+flowchart TB
+    subgraph CLASS["Topology classification"]
+      direction TB
+      A1["Compute density from non-ground pixels"]
+      A2["Compute mean building height"]
+      A3["Open sparse if density <= 0.12"]
+      A4["Dense block if density >= 0.28"]
+      A5["Otherwise mixed compact"]
+      A6["Lowrise if mean height <= 12 m"]
+      A7["Midrise if mean height <= 28 m"]
+      A8["open_sparse_lowrise or open_sparse_vertical"]
+      A9["mixed_compact_lowrise or mixed_compact_midrise"]
+      A10["dense_block_midrise or dense_block_highrise"]
+      A1 --> A2
+      A2 --> A3
+      A2 --> A4
+      A2 --> A5
+      A3 --> A6
+      A4 --> A7
+      A5 --> A6
+      A6 --> A8
+      A6 --> A9
+      A7 --> A10
+    end
+
+    subgraph EXP["Expert family"]
+      direction TB
+      B1["6 topology classes"]
+      B2["delay_spread expert per class"]
+      B3["angular_spread expert per class"]
+      B4["12 experts total"]
+      B1 --> B2
+      B1 --> B3
+      B2 --> B4
+      B3 --> B4
+    end
+
+    subgraph SPLIT["Dataset split"]
+      direction TB
+      C1["List all city and sample refs"]
+      C2["Shuffle city names with seed 42"]
+      C3["Assign whole cities to test"]
+      C4["Assign whole cities to val"]
+      C5["Everything else goes to train"]
+      C6["Target ratio 70 15 15"]
+      C7["Keep at least one city for train"]
+      C1 --> C2 --> C3 --> C4 --> C5 --> C6
+      C3 --> C7
+      C4 --> C7
+    end
+
+    subgraph FILTER["Per expert filtering"]
+      direction TB
+      D1["Keep matching topology class"]
+      D2["Build ground mask from topology == 0"]
+      D3["Read chosen metric map"]
+      D4["Mask non-finite or negative targets"]
+      D5["Train on valid ground pixels only"]
+      D1 --> D2 --> D3 --> D4 --> D5
+    end
+
+    A8 --> B1
+    A9 --> B1
+    A10 --> B1
+    B4 --> D1
+    C5 --> D1
+
+    classDef cls fill:#d8eefc,stroke:#0f6c8d,stroke-width:1px,color:#083344;
+    classDef exp fill:#efe4ff,stroke:#6d28d9,stroke-width:1px,color:#2e1065;
+    classDef split fill:#fff5cc,stroke:#a16207,stroke-width:1px,color:#422006;
+    classDef filt fill:#e0f7e9,stroke:#15803d,stroke-width:1px,color:#052e16;
+
+    class A1,A2,A3,A4,A5,A6,A7,A8,A9,A10 cls;
+    class B1,B2,B3,B4 exp;
+    class C1,C2,C3,C4,C5,C6,C7 split;
+    class D1,D2,D3,D4,D5 filt;

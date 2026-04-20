@@ -1,10 +1,9 @@
 #!/bin/bash
-# Try 76 generic 4-GPU launcher (copied/adapted from Try 75 SLURM, per the
-# DESIGN_TRY76.md rule: only SLURM artefacts are re-used from prior tries).
+# Try 77 4-GPU launcher (mirrors the 2-GPU script; only scaffolding differs).
 # Usage via sbatch:
-#   sbatch --export=ALL,CONFIG_PATH=experiments/seventysixth_try76_experts/try76_expert_open_sparse_lowrise_los.yaml,TRAIN_SCRIPT=train_try76.py \
-#     cluster/run_seventysixth_try76_4gpu.slurm
-#SBATCH --job-name=ckm-t76-4gpu
+#   sbatch --export=ALL,CONFIG_PATH=experiments/seventyseventh_try77_experts/try77_expert_open_sparse_lowrise_delay_spread.yaml,TRAIN_SCRIPT=train_try77.py \
+#     cluster/run_seventyseventh_try77_4gpu.slurm
+#SBATCH --job-name=ckm-t77-4gpu
 #SBATCH -A gpu
 #SBATCH -p gpu
 #SBATCH --qos=medium_gpu
@@ -12,22 +11,22 @@
 #SBATCH -w sert-2001
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=120G
-#SBATCH --time=0-01:20:00
+#SBATCH --time=0-04:00:00
 #SBATCH --signal=B:TERM@90
-#SBATCH --output=logs_train_try76_%x_%j.out
-#SBATCH --error=logs_train_try76_%x_%j.err
+#SBATCH --output=logs_train_try77_%x_%j.out
+#SBATCH --error=logs_train_try77_%x_%j.err
 
 set -euo pipefail
 
-CONFIG_PATH=${CONFIG_PATH:-experiments/seventysixth_try76_experts/try76_expert_open_sparse_lowrise_los.yaml}
-TRAIN_SCRIPT=${TRAIN_SCRIPT:-train_try76.py}
+CONFIG_PATH=${CONFIG_PATH:-experiments/seventyseventh_try77_experts/try77_expert_open_sparse_lowrise_delay_spread.yaml}
+TRAIN_SCRIPT=${TRAIN_SCRIPT:-train_try77.py}
 PYTHON_BIN=${PYTHON_BIN:-python}
 TORCHRUN_BIN=${TORCHRUN_BIN:-torchrun}
 NPROC_PER_NODE=${NPROC_PER_NODE:-4}
 VENV_PATH=${VENV_PATH:-/scratch/nas/3/gmoreno/tf_env/bin/activate}
 RESUME_CHECKPOINT=${RESUME_CHECKPOINT:-}
 WIPE_OUTPUTS=${WIPE_OUTPUTS:-0}
-MASTER_PORT=${MASTER_PORT:-30988}
+MASTER_PORT=${MASTER_PORT:-31988}
 HDF5_PATH=${HDF5_PATH:-/scratch/nas/3/gmoreno/TFGpractice/Datasets/CKM_Dataset_270326.h5}
 
 source "$VENV_PATH"
@@ -50,7 +49,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-runtime_config=$(mktemp "${SLURM_TMPDIR:-/tmp}/ckm_t76_XXXX.yaml")
+runtime_config=$(mktemp "${SLURM_TMPDIR:-/tmp}/ckm_t77_XXXX.yaml")
 
 if [ "$WIPE_OUTPUTS" = "1" ]; then
   echo "[wipe] WIPE_OUTPUTS=1 -> forcing a fresh run (resume disabled)"

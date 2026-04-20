@@ -1,5 +1,8 @@
 #!/bin/bash
 # Try 77 cleanup on sert-2001: 1 GPU only (avoids MaxGRESPerAccount from chained pending jobs).
+# Targets ONLY the processes of the previous train job (via PREV_JOB_ID) — a
+# blanket `pkill -u gmoreno -f train_try77.py` would also kill unrelated
+# concurrent chains on this node.
 #SBATCH --job-name=ckm-t77-cleanup-sert2001
 #SBATCH -A gpu
 #SBATCH --partition=gpu
@@ -14,16 +17,26 @@
 
 set -euo pipefail
 
-echo "[cleanup] host=$(hostname) start=$(date --iso-8601=seconds)"
+echo "[cleanup] host=$(hostname) start=$(date --iso-8601=seconds) prev_job=${PREV_JOB_ID:-<unset>}"
 nvidia-smi || true
 
-pkill -9 -u gmoreno -f 'train_try77.py' || true
-pkill -9 -u gmoreno -f 'torchrun.*TFGSeventySeventhTry77' || true
-
-sleep 5
-
-echo "[cleanup] user processes after kill"
-ps -u gmoreno -o pid,ppid,comm,args | egrep 'train_try77|torchrun.*TFGSeventySeventhTry77' || true
+if [ -n "${PREV_JOB_ID:-}" ]; then
+  pids=$(scontrol listpids "$PREV_JOB_ID" 2>/dev/null | awk 'NR>1 && $1 ~ /^[0-9]+$/ {print $1}' | sort -u)
+  if [ -n "${pids:-}" ]; then
+    echo "[cleanup] killing leftover pids from job $PREV_JOB_ID: $pids"
+    for pid in $pids; do
+      kill -TERM "$pid" 2>/dev/null || true
+    done
+    sleep 5
+    for pid in $pids; do
+      kill -KILL "$pid" 2>/dev/null || true
+    done
+  else
+    echo "[cleanup] no residual pids for job $PREV_JOB_ID (normal)"
+  fi
+else
+  echo "[cleanup] PREV_JOB_ID not set — skipping process kill"
+fi
 
 echo "[cleanup] nvidia-smi after"
 nvidia-smi || true

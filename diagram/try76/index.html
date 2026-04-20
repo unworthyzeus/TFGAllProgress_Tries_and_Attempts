@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Try76 Diagrams</title>
+  <style>
+    :root {
+      --bg: #f3f7fb;
+      --card: #ffffff;
+      --ink: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+      --accent: #0f766e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      background:
+        radial-gradient(circle at top right, rgba(125, 211, 252, 0.28), transparent 36%),
+        radial-gradient(circle at top left, rgba(110, 231, 183, 0.20), transparent 30%),
+        var(--bg);
+      color: var(--ink);
+    }
+    .wrap { max-width: 1380px; margin: 20px auto; padding: 0 16px 24px; }
+    h1 { margin: 0 0 8px; color: #134e4a; }
+    .subtitle { margin: 0 0 18px; color: var(--muted); max-width: 980px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      margin-bottom: 16px;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+    }
+    h2 { margin: 0 0 8px; font-size: 1.05rem; }
+    p { margin: 0 0 10px; color: var(--muted); font-size: 0.94rem; line-height: 1.45; }
+    .links { margin: 0 0 12px; font-size: 0.92rem; }
+    .links a { color: var(--accent); text-decoration: none; font-weight: 600; }
+    .links a:hover { text-decoration: underline; }
+    pre.mermaid {
+      margin: 0;
+      overflow-x: auto;
+      background: #fbfdff;
+      border-radius: 10px;
+      padding: 10px;
+    }
+    pre.mermaid svg { display: block; margin: 0 auto; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, theme: "default", securityLevel: "loose" });
+  </script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Try76 Diagram Collection</h1>
+    <p class="subtitle">Distribution-first path-loss experts: a simpler two-stage model than the older prior-heavy systems, with separate diagrams for the model, height conditioning, expert routing, dataset splitting, and how the output distribution was chosen.</p>
+
+    <div class="card">
+      <h2>1. Try76 Full System</h2>
+      <p>High-level view of the two-stage path-loss expert: minimal spatial inputs, topology and LoS/NLoS routing, a height-conditioned distribution head, then a map decoder trained on valid ground pixels only.</p>
+      <div class="links"><a href="try76_system.mmd">Open try76_system.mmd</a></div>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 34, 'curve': 'basis'}} }%%
+flowchart TB
+    subgraph IN["Inputs per sample"]
+      direction TB
+      A1["topology_map / 90"]
+      A2["los_mask"]
+      A3["nlos_mask = 1 - los"]
+      A4["ground_mask = topology == 0"]
+      A5["UAV height scalar"]
+    end
+
+    subgraph ROUTE["Expert routing"]
+      direction TB
+      B1["classify_topology(topology_map)"]
+      B2["6 topology classes"]
+      B3["LoS or NLoS region filter"]
+      B4["12 experts total"]
+      B1 --> B2 --> B3 --> B4
+    end
+
+    subgraph STAGEA["Stage A: distribution head"]
+      direction TB
+      C1["Encoder with FiLM(height)"]
+      C2["Global average pooling"]
+      C3["GMM head"]
+      C4["pi_k, mu_k, sigma_k"]
+      C1 --> C2 --> C3 --> C4
+    end
+
+    subgraph STAGEB["Stage B: map head"]
+      direction TB
+      D1["U-Net decoder"]
+      D2["Condition on height + GMM summary"]
+      D3["Per-pixel p_k(i,j), z(i,j), log sigma_tilde(i,j)"]
+      D4["yhat(i,j) = sum p_k * (mu_k + z * sigma_k)"]
+      D1 --> D2 --> D3 --> D4
+    end
+
+    subgraph LOSS["Training signals on valid ground pixels"]
+      direction TB
+      E1["dist_kl on empirical histogram"]
+      E2["map_nll under predicted mixture"]
+      E3["moment_match on image mean/variance"]
+      E4["outlier_budget on heavy component"]
+      E5["rmse_db metric"]
+    end
+
+    A1 --> B1
+    A2 --> B3
+    A1 --> C1
+    A2 --> C1
+    A3 --> C1
+    A4 --> C1
+    A5 --> C1
+    B4 --> C1
+    C4 --> D2
+    A5 --> D2
+    C1 --> D1
+    D4 --> E1
+    D4 --> E2
+    D4 --> E3
+    D3 --> E4
+    D4 --> E5
+
+    classDef in fill:#d8eefc,stroke:#0f6c8d,stroke-width:1px,color:#083344;
+    classDef route fill:#efe4ff,stroke:#6d28d9,stroke-width:1px,color:#2e1065;
+    classDef stagea fill:#fde7d8,stroke:#c2410c,stroke-width:1px,color:#431407;
+    classDef stageb fill:#e0f7e9,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef loss fill:#fff5cc,stroke:#a16207,stroke-width:1px,color:#422006;
+
+    class A1,A2,A3,A4,A5 in;
+    class B1,B2,B3,B4 route;
+    class C1,C2,C3,C4 stagea;
+    class D1,D2,D3,D4 stageb;
+    class E1,E2,E3,E4,E5 loss;</pre>
+    </div>
+
+    <div class="card">
+      <h2>2. Sinusoidal Height And Variance</h2>
+      <p>Shows the height path explicitly: the scalar UAV height becomes a log-spaced sinusoidal embedding, modulates the encoder through FiLM, changes the predicted mixture means and widths, and then propagates that drift into the decoder. This is the part that explains how height-dependent variance enters the model.</p>
+      <div class="links"><a href="try76_height_conditioning.mmd">Open try76_height_conditioning.mmd</a></div>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 40}} }%%
+flowchart TB
+    subgraph H["Height path"]
+      direction TB
+      A1["UAV height h in meters"]
+      A2["16 log-spaced frequencies over 12..478 m"]
+      A3["sin(h / f_k) and cos(h / f_k)"]
+      A4["32-d sinusoidal embedding"]
+      A5["height MLP"]
+      A1 --> A2 --> A3 --> A4 --> A5
+    end
+
+    subgraph SA["Stage A conditioning"]
+      direction TB
+      B1["FiLM at encoder mid depth"]
+      B2["FiLM at encoder deep depth"]
+      B3["Height-conditioned pooled context"]
+      B4["GMM params: pi_k(h), mu_k(h), sigma_k(h)"]
+      B1 --> B3
+      B2 --> B3
+      B3 --> B4
+    end
+
+    subgraph VAR["How height variance enters"]
+      direction TB
+      C1["height_stratified study"]
+      C2["LoS mean shifts +5 to +11 dB from lowA to high"]
+      C3["LoS spread shrinks with height"]
+      C4["NLoS mean flatter, but tail component still moves"]
+      C5["Model must change mu and sigma with height"]
+      C1 --> C2 --> C3 --> C5
+      C1 --> C4 --> C5
+    end
+
+    subgraph SB["Stage B reuse"]
+      direction TB
+      D1["Concatenate GMM summary"]
+      D2["Fuse height embedding + GMM embedding"]
+      D3["FiLM decoder blocks"]
+      D4["Per-pixel assignments respect sample-level drift"]
+      D1 --> D2 --> D3 --> D4
+    end
+
+    A5 --> B1
+    A5 --> B2
+    A5 --> D2
+    B4 --> D1
+    C5 --> B4
+
+    classDef h fill:#d8eefc,stroke:#0f6c8d,stroke-width:1px,color:#083344;
+    classDef sa fill:#fde7d8,stroke:#c2410c,stroke-width:1px,color:#431407;
+    classDef var fill:#fff5cc,stroke:#a16207,stroke-width:1px,color:#422006;
+    classDef sb fill:#e0f7e9,stroke:#15803d,stroke-width:1px,color:#052e16;
+
+    class A1,A2,A3,A4,A5 h;
+    class B1,B2,B3,B4 sa;
+    class C1,C2,C3,C4,C5 var;
+    class D1,D2,D3,D4 sb;</pre>
+    </div>
+
+    <div class="card">
+      <h2>3. Expert Classification And Dataset Split</h2>
+      <p>Breaks apart the data pipeline: topology labels come from density and mean-building-height thresholds, then the city-holdout split keeps whole cities together, and finally each expert filters by topology plus LoS-only or NLoS-only regions.</p>
+      <div class="links"><a href="try76_expert_split_and_routing.mmd">Open try76_expert_split_and_routing.mmd</a></div>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 36}} }%%
+flowchart TB
+    subgraph CLASS["Topology classification"]
+      direction TB
+      A1["Compute density from non-ground pixels"]
+      A2["Compute mean building height"]
+      A3["Open sparse if density <= 0.12"]
+      A4["Dense block if density >= 0.28"]
+      A5["Otherwise mixed compact"]
+      A6["Lowrise if mean height <= 12 m"]
+      A7["Midrise if mean height <= 28 m"]
+      A8["open_sparse_lowrise or open_sparse_vertical"]
+      A9["mixed_compact_lowrise or mixed_compact_midrise"]
+      A10["dense_block_midrise or dense_block_highrise"]
+      A1 --> A2
+      A2 --> A3
+      A2 --> A4
+      A2 --> A5
+      A3 --> A6
+      A4 --> A7
+      A5 --> A6
+      A6 --> A8
+      A6 --> A9
+      A7 --> A10
+    end
+
+    subgraph EXP["Expert family"]
+      direction TB
+      B1["6 topology classes"]
+      B2["LoS expert per class"]
+      B3["NLoS expert per class"]
+      B4["12 experts total"]
+      B1 --> B2
+      B1 --> B3
+      B2 --> B4
+      B3 --> B4
+    end
+
+    subgraph SPLIT["Dataset split"]
+      direction TB
+      C1["List all city and sample refs"]
+      C2["Shuffle city names with seed 42"]
+      C3["Assign whole cities to test"]
+      C4["Assign whole cities to val"]
+      C5["Everything else goes to train"]
+      C6["Target ratio 70 15 15"]
+      C7["Keep at least one city for train"]
+      C1 --> C2 --> C3 --> C4 --> C5 --> C6
+      C3 --> C7
+      C4 --> C7
+    end
+
+    subgraph FILTER["Per expert filtering"]
+      direction TB
+      D1["Keep matching topology class"]
+      D2["Build ground mask from topology == 0"]
+      D3["Apply LoS only or NLoS only region mask"]
+      D4["Mask invalid target pixels"]
+      D5["Drop samples with too few valid pixels"]
+      D1 --> D2 --> D3 --> D4 --> D5
+    end
+
+    A8 --> B1
+    A9 --> B1
+    A10 --> B1
+    B4 --> D1
+    C5 --> D1
+
+    classDef cls fill:#d8eefc,stroke:#0f6c8d,stroke-width:1px,color:#083344;
+    classDef exp fill:#efe4ff,stroke:#6d28d9,stroke-width:1px,color:#2e1065;
+    classDef split fill:#fff5cc,stroke:#a16207,stroke-width:1px,color:#422006;
+    classDef filt fill:#e0f7e9,stroke:#15803d,stroke-width:1px,color:#052e16;
+
+    class A1,A2,A3,A4,A5,A6,A7,A8,A9,A10 cls;
+    class B1,B2,B3,B4 exp;
+    class C1,C2,C3,C4,C5,C6,C7 split;
+    class D1,D2,D3,D4,D5 filt;</pre>
+    </div>
+
+    <div class="card">
+      <h2>4. How The Distribution Is Chosen</h2>
+      <p>This diagram ties the docs to the model choice. Try76 looks at histogram-fit rankings and uses a multi-component GMM for path loss; Try77 keeps the same philosophy but adapts it to spike-plus-tail spread distributions.</p>
+      <div class="links"><a href="try76_distribution_selection.mmd">Open try76_distribution_selection.mmd</a></div>
+      <pre class="mermaid">%%{init: {'flowchart': {'nodeSpacing': 28, 'rankSpacing': 38}} }%%
+flowchart TB
+    subgraph EVID["Evidence from histogram study"]
+      direction TB
+      A1["Aggregate histograms by metric, regime, and topology"]
+      A2["Compare gaussian, laplace, skew_normal, lognormal, gamma, weibull, spike_plus_exp, gmm2..gmm5"]
+      A3["Rank by KL(empirical || model)"]
+      A1 --> A2 --> A3
+    end
+
+    subgraph TRY76["Path-loss choice for Try 76"]
+      direction TB
+      B1["target_los: gmm3/gmm4/gmm5 all very close"]
+      B2["target_nlos: heavy tails, Laplace beats Gaussian"]
+      B3["Global default = K=5 GMM"]
+      B4["Extra components can collapse harmlessly on easy LoS cases"]
+      B1 --> B3
+      B2 --> B3 --> B4
+    end
+
+    subgraph TRY77["Spread choice for Try 77"]
+      direction TB
+      C1["delay_spread and angular_spread are spike + heavy tail"]
+      C2["spike_plus_exp or high-order GMM wins"]
+      C3["Model uses constrained spike component + tail mixture"]
+      C1 --> C2 --> C3
+    end
+
+    subgraph RANGE["Expert-specific output range"]
+      direction TB
+      D1["Support in histogram study gives nonzero_lo / nonzero_hi"]
+      D2["build_expert_clamps.py adds margin"]
+      D3["Examples: LoS 60..125 dB, NLoS 90..140 dB"]
+      D1 --> D2 --> D3
+    end
+
+    subgraph WHY["Why not plain regression"]
+      direction TB
+      E1["Try 67..75 NLoS predictions collapsed badly"]
+      E2["Need to model full marginal first"]
+      E3["Then let decoder place pixels spatially"]
+      E1 --> E2 --> E3
+    end
+
+    A3 --> B1
+    A3 --> B2
+    A3 --> C1
+    A1 --> D1
+    E3 --> B3
+    E3 --> C3
+
+    classDef evid fill:#d8eefc,stroke:#0f6c8d,stroke-width:1px,color:#083344;
+    classDef t76 fill:#fde7d8,stroke:#c2410c,stroke-width:1px,color:#431407;
+    classDef t77 fill:#e0f7e9,stroke:#15803d,stroke-width:1px,color:#052e16;
+    classDef range fill:#efe4ff,stroke:#6d28d9,stroke-width:1px,color:#2e1065;
+    classDef why fill:#fff5cc,stroke:#a16207,stroke-width:1px,color:#422006;
+
+    class A1,A2,A3 evid;
+    class B1,B2,B3,B4 t76;
+    class C1,C2,C3 t77;
+    class D1,D2,D3 range;
+    class E1,E2,E3 why;</pre>
+    </div>
+  </div>
+</body>
+</html>
