@@ -1,0 +1,41 @@
+# Try 78 — NLoS path-loss expert registry
+# 6 per-topology-class experts, each trained on NLoS pixels only (los_region_mask_mode: nlos_only).
+# Architecture: Try76Model (distribution-first, GMM Stage-A + U-Net Stage-B, FiLM height conditioning).
+# Source architecture: TFGSeventySixthTry76 / src/model_try76.py
+
+experts:
+  - id: open_sparse_lowrise_nlos
+    topology_class: open_sparse_lowrise
+    config: try78_expert_open_sparse_lowrise_nlos.yaml
+    output_dir: outputs/try78_expert_open_sparse_lowrise_nlos
+
+  - id: open_sparse_vertical_nlos
+    topology_class: open_sparse_vertical
+    config: try78_expert_open_sparse_vertical_nlos.yaml
+    output_dir: outputs/try78_expert_open_sparse_vertical_nlos
+
+  - id: mixed_compact_lowrise_nlos
+    topology_class: mixed_compact_lowrise
+    config: try78_expert_mixed_compact_lowrise_nlos.yaml
+    output_dir: outputs/try78_expert_mixed_compact_lowrise_nlos
+
+  - id: mixed_compact_midrise_nlos
+    topology_class: mixed_compact_midrise
+    config: try78_expert_mixed_compact_midrise_nlos.yaml
+    output_dir: outputs/try78_expert_mixed_compact_midrise_nlos
+
+  - id: dense_block_midrise_nlos
+    topology_class: dense_block_midrise
+    config: try78_expert_dense_block_midrise_nlos.yaml
+    output_dir: outputs/try78_expert_dense_block_midrise_nlos
+
+  - id: dense_block_highrise_nlos
+    topology_class: dense_block_highrise
+    config: try78_expert_dense_block_highrise_nlos.yaml
+    output_dir: outputs/try78_expert_dense_block_highrise_nlos
+
+topology_partitioning:
+  density_q1: 0.12
+  density_q2: 0.28
+  height_q1: 12.0
+  height_q2: 28.0

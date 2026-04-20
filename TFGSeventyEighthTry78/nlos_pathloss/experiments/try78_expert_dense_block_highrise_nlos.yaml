@@ -1,0 +1,31 @@
+seed: 42
+data:
+  format: hdf5
+  hdf5_path: ../../Datasets/CKM_Dataset_270326.h5
+  input_column: topology_map
+  los_input_column: los_mask
+  split_mode: city_holdout
+  val_ratio: 0.15
+  test_ratio: 0.15
+  split_seed: 42
+  scalar_feature_columns:
+  - antenna_height_m
+  hdf5_scalar_specs:
+  - name: antenna_height_m
+    from_dataset: uav_height
+  scalar_feature_norms:
+    antenna_height_m: 120.0
+  image_size: 513
+  path_loss_no_data_mask_column: path_loss_no_data_mask
+  derive_no_data_from_non_ground: true
+  use_los_as_input: true
+  los_region_mask_mode: nlos_only
+  los_region_mask_threshold: 0.5
+  partition_filter:
+    topology_class: dense_block_highrise
+runtime:
+  device: cuda
+  output_dir: outputs/try78_expert_dense_block_highrise_nlos
+  resume_checkpoint: ''
+target_columns:
+- path_loss

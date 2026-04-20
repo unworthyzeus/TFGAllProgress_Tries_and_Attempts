@@ -1,7 +1,7 @@
 seed: 42
 data:
   format: hdf5
-  hdf5_path: ../Datasets/CKM_Dataset_270326.h5
+  hdf5_path: ../../Datasets/CKM_Dataset_270326.h5
   input_column: topology_map
   input_metadata:
     scale: 255.0
@@ -13,20 +13,20 @@ data:
   path_loss_formula_input:
     enabled: false
     formula: hybrid_two_ray_cost231_a2g_nlos
-    regime_calibration_json: prior_calibration/regime_obstruction_train_only_from_try47.json
+    regime_calibration_json: ../../prior_calibration/regime_obstruction_train_only_from_try47.json
     prefer_threshold_city_type: true
     meters_per_pixel: 1.0
     frequency_ghz: 7.125
     receiver_height_m: 1.5
     include_confidence_channel: false
     confidence_kernel_size: 31
-    cache_version: try74_no_prior_band4555
+    cache_version: try78_los_open_sparse_lowrise
     cache_enabled: false
-    cache_dir: prior_cache/try74_no_prior_band4555
+    cache_dir: prior_cache/try78_los_open_sparse_lowrise
     precomputed_hdf5: ''
   path_loss_obstruction_features:
     enabled: true
-    precomputed_hdf5: ../TFGFortySeventhTry47/precomputed/obstruction_features_u8.h5
+    precomputed_hdf5: ../../TFGFortySeventhTry47/precomputed/obstruction_features_u8.h5
     meters_per_pixel: 1.0
     angle_bins: 720
     include_shadow_depth: true
@@ -54,8 +54,12 @@ data:
   val_persistent_workers: true
   prefetch_factor: 4
   partition_filter:
-    antenna_height_m_min: 45.0
-    antenna_height_m_max: 55.0
+    topology_class: open_sparse_lowrise
+    topology_partitioning:
+      density_q1: 0.12
+      density_q2: 0.28
+      height_q1: 12.0
+      height_q2: 28.0
   path_loss_no_data_mask_column: path_loss_no_data_mask
   derive_no_data_from_non_ground: true
   tx_depth_map_channel: true
@@ -179,7 +183,7 @@ augmentation:
   rot90_prob: 0.5
 runtime:
   device: cuda
-  output_dir: outputs/try74_expert_band4555_allcity_los
+  output_dir: outputs/try78_expert_open_sparse_lowrise_los
   resume_checkpoint: ''
 target_columns:
 - path_loss
