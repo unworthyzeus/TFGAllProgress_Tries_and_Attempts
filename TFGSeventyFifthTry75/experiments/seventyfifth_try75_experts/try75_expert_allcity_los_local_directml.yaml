@@ -1,0 +1,253 @@
+seed: 42
+data:
+  format: hdf5
+  hdf5_path: ../Datasets/CKM_Dataset_270326.h5
+  input_column: topology_map
+  input_metadata:
+    scale: 255.0
+    offset: 0.0
+  los_input_column: los_mask
+  distance_map_channel: true
+  exclude_non_ground_targets: true
+  non_ground_threshold: 0.0
+  path_loss_formula_input:
+    enabled: false
+    formula: hybrid_two_ray_cost231_a2g_nlos
+    regime_calibration_json: prior_calibration/regime_obstruction_train_only_from_try47.json
+    prefer_threshold_city_type: true
+    meters_per_pixel: 1.0
+    frequency_ghz: 7.125
+    receiver_height_m: 1.5
+    include_confidence_channel: false
+    confidence_kernel_size: 31
+    cache_version: try75_no_prior_allheights
+    cache_enabled: false
+    cache_dir: prior_cache/try75_no_prior_allheights
+    precomputed_hdf5: ''
+  path_loss_obstruction_features:
+    enabled: true
+    precomputed_hdf5: 'C:/TFG/TFGpractice/TFGFiftiethTry50/precomputed/obstruction_features_u8.h5'
+    meters_per_pixel: 1.0
+    angle_bins: 720
+    include_shadow_depth: true
+    include_distance_since_los_break: true
+    include_max_blocker_height: true
+    include_blocker_count: true
+  path_loss_saturation_db: 180
+  path_loss_ignore_nonfinite: true
+  target_field_map: {}
+  split_mode: city_holdout
+  val_ratio: 0.15
+  test_ratio: 0.15
+  split_seed: 42
+  scalar_feature_columns:
+  - antenna_height_m
+  hdf5_scalar_specs:
+  - name: antenna_height_m
+    from_dataset: uav_height
+  constant_scalar_features: {}
+  scalar_feature_norms:
+    antenna_height_m: 120.0
+  image_size: 513
+  num_workers: 2
+  val_num_workers: 2
+  persistent_workers: true
+  val_persistent_workers: true
+  prefetch_factor: 2
+  partition_filter: {}
+  path_loss_no_data_mask_column: path_loss_no_data_mask
+  derive_no_data_from_non_ground: true
+  tx_depth_map_channel: true
+  elevation_angle_map_channel: true
+  building_mask_channel: true
+  val_batch_size: 4
+  use_los_as_input: true
+  los_region_mask_mode: los_only
+  los_region_mask_threshold: 0.5
+model:
+  base_channels: 12
+  disc_base_channels: 0
+  disc_norm_type: group
+  disc_input_downsample_factor: 1
+  encoder_blocks:
+  - 2
+  - 2
+  - 2
+  - 2
+  context_dilations:
+  - 1
+  - 2
+  - 4
+  - 8
+  dropout: 0.12
+  gradient_checkpointing: false
+  out_channels: 1
+  use_scalar_channels: true
+  norm_type: group
+  arch: pmhhnet
+  in_channels: 10
+  hf_channels: 20
+  use_scalar_film: true
+  use_se_attention: true
+  se_reduction: 4
+  absolute_output_bias_init_db: auto
+training:
+  batch_size: 3
+  epochs: 2
+  lr_scheduler_score_ema: 0.6
+  swa:
+    enabled: true
+    start_fraction: 0.6
+    swa_lr: 5.0e-05
+  target_noise:
+    enabled: true
+    sigma_db: 0.5
+  early_stopping:
+    enabled: true
+    patience: 25
+    min_delta: 0.0
+    rewind_to_best_model: true
+  selection_metrics:
+    path_loss.rmse_physical: 1.0
+  save_validation_json_each_epoch: true
+  run_final_test_after_training: true
+  auto_batch_by_vram:
+    enabled: false
+    reference_vram_gb: 80.0
+    reference_batch_size: 1
+    min_batch_size: 1
+    max_batch_size: 5
+    safety_factor: 0.9
+  optimizer: adamw
+  discriminator_optimizer: adam
+  learning_rate: 0.0008
+  discriminator_lr: 3.0e-05
+  weight_decay: 0.015
+  beta1: 0.9
+  beta2: 0.999
+  lr_scheduler: reduce_on_plateau
+  lr_scheduler_factor: 0.5
+  lr_scheduler_patience: 8
+  lr_scheduler_min_lr: 1.0e-06
+  amp: true
+  clip_grad_norm: 1.0
+  save_every: 5
+  regime_reweighting:
+    enabled: false
+  gradient_accumulation_steps: 8
+  ema_decay: 0.95
+  lr_warmup_optimizer_steps: 250
+  lr_warmup_start_factor: 0.2
+  generator_objective: full_map_rmse_only
+  nlos_reweight_factor: 1.0
+  cutmix_prob: 0.25
+  cutmix_alpha: 1.0
+loss:
+  lambda_recon: 0.0
+  lambda_gan: 0.0
+  mse_weight: 0.0
+  l1_weight: 0.0
+  adversarial_loss: bce
+  loss_type: mse
+  full_map_generator_scale: 25.0
+multiscale_path_loss:
+  enabled: true
+  scales:
+  - 2
+  - 4
+  weights:
+  - 0.6
+  - 0.4
+  min_valid_ratio: 0.5
+  loss_weight: 0.55
+prior_residual_path_loss:
+  enabled: false
+  absolute_prediction: true
+  use_formula_input_channel: false
+  optimize_residual_only: false
+  clamp_final_output: false
+  loss_weight: 0.0
+  mse_weight: 1.0
+  l1_weight: 0.0
+  final_loss_weight_when_residual_only: 0.0
+  multiscale_loss_weight_when_residual_only: 0.0
+augmentation:
+  enable: true
+  hflip_prob: 0.5
+  vflip_prob: 0.5
+  rot90_prob: 0.5
+runtime:
+  device: directml
+  output_dir: outputs/try75_expert_allcity_los_local_ep2
+  resume_checkpoint: 'C:/TFG/Final_Models_TFG/los/all_experts_los_try75_base12.pt'
+target_columns:
+- path_loss
+target_losses:
+  path_loss: mse
+target_metadata:
+  path_loss:
+    scale: 180.0
+    offset: 0.0
+    unit: dB
+    clip_min: 0.0
+    clip_max: 180.0
+    predict_linear: false
+no_data_auxiliary:
+  enabled: false
+  loss_weight: 0.0
+  positive_weight: 1.0
+nlos_focus_loss:
+  enabled: false
+pde_residual_loss:
+  enabled: false
+  loss_weight: 0.0
+dual_los_nlos_head:
+  enabled: false
+test_time_augmentation:
+  enabled: true
+  transforms: d4
+  use_in_validation: false
+  use_in_final_test: true
+los_highpass_loss:
+  enabled: false
+  loss_weight: 0.0
+  mode: local_std
+  sigma_px_list: [2.0, 4.0, 8.0]
+  local_std_window_px: 7.0
+  los_threshold: 0.5
+los_gradient_magnitude_loss:
+  enabled: false
+  loss_weight: 0.0
+  los_threshold: 0.5
+  eps: 1.0e-06
+los_laplacian_pyramid_loss:
+  enabled: false
+  loss_weight: 0.0
+  levels: 3
+  los_threshold: 0.5
+  min_valid_ratio: 0.25
+  coarse_emphasis: true
+nlos_dog_loss:
+  enabled: false
+  loss_weight: 0.0
+  sigma_small_px: 2.0
+  sigma_large_px: 6.0
+  los_threshold: 0.5
+nlos_gradmag_loss:
+  enabled: false
+  loss_weight: 0.0
+  los_threshold: 0.5
+  boundary_boost: 2.0
+  eps: 1.0e-06
+nlos_laplacian_pyramid_loss:
+  enabled: false
+  loss_weight: 0.0
+  levels: 3
+  los_threshold: 0.5
+  min_valid_ratio: 0.25
+  coarse_emphasis: true
+corridor_weighting:
+  enabled: false
+  sigma: 40.0
+  kappa: 150.0
+  min_weight: 0.3

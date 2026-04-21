@@ -18,6 +18,7 @@ import io
 import os
 import stat
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -377,13 +378,44 @@ def clean_remote_outputs(sftp, remote_dir: str) -> None:
     rm_r(remote_dir)
 
 
+def _remote_size(sftp, remote_path: str) -> int:
+    return int(sftp.stat(remote_path).st_size)
+
+
 def put_file(sftp, local_path: str, remote_path: str, rel_path: str) -> None:
-    if rel_path.lower().endswith(".slurm"):
+    is_slurm = rel_path.lower().endswith(".slurm")
+    if is_slurm:
         with open(local_path, "rb") as handle:
-            blob = handle.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-        sftp.putfo(io.BytesIO(blob), remote_path)
-        return
-    sftp.put(local_path, remote_path)
+            payload = handle.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    else:
+        payload = None
+
+    expected_size = len(payload) if payload is not None else os.path.getsize(local_path)
+    last_error: Exception | None = None
+
+    for attempt in range(1, 4):
+        try:
+            if payload is not None:
+                sftp.putfo(io.BytesIO(payload), remote_path, confirm=True)
+            else:
+                sftp.put(local_path, remote_path, confirm=True)
+
+            actual_size = _remote_size(sftp, remote_path)
+            if actual_size != expected_size:
+                raise IOError(f"remote size mismatch after upload: {actual_size} != {expected_size}")
+            return
+        except Exception as exc:
+            last_error = exc
+            try:
+                sftp.remove(remote_path)
+            except Exception:
+                pass
+            if attempt < 3:
+                time.sleep(1.0 * attempt)
+
+    raise IOError(
+        f"Failed to upload {rel_path} after 3 attempts: {last_error}"
+    ) from last_error
 
 
 def resolve_local_dir(root: Path, raw_local_dir: str | None, preset: Preset | None) -> Path:

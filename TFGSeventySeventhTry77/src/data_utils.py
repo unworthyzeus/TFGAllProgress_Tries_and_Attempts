@@ -267,10 +267,13 @@ def build_expert_datasets(
         cache[ref] = label
         return label
 
-    def _filter(refs_: Sequence[SampleRef]) -> List[SampleRef]:
+    def _filter(refs_: Sequence[SampleRef], *, drop_small_valid: bool) -> List[SampleRef]:
         filtered: List[SampleRef] = []
         for ref in refs_:
             if _classify(ref) != cfg.topology_class:
+                continue
+            if not drop_small_valid:
+                filtered.append(ref)
                 continue
             city, sample = ref
             with h5py.File(str(cfg.hdf5_path), "r") as handle:
@@ -287,7 +290,7 @@ def build_expert_datasets(
         return filtered
 
     return (
-        Try77ExpertDataset(cfg, _filter(train_refs), augment=True),
-        Try77ExpertDataset(cfg, _filter(val_refs), augment=False),
-        Try77ExpertDataset(cfg, _filter(test_refs), augment=False),
+        Try77ExpertDataset(cfg, _filter(train_refs, drop_small_valid=True), augment=True),
+        Try77ExpertDataset(cfg, _filter(val_refs, drop_small_valid=False), augment=False),
+        Try77ExpertDataset(cfg, _filter(test_refs, drop_small_valid=False), augment=False),
     )

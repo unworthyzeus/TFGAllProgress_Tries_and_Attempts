@@ -1,0 +1,40 @@
+{
+  "code_marker": "try77_stability_2026-04-20a",
+  "seed": 42,
+  "data": {
+    "hdf5_path": "/scratch/nas/3/gmoreno/TFGpractice/Datasets/CKM_Dataset_270326.h5",
+    "topology_class": "mixed_compact_lowrise",
+    "metric": "angular_spread",
+    "val_ratio": 0.15,
+    "test_ratio": 0.15,
+    "split_seed": 42,
+    "image_size": 513
+  },
+  "model": {
+    "clamp_lo": 0.0,
+    "clamp_hi": 90.0,
+    "base_width": 48,
+    "K": 5,
+    "sigma_min": 0.5,
+    "sigma_max": 45.0,
+    "spike_mu_max": 5.0,
+    "spike_sigma_min": 0.2,
+    "spike_sigma_max": 2.5
+  },
+  "training": {
+    "optimizer": "adamw",
+    "lr": 0.0003,
+    "weight_decay": 0.01,
+    "warmup_epochs": 1,
+    "epochs": 120,
+    "batch_size": 1,
+    "grad_accum_steps": 8,
+    "patience": 15,
+    "num_workers": 4
+  },
+  "runtime": {
+    "device": "cuda",
+    "output_dir": "/scratch/nas/3/gmoreno/TFGpractice/TFGSeventySeventhTry77/outputs/try77_expert_mixed_compact_lowrise_angular_spread",
+    "resume_checkpoint": null
+  }
+}
