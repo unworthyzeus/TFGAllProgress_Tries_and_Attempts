@@ -360,6 +360,12 @@ def main() -> None:
     start_epoch = 0
     best_score = float("inf")
     history: List[Dict[str, object]] = []
+
+    if not cfg.runtime.resume_checkpoint:
+        best_ckpt = cfg.runtime.output_dir / "best_model.pt"
+        if best_ckpt.exists():
+            cfg.runtime.resume_checkpoint = best_ckpt
+
     if cfg.runtime.resume_checkpoint and cfg.runtime.resume_checkpoint.exists():
         state = torch.load(cfg.runtime.resume_checkpoint, map_location=device)
         model.load_state_dict(state["model"], strict=False)
