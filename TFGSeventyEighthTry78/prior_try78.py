@@ -190,6 +190,47 @@ def _safe_divide(num: np.ndarray, den: np.ndarray) -> np.ndarray:
     return out
 
 
+def _gaussian_weighted_smooth(
+    x: np.ndarray,
+    y: np.ndarray,
+    weights: np.ndarray,
+    sigma: float,
+) -> np.ndarray:
+    if y.size == 0:
+        return y.astype(np.float32)
+    sigma = max(float(sigma), 1e-3)
+    out = np.zeros_like(y, dtype=np.float32)
+    for i, xi in enumerate(x):
+        kernel = np.exp(-0.5 * ((x - xi) / sigma) ** 2).astype(np.float64)
+        wk = kernel * np.maximum(weights.astype(np.float64), 1e-6)
+        den = float(wk.sum())
+        out[i] = float(np.sum(wk * y) / den) if den > 0.0 else float(y[i])
+    return out
+
+
+def _smooth_radial_profiles(
+    radial_profile_db: np.ndarray,
+    radial_count: np.ndarray,
+    global_profile_db: np.ndarray,
+    radius_sigma_px: float = 1.5,
+) -> np.ndarray:
+    if radial_profile_db.size == 0:
+        return radial_profile_db.astype(np.float32)
+    radius_axis = np.arange(radial_profile_db.shape[1], dtype=np.float32)
+    out = np.zeros_like(radial_profile_db, dtype=np.float32)
+    for i in range(radial_profile_db.shape[0]):
+        profile = radial_profile_db[i].astype(np.float32).copy()
+        missing = radial_count[i] == 0
+        profile[missing] = global_profile_db[missing]
+        out[i] = _gaussian_weighted_smooth(
+            radius_axis,
+            profile.astype(np.float64),
+            np.maximum(radial_count[i], 1).astype(np.float64),
+            sigma=radius_sigma_px,
+        )
+    return out
+
+
 def fit_radial_calibration(
     hdf5_path: Path,
     fit_refs: Sequence[SampleRef],
@@ -234,6 +275,7 @@ def fit_radial_calibration(
         "height_bin_m": np.asarray([height_bin_m], dtype=np.float32),
         "height_bins_m": np.asarray(height_bins, dtype=np.float32),
         "radial_profile_db": radial_profile,
+        "radial_profile_smooth_db": _smooth_radial_profiles(radial_profile, radial_count, global_profile),
         "radial_count": radial_count,
         "global_profile_db": global_profile,
         "global_count": global_count,
@@ -289,6 +331,46 @@ def _interpolate_profiles(
     return out
 
 
+def _stabilize_two_ray_params(
+    height_bins_m: np.ndarray,
+    rho: np.ndarray,
+    phi_rad: np.ndarray,
+    bias_db: np.ndarray,
+    fit_count: np.ndarray,
+    rho_max: float,
+    height_sigma_m: float = 10.0,
+    rho_outlier_thresh: float = 0.25,
+    bias_outlier_thresh: float = 0.8,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    weights = np.sqrt(np.maximum(fit_count.astype(np.float64), 1.0))
+    rho_smooth = _gaussian_weighted_smooth(height_bins_m, rho.astype(np.float64), weights, sigma=height_sigma_m)
+    phi_smooth = _gaussian_weighted_smooth(height_bins_m, phi_rad.astype(np.float64), weights, sigma=height_sigma_m)
+    bias_smooth = _gaussian_weighted_smooth(height_bins_m, bias_db.astype(np.float64), weights, sigma=height_sigma_m)
+
+    suspicious = np.zeros_like(rho, dtype=bool)
+    rho_cap_flag = rho >= float(rho_max) - 0.05
+    suspicious |= rho_cap_flag & (np.abs(rho - rho_smooth) > rho_outlier_thresh)
+    suspicious |= np.abs(bias_db - bias_smooth) > bias_outlier_thresh
+    suspicious |= fit_count < 0.5 * float(np.median(fit_count[fit_count > 0])) if np.any(fit_count > 0) else False
+
+    rho_final = rho.astype(np.float32).copy()
+    phi_final = phi_rad.astype(np.float32).copy()
+    bias_final = bias_db.astype(np.float32).copy()
+
+    # Always use gently smoothed phi; it is effectively near-constant here.
+    phi_final = phi_smooth.astype(np.float32)
+    # For rho and bias, keep raw unless the bin is suspicious.
+    rho_final[suspicious] = rho_smooth[suspicious]
+    bias_final[suspicious] = bias_smooth[suspicious]
+
+    return (
+        np.clip(rho_smooth.astype(np.float32), 0.0, float(rho_max)),
+        phi_smooth.astype(np.float32),
+        bias_smooth.astype(np.float32),
+        suspicious,
+    )
+
+
 def _interpolate_scalar(
     h_tx_m: float,
     height_bins_m: np.ndarray,
@@ -313,7 +395,7 @@ def predict_radial_map(h_tx_m: float, calibration: Dict[str, np.ndarray]) -> np.
     profile = _interpolate_profiles(
         h_tx_m=h_tx_m,
         height_bins_m=calibration["height_bins_m"],
-        radial_profile_db=calibration["radial_profile_db"],
+        radial_profile_db=calibration.get("radial_profile_smooth_db", calibration["radial_profile_db"]),
         radial_count=calibration["radial_count"],
         global_profile_db=calibration["global_profile_db"],
     )
@@ -435,12 +517,25 @@ def fit_two_ray_calibration(
                 f"rho={best_rho:.3f}  phi={best_phi:.3f}  bias={best_bias:.3f}  rmse={best_rmse:.3f}"
             )
 
+    rho_smooth, phi_smooth, bias_smooth, suspicious = _stabilize_two_ray_params(
+        np.asarray(height_bins, dtype=np.float32),
+        fitted_rho,
+        fitted_phi,
+        fitted_bias,
+        fitted_count,
+        rho_max=rho_max,
+    )
+
     return {
         "height_bin_m": np.asarray([height_bin_m], dtype=np.float32),
         "height_bins_m": np.asarray(height_bins, dtype=np.float32),
-        "rho": fitted_rho,
-        "phi_rad": fitted_phi,
-        "bias_db": fitted_bias,
+        "rho_raw": fitted_rho,
+        "phi_rad_raw": fitted_phi,
+        "bias_db_raw": fitted_bias,
+        "rho": rho_smooth,
+        "phi_rad": phi_smooth,
+        "bias_db": bias_smooth,
+        "suspicious_bin_mask": suspicious.astype(np.int8),
         "fit_rmse_db": fitted_rmse,
         "fit_count": fitted_count,
         "phi_grid_size": np.asarray([phi_grid_size], dtype=np.int32),
@@ -451,11 +546,83 @@ def fit_two_ray_calibration(
     }
 
 
+def fit_two_ray_residual_calibration(
+    hdf5_path: Path,
+    fit_refs: Sequence[SampleRef],
+    two_ray_calibration: Dict[str, np.ndarray],
+    height_bin_m: float,
+    residual_clip_db: float = 2.5,
+    radius_sigma_px: float = 1.5,
+    verbose: bool = True,
+) -> Dict[str, np.ndarray]:
+    height_bins = sorted({height_bin_key(ref.uav_height_m, height_bin_m) for ref in fit_refs})
+    bin_to_idx = {hb: idx for idx, hb in enumerate(height_bins)}
+
+    residual_sum = np.zeros((len(height_bins), MAX_RADIUS_PX + 1), dtype=np.float64)
+    residual_count = np.zeros((len(height_bins), MAX_RADIUS_PX + 1), dtype=np.uint32)
+    global_sum = np.zeros(MAX_RADIUS_PX + 1, dtype=np.float64)
+    global_count = np.zeros(MAX_RADIUS_PX + 1, dtype=np.uint32)
+
+    with h5py.File(str(hdf5_path), "r") as handle:
+        for idx, ref in enumerate(fit_refs, start=1):
+            sample = load_sample(handle, ref)
+            valid_los = sample["valid_los"]
+            if not valid_los.any():
+                continue
+
+            hb = height_bin_key(ref.uav_height_m, height_bin_m)
+            bi = bin_to_idx[hb]
+            two_ray_pred = predict_two_ray_map(ref.uav_height_m, two_ray_calibration)
+            residual = np.clip(sample["path_loss"] - two_ray_pred, -residual_clip_db, residual_clip_db)
+            rr = _RADIUS_PX[valid_los]
+            values = residual[valid_los].astype(np.float32)
+
+            bincount_sum = np.bincount(rr, weights=values, minlength=MAX_RADIUS_PX + 1)
+            bincount_cnt = np.bincount(rr, minlength=MAX_RADIUS_PX + 1).astype(np.uint32)
+            residual_sum[bi] += bincount_sum
+            residual_count[bi] += bincount_cnt
+            global_sum += bincount_sum
+            global_count += bincount_cnt
+
+            if verbose and idx % 500 == 0:
+                print(f"  two-ray-residual-fit [{idx}/{len(fit_refs)}] processed")
+
+    residual_profile = _safe_divide(residual_sum, residual_count)
+    global_profile = _safe_divide(global_sum, global_count)
+    smooth_profile = _smooth_radial_profiles(
+        residual_profile,
+        residual_count,
+        global_profile,
+        radius_sigma_px=radius_sigma_px,
+    )
+    return {
+        "height_bin_m": np.asarray([height_bin_m], dtype=np.float32),
+        "height_bins_m": np.asarray(height_bins, dtype=np.float32),
+        "residual_profile_db": residual_profile,
+        "residual_profile_smooth_db": smooth_profile,
+        "residual_count": residual_count,
+        "global_residual_db": global_profile,
+        "global_count": global_count,
+        "residual_clip_db": np.asarray([residual_clip_db], dtype=np.float32),
+        "radius_sigma_px": np.asarray([radius_sigma_px], dtype=np.float32),
+    }
+
+
 def predict_two_ray_map(h_tx_m: float, calibration: Dict[str, np.ndarray]) -> np.ndarray:
     rho = _interpolate_scalar(h_tx_m, calibration["height_bins_m"], calibration["rho"])
     phi = _interpolate_scalar(h_tx_m, calibration["height_bins_m"], calibration["phi_rad"])
     bias = _interpolate_scalar(h_tx_m, calibration["height_bins_m"], calibration["bias_db"])
     pred = fspl_db(h_tx_m) + coherent_two_ray_correction_db(h_tx_m, rho=rho, phi_rad=phi) + bias
+    if "residual_profile_db" in calibration:
+        residual_profile = _interpolate_profiles(
+            h_tx_m=h_tx_m,
+            height_bins_m=calibration["height_bins_m"],
+            radial_profile_db=calibration.get("residual_profile_smooth_db", calibration["residual_profile_db"]),
+            radial_count=calibration["residual_count"],
+            global_profile_db=calibration["global_residual_db"],
+        )
+        residual_clip_db = float(calibration.get("residual_clip_db", np.asarray([2.5], dtype=np.float32))[0])
+        pred = pred + np.clip(residual_profile[_RADIUS_PX], -residual_clip_db, residual_clip_db)
     return np.clip(pred, PATH_LOSS_MIN_DB, PATH_LOSS_MAX_DB).astype(np.float32)
 
 
@@ -553,16 +720,28 @@ def save_calibration(
             "global_profile_db": radial_calibration["global_profile_db"].tolist(),
             "global_count": radial_calibration["global_count"].tolist(),
             "radial_profile_db": radial_calibration["radial_profile_db"].tolist(),
+            "radial_profile_smooth_db": radial_calibration["radial_profile_smooth_db"].tolist(),
             "radial_count": radial_calibration["radial_count"].tolist(),
         },
         "two_ray": {
             "height_bin_m": float(two_ray_calibration["height_bin_m"][0]),
             "height_bins_m": two_ray_calibration["height_bins_m"].tolist(),
+            "rho_raw": two_ray_calibration["rho_raw"].tolist(),
+            "phi_rad_raw": two_ray_calibration["phi_rad_raw"].tolist(),
+            "bias_db_raw": two_ray_calibration["bias_db_raw"].tolist(),
             "rho": two_ray_calibration["rho"].tolist(),
             "phi_rad": two_ray_calibration["phi_rad"].tolist(),
             "bias_db": two_ray_calibration["bias_db"].tolist(),
+            "suspicious_bin_mask": two_ray_calibration["suspicious_bin_mask"].tolist(),
             "fit_rmse_db": two_ray_calibration["fit_rmse_db"].tolist(),
             "fit_count": two_ray_calibration["fit_count"].tolist(),
+            "residual_profile_db": two_ray_calibration["residual_profile_db"].tolist(),
+            "residual_profile_smooth_db": two_ray_calibration["residual_profile_smooth_db"].tolist(),
+            "residual_count": two_ray_calibration["residual_count"].tolist(),
+            "global_residual_db": two_ray_calibration["global_residual_db"].tolist(),
+            "global_count": two_ray_calibration["global_count"].tolist(),
+            "residual_clip_db": float(two_ray_calibration["residual_clip_db"][0]),
+            "radius_sigma_px": float(two_ray_calibration["radius_sigma_px"][0]),
             "phi_grid_size": int(two_ray_calibration["phi_grid_size"][0]),
             "rho_max": float(two_ray_calibration["rho_max"][0]),
             "rho_step": float(two_ray_calibration["rho_step"][0]),
@@ -584,16 +763,28 @@ def load_calibration(path: Path) -> Tuple[Dict[str, np.ndarray], Dict[str, np.nd
         "global_profile_db": np.asarray(radial["global_profile_db"], dtype=np.float32),
         "global_count": np.asarray(radial["global_count"], dtype=np.uint32),
         "radial_profile_db": np.asarray(radial["radial_profile_db"], dtype=np.float32),
+        "radial_profile_smooth_db": np.asarray(radial.get("radial_profile_smooth_db", radial["radial_profile_db"]), dtype=np.float32),
         "radial_count": np.asarray(radial["radial_count"], dtype=np.uint32),
     }
     two_ray_calibration = {
         "height_bin_m": np.asarray([two_ray["height_bin_m"]], dtype=np.float32),
         "height_bins_m": np.asarray(two_ray["height_bins_m"], dtype=np.float32),
+        "rho_raw": np.asarray(two_ray.get("rho_raw", two_ray["rho"]), dtype=np.float32),
+        "phi_rad_raw": np.asarray(two_ray.get("phi_rad_raw", two_ray["phi_rad"]), dtype=np.float32),
+        "bias_db_raw": np.asarray(two_ray.get("bias_db_raw", two_ray["bias_db"]), dtype=np.float32),
         "rho": np.asarray(two_ray["rho"], dtype=np.float32),
         "phi_rad": np.asarray(two_ray["phi_rad"], dtype=np.float32),
         "bias_db": np.asarray(two_ray["bias_db"], dtype=np.float32),
+        "suspicious_bin_mask": np.asarray(two_ray.get("suspicious_bin_mask", [0] * len(two_ray["rho"])), dtype=np.int8),
         "fit_rmse_db": np.asarray(two_ray["fit_rmse_db"], dtype=np.float32),
         "fit_count": np.asarray(two_ray["fit_count"], dtype=np.int32),
+        "residual_profile_db": np.asarray(two_ray.get("residual_profile_db", np.zeros((len(two_ray["rho"]), MAX_RADIUS_PX + 1))), dtype=np.float32),
+        "residual_profile_smooth_db": np.asarray(two_ray.get("residual_profile_smooth_db", two_ray.get("residual_profile_db", np.zeros((len(two_ray["rho"]), MAX_RADIUS_PX + 1)))), dtype=np.float32),
+        "residual_count": np.asarray(two_ray.get("residual_count", np.zeros((len(two_ray["rho"]), MAX_RADIUS_PX + 1))), dtype=np.uint32),
+        "global_residual_db": np.asarray(two_ray.get("global_residual_db", np.zeros(MAX_RADIUS_PX + 1)), dtype=np.float32),
+        "global_count": np.asarray(two_ray.get("global_count", np.zeros(MAX_RADIUS_PX + 1)), dtype=np.uint32),
+        "residual_clip_db": np.asarray([two_ray.get("residual_clip_db", 2.5)], dtype=np.float32),
+        "radius_sigma_px": np.asarray([two_ray.get("radius_sigma_px", 1.5)], dtype=np.float32),
         "phi_grid_size": np.asarray([two_ray["phi_grid_size"]], dtype=np.int32),
         "rho_max": np.asarray([two_ray["rho_max"]], dtype=np.float32),
         "rho_step": np.asarray([two_ray["rho_step"]], dtype=np.float32),
@@ -669,8 +860,10 @@ def make_plots(
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.plot(two_ray_calibration["height_bins_m"], two_ray_calibration["rho"], label="rho")
-    ax.plot(two_ray_calibration["height_bins_m"], two_ray_calibration["bias_db"], label="bias (dB)")
+    ax.plot(two_ray_calibration["height_bins_m"], two_ray_calibration["rho_raw"], alpha=0.35, label="rho raw")
+    ax.plot(two_ray_calibration["height_bins_m"], two_ray_calibration["rho"], label="rho smooth")
+    ax.plot(two_ray_calibration["height_bins_m"], two_ray_calibration["bias_db_raw"], alpha=0.35, label="bias raw")
+    ax.plot(two_ray_calibration["height_bins_m"], two_ray_calibration["bias_db"], label="bias smooth")
     ax.set_xlabel("Height bin (m)")
     ax.set_ylabel("Value")
     ax.set_title("Fitted coherent two-ray parameters")
@@ -748,6 +941,17 @@ def main() -> None:
             per_bin_cap=args.two_ray_per_bin_cap,
             verbose=True,
         )
+        print("[try78-los] fitting small residual on top of smoothed two-ray")
+        two_ray_residual = fit_two_ray_residual_calibration(
+            args.hdf5,
+            fit_refs,
+            two_ray_calibration=two_ray_calibration,
+            height_bin_m=args.height_bin_m,
+            residual_clip_db=2.5,
+            radius_sigma_px=1.5,
+            verbose=True,
+        )
+        two_ray_calibration.update(two_ray_residual)
         cal_path = args.out_dir / "calibration.json"
         save_calibration(
             radial_calibration,
@@ -790,11 +994,16 @@ def main() -> None:
         "aggregate": aggregate(eval_results),
         "two_ray_fit": {
             "height_bins_m": two_ray_calibration["height_bins_m"].tolist(),
+            "rho_raw": two_ray_calibration["rho_raw"].tolist(),
             "rho": two_ray_calibration["rho"].tolist(),
+            "phi_rad_raw": two_ray_calibration["phi_rad_raw"].tolist(),
             "phi_rad": two_ray_calibration["phi_rad"].tolist(),
+            "bias_db_raw": two_ray_calibration["bias_db_raw"].tolist(),
             "bias_db": two_ray_calibration["bias_db"].tolist(),
+            "suspicious_bin_mask": two_ray_calibration["suspicious_bin_mask"].tolist(),
             "fit_rmse_db": two_ray_calibration["fit_rmse_db"].tolist(),
             "fit_count": two_ray_calibration["fit_count"].tolist(),
+            "residual_clip_db": float(two_ray_calibration["residual_clip_db"][0]),
         },
         "per_sample": [
             {

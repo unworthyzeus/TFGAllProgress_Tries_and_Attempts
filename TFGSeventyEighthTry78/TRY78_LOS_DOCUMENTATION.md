@@ -18,6 +18,7 @@ The progression inside Try 78 was:
 Main file:
 
 - [prior_try78.py](C:/TFG/TFGpractice/TFGSeventyEighthTry78/prior_try78.py)
+- [evaluate_hybrid_try78.py](C:/TFG/TFGpractice/TFGSeventyEighthTry78/evaluate_hybrid_try78.py)
 
 The script now compares three LoS-only models:
 
@@ -51,17 +52,11 @@ Current two-ray search defaults:
 
 Primary outputs:
 
-- [prior_out/eval_summary.json](C:/TFG/TFGpractice/TFGSeventyEighthTry78/prior_out/eval_summary.json)
-- [prior_out/calibration.json](C:/TFG/TFGpractice/TFGSeventyEighthTry78/prior_out/calibration.json)
-- [prior_out/los_rmse_vs_height.png](C:/TFG/TFGpractice/TFGSeventyEighthTry78/prior_out/los_rmse_vs_height.png)
-- [prior_out/los_gain_vs_height.png](C:/TFG/TFGpractice/TFGSeventyEighthTry78/prior_out/los_gain_vs_height.png)
-- [prior_out/radial_profiles.png](C:/TFG/TFGpractice/TFGSeventyEighthTry78/prior_out/radial_profiles.png)
-- [prior_out/two_ray_params.png](C:/TFG/TFGpractice/TFGSeventyEighthTry78/prior_out/two_ray_params.png)
-
-Supporting analysis:
-
-- [prior_out/analysis_50_samples.json](C:/TFG/TFGpractice/TFGSeventyEighthTry78/prior_out/analysis_50_samples.json)
-- [tmp_visuals](C:/TFG/TFGpractice/TFGSeventyEighthTry78/tmp_visuals)
+- [hybrid_out_final_dml/hybrid_eval_summary.json](C:/TFG/TFGpractice/TFGSeventyEighthTry78/hybrid_out_final_dml/hybrid_eval_summary.json)
+- [hybrid_out_final_dml/progress.json](C:/TFG/TFGpractice/TFGSeventyEighthTry78/hybrid_out_final_dml/progress.json)
+- [hybrid_out_final_dml/progress.out](C:/TFG/TFGpractice/TFGSeventyEighthTry78/hybrid_out_final_dml/progress.out)
+- [final_calibrations/los_two_ray_calibration.json](C:/TFG/TFGpractice/TFGSeventyEighthTry78/final_calibrations/los_two_ray_calibration.json)
+- [final_calibrations/nlos_regime_calibration.json](C:/TFG/TFGpractice/TFGSeventyEighthTry78/final_calibrations/nlos_regime_calibration.json)
 
 ## Best smoke-test result so far
 
@@ -78,6 +73,74 @@ Eval result on LoS pixels only:
 - `coherent two-ray RMSE`: `1.7649 dB`
 
 This means the current physics-only LoS branch is already **sub-2 dB** on the 3000-sample smoke test.
+
+## Full-dataset result
+
+Command used for the new LoS model on all samples:
+
+```bash
+python TFGpractice/TFGSeventyEighthTry78/prior_try78.py --skip-plots --out-dir TFGpractice/TFGSeventyEighthTry78/prior_out_all
+```
+
+Result on all samples, eval split only, LoS pixels:
+
+- `FSPL RMSE`: `3.9540 dB`
+- `FSPL + radial residual RMSE`: `3.6496 dB`
+- `coherent two-ray RMSE`: `1.7574 dB`
+
+## Final hybrid result
+
+Hybrid definition:
+
+- `LoS = coherent two-ray` from the new Try 78
+- `NLoS = regime-calibrated NLoS` embedded in the final unified evaluator
+
+Final output:
+
+- [hybrid_out_final_dml/hybrid_eval_summary.json](C:/TFG/TFGpractice/TFGSeventyEighthTry78/hybrid_out_final_dml/hybrid_eval_summary.json)
+
+Corrected full-dataset eval result:
+
+- `hybrid LoS RMSE`: `1.7516 dB`
+- `hybrid NLoS RMSE`: `3.3967 dB`
+- `hybrid overall RMSE`: `1.9246 dB`
+
+This is the strongest current Try 78 result.
+
+## What Comes From Papers
+
+Transferred from the literature / standards:
+
+- The idea that LoS A2G behavior can be dominated by a **two-ray / ground-reflection** term.
+- The use of a **coherent interference correction** on top of `FSPL`.
+- The interpretation that altitude and elevation angle dominate large-scale LoS behavior.
+
+These are the parts that are mainly backed by the UAV A2G literature and two-ray references.
+
+## What Seems To Be Our Own Dataset Insight
+
+What appears to be specific to our work on CKM:
+
+- The decision to inspect the actual CKM LoS maps and notice that the residual is almost a **ring field**.
+- The conclusion that in CKM, buildings often behave more like a **visibility mask** over a global radial structure than like the main source of LoS residual shape.
+- The practical hybrid recipe:
+  - `LoS = fitted two-ray`
+  - `NLoS = old regime calibration`
+- The choice to store the two final calibrations together in:
+  - [final_calibrations](C:/TFG/TFGpractice/TFGSeventyEighthTry78/final_calibrations)
+
+## Important note about the old overall metric
+
+The old `old_try_78_with_nlos/prior_try78.py` has a bug in its aggregate:
+
+- `prior_rmse_overall_pw`
+- `calib_rmse_overall_pw`
+
+were weighted using `n_los` instead of using all valid pixels.
+
+So the old reported `3.9197 dB` overall is not the clean final overall number to use.
+
+The hybrid evaluation script fixes that and computes the true overall RMSE over all valid pixels.
 
 ## Radial baseline result
 
