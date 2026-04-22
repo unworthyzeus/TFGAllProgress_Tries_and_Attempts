@@ -137,6 +137,23 @@ def build_preds_native(outputs: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str,
     return {task: inverse_transform(task, outputs[task]["pred_trans"]) for task in TASKS}
 
 
+LOG_STEP_INTERVAL = 25
+
+
+def _has_nan_params(model: torch.nn.Module) -> bool:
+    for p in model.parameters():
+        if p.data.isnan().any() or p.data.isinf().any():
+            return True
+    return False
+
+
+def _has_nan_grads(model: torch.nn.Module) -> bool:
+    for p in model.parameters():
+        if p.grad is not None and (p.grad.isnan().any() or p.grad.isinf().any()):
+            return True
+    return False
+
+
 def run_train_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -145,13 +162,24 @@ def run_train_epoch(
     height_embed: HeightEmbedding,
     weights: LossWeights,
     grad_accum: int,
+    epoch: int = 0,
+    main_: bool = True,
 ) -> Dict[str, float]:
     model.train(True)
     totals = {"total": 0.0, "map_nll": 0.0, "dist_kl": 0.0, "moment_match": 0.0, "anchor": 0.0,
               "prior_guard": 0.0, "outlier_budget": 0.0, "rmse": 0.0, "mae": 0.0}
     steps = 0
+    skipped = 0
+    n_total = len(loader)
     optimizer.zero_grad(set_to_none=True)
     for step, raw_batch in enumerate(loader):
+        # Guard: if model weights are already NaN, abort immediately.
+        if _has_nan_params(model):
+            raise RuntimeError(
+                f"[epoch {epoch:03d} step {step:05d}] NaN/Inf detected in model parameters. "
+                "Training aborted to prevent silent weight corruption."
+            )
+
         steps = step + 1
         batch = to_device(raw_batch, device)
         priors_trans = build_priors_trans(batch)
@@ -159,23 +187,57 @@ def run_train_epoch(
         preds_native = build_preds_native(out)
         priors_native = build_priors(batch)
         loss_terms = combined_loss(batch, out, preds_native, priors_native, weights=weights)
-        loss = loss_terms["total"] / max(grad_accum, 1)
+        loss_val = loss_terms["total"]
+
+        # Skip batch if loss is NaN or Inf — do NOT backward through it.
+        if not torch.isfinite(loss_val):
+            skipped += 1
+            if main_:
+                print(
+                    f"[epoch {epoch:03d} step {steps:05d}/{n_total}] WARNING: non-finite loss "
+                    f"({float(loss_val):.4g}), skipping batch ({skipped} skipped so far).",
+                    flush=True,
+                )
+            # Zero out any accumulated gradients for this microstep to keep accum clean.
+            if (step + 1) % max(grad_accum, 1) == 0:
+                optimizer.zero_grad(set_to_none=True)
+            continue
+
+        loss = loss_val / max(grad_accum, 1)
         loss.backward()
 
         if (step + 1) % max(grad_accum, 1) == 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-            optimizer.step()
+            if _has_nan_grads(model):
+                if main_:
+                    print(
+                        f"[epoch {epoch:03d} step {steps:05d}/{n_total}] WARNING: NaN/Inf in "
+                        "gradients after clipping, skipping optimizer step.",
+                        flush=True,
+                    )
+                skipped += 1
+            else:
+                optimizer.step()
             optimizer.zero_grad(set_to_none=True)
 
         for key in totals:
-            totals[key] += float(loss_terms[key].detach().item())
+            v = float(loss_terms[key].detach().item())
+            totals[key] += v if math.isfinite(v) else 0.0
+
+        if main_ and steps % LOG_STEP_INTERVAL == 0:
+            avg = totals["total"] / max(steps - skipped, 1)
+            print(f"[epoch {epoch:03d} step {steps:05d}/{n_total}] loss={avg:.4f}", flush=True)
 
     if steps > 0 and steps % max(grad_accum, 1) != 0:
         torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-        optimizer.step()
+        if not _has_nan_grads(model):
+            optimizer.step()
         optimizer.zero_grad(set_to_none=True)
 
-    denom = max(steps, 1)
+    if main_ and skipped > 0:
+        print(f"[epoch {epoch:03d}] INFO: {skipped} batch(es) skipped due to non-finite loss/grads.", flush=True)
+
+    denom = max(steps - skipped, 1)
     return {key: value / denom for key, value in totals.items()}
 
 
@@ -329,6 +391,8 @@ def main() -> None:
             height_embed=height_embed,
             weights=loss_weights,
             grad_accum=cfg.training.grad_accum_steps,
+            epoch=epoch,
+            main_=main_,
         )
         train_seconds = time.time() - train_time_start
         scheduler.step()

@@ -221,19 +221,24 @@ class Try80JointDataset(Dataset):
         delay_prior = priors.delay_spread_prior.astype(np.float32)
         angular_prior = priors.angular_spread_prior.astype(np.float32)
 
-        channels = np.stack(
-            [
-                topology_input,
-                los,
-                nlos,
-                ground_f,
-                path_prior / 180.0,
-                path_prior_los / 180.0,
-                path_prior_nlos / 180.0,
-                np.log1p(np.clip(delay_prior, 0.0, None)) / LOG1P_DELAY_NORM,
-                np.log1p(np.clip(angular_prior, 0.0, None)) / LOG1P_ANGULAR_NORM,
-            ],
-            axis=0,
+        channels = np.nan_to_num(
+            np.stack(
+                [
+                    topology_input,
+                    los,
+                    nlos,
+                    ground_f,
+                    path_prior / 180.0,
+                    path_prior_los / 180.0,
+                    path_prior_nlos / 180.0,
+                    np.log1p(np.clip(delay_prior, 0.0, None)) / LOG1P_DELAY_NORM,
+                    np.log1p(np.clip(angular_prior, 0.0, None)) / LOG1P_ANGULAR_NORM,
+                ],
+                axis=0,
+            ),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
         )
 
         path_loss = np.where(valid_path, path_loss, 0.0).astype(np.float32)

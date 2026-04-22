@@ -2,7 +2,7 @@
 #SBATCH --job-name=ckm-t80-4gpu
 #SBATCH -A gpu
 #SBATCH -p gpu
-#SBATCH --qos=big_gpu
+#SBATCH --qos=medium_gpu
 #SBATCH --gres=gpu:rtx2080:4
 #SBATCH -w sert-2001
 #SBATCH --cpus-per-task=32

@@ -77,9 +77,11 @@ export PYTHONUNBUFFERED=1 CUDA_DEVICE_ORDER=PCI_BUS_ID NCCL_DEBUG=${NCCL_DEBUG:-
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}
 export SLURM_STEP_KILL_TIMEOUT=${SLURM_STEP_KILL_TIMEOUT:-30}
+export MASTER_ADDR MASTER_PORT
 
 srun --ntasks=1 --cpu-bind=none --kill-on-bad-exit=1 \
-  "$TORCHRUN_BIN" --standalone --nnodes=1 --nproc-per-node="$NPROC_PER_NODE" --master-port "$MASTER_PORT" \
+  "$TORCHRUN_BIN" --nnodes=1 --nproc-per-node="$NPROC_PER_NODE" \
+  --rdzv-backend=c10d --rdzv-endpoint "${MASTER_ADDR}:${MASTER_PORT}" --rdzv-id "$RDZV_ID" \
   "$TRAIN_SCRIPT" --config "$runtime_config" &
 child_pid=$!
 wait "$child_pid"

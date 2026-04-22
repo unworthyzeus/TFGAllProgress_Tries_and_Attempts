@@ -107,7 +107,8 @@ def combined_loss(
 
     if total is None:
         total = torch.zeros((), device=next(iter(outputs.values()))["pred_trans"].device)
-    total = torch.nan_to_num(total, nan=0.0, posinf=1e6, neginf=-1e6)
+    # Do NOT silently mask NaN/Inf here — let the training loop detect and skip bad batches.
+    # nan_to_num was hiding numerical instability and allowing corrupted weights to go unnoticed.
     return {
         "total": total,
         "map_nll": torch.tensor(agg["map_nll"], device=total.device),

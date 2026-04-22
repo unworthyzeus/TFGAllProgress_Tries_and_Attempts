@@ -66,6 +66,7 @@ def main() -> None:
     parser.add_argument("--depend-on-job", default="")
     parser.add_argument("--dependency-type", default="afterany", choices=("afterany", "afterok"))
     parser.add_argument("--slurm-file", default=TRAIN_SLURM)
+    parser.add_argument("--job-name", default="t80-1gpu")
     args = parser.parse_args()
 
     password = os.environ.get(args.password_env, "")
@@ -101,7 +102,9 @@ def main() -> None:
         exports = [
             f"CONFIG_PATH={args.config}",
             "TRAIN_SCRIPT=train_try80.py",
+            "MASTER_ADDR=127.0.0.1",
             f"MASTER_PORT={args.base_master_port}",
+            f"RDZV_ID={args.job_name}",
         ]
         if args.wipe_outputs:
             exports.append("WIPE_OUTPUTS=1")
@@ -110,7 +113,7 @@ def main() -> None:
         command = (
             f"cd {REMOTE_DIR} && "
             f"sbatch --nodelist={args.node} {dep}"
-            f"-J t80-1gpu --export=ALL,{','.join(exports)} {args.slurm_file}"
+            f"-J {args.job_name} --export=ALL,{','.join(exports)} {args.slurm_file}"
         )
         out, err = remote_exec(client, command)
         if err:

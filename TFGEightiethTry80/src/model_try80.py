@@ -240,6 +240,7 @@ class Try80Model(nn.Module):
         global_raw: Dict[str, torch.Tensor],
         local_raw: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
+        prior_trans = torch.nan_to_num(prior_trans, nan=0.0, posinf=0.0, neginf=0.0)
         b, _, h, w = prior_trans.shape
         k = self.cfg.num_components
         residual_max = self.residual_max[task].to(prior_trans.device).view(1, 2, 1, 1, 1)
