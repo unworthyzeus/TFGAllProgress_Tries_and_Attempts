@@ -40,12 +40,12 @@ class ModelSection:
     alpha_bias: float = -2.0
     sigma_min: float = 0.05
     sigma_max: float = 3.00
-    path_residual_los_max: float = 6.0
-    path_residual_nlos_max: float = 18.0
-    delay_residual_los_max: float = 0.45
-    delay_residual_nlos_max: float = 1.20
-    angular_residual_los_max: float = 0.35
-    angular_residual_nlos_max: float = 0.95
+    path_residual_los_max: float = 2.0
+    path_residual_nlos_max: float = 4.0
+    delay_residual_los_max: float = 30.0
+    delay_residual_nlos_max: float = 40.0
+    angular_residual_los_max: float = 9.0
+    angular_residual_nlos_max: float = 13.0
 
 
 @dataclass
@@ -139,12 +139,12 @@ class Try80Cfg:
             alpha_bias=float(m.get("alpha_bias", -2.0)),
             sigma_min=float(m.get("sigma_min", 0.05)),
             sigma_max=float(m.get("sigma_max", 3.00)),
-            path_residual_los_max=float(m.get("path_residual_los_max", 6.0)),
-            path_residual_nlos_max=float(m.get("path_residual_nlos_max", 18.0)),
-            delay_residual_los_max=float(m.get("delay_residual_los_max", 0.45)),
-            delay_residual_nlos_max=float(m.get("delay_residual_nlos_max", 1.20)),
-            angular_residual_los_max=float(m.get("angular_residual_los_max", 0.35)),
-            angular_residual_nlos_max=float(m.get("angular_residual_nlos_max", 0.95)),
+            path_residual_los_max=float(m.get("path_residual_los_max", 2.0)),
+            path_residual_nlos_max=float(m.get("path_residual_nlos_max", 4.0)),
+            delay_residual_los_max=float(m.get("delay_residual_los_max", 30.0)),
+            delay_residual_nlos_max=float(m.get("delay_residual_nlos_max", 40.0)),
+            angular_residual_los_max=float(m.get("angular_residual_los_max", 9.0)),
+            angular_residual_nlos_max=float(m.get("angular_residual_nlos_max", 13.0)),
         )
 
         l = raw.get("losses", {}) or {}

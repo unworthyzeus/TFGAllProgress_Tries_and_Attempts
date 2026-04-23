@@ -382,6 +382,33 @@ def _remote_size(sftp, remote_path: str) -> int:
     return int(sftp.stat(remote_path).st_size)
 
 
+def _wait_for_remote_size(
+    sftp,
+    remote_path: str,
+    expected_size: int,
+    *,
+    attempts: int = 8,
+    delay_s: float = 0.4,
+) -> None:
+    last_size: int | None = None
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            actual_size = _remote_size(sftp, remote_path)
+            last_size = actual_size
+            if actual_size == expected_size:
+                return
+        except Exception as exc:
+            last_error = exc
+        if attempt < attempts:
+            time.sleep(delay_s * attempt)
+    if last_error is not None and last_size is None:
+        raise IOError(f"remote file {remote_path} did not become visible") from last_error
+    raise IOError(
+        f"remote size mismatch after upload: {last_size} != {expected_size}"
+    )
+
+
 def put_file(sftp, local_path: str, remote_path: str, rel_path: str) -> None:
     is_slurm = rel_path.lower().endswith(".slurm")
     if is_slurm:
@@ -394,20 +421,31 @@ def put_file(sftp, local_path: str, remote_path: str, rel_path: str) -> None:
     last_error: Exception | None = None
 
     for attempt in range(1, 4):
+        temp_remote_path = (
+            f"{remote_path}.uploading.{os.getpid()}.{int(time.time() * 1000)}.{attempt}"
+        )
         try:
             if payload is not None:
-                sftp.putfo(io.BytesIO(payload), remote_path, confirm=True)
+                sftp.putfo(io.BytesIO(payload), temp_remote_path, confirm=False)
             else:
-                sftp.put(local_path, remote_path, confirm=True)
+                sftp.put(local_path, temp_remote_path, confirm=False)
 
-            actual_size = _remote_size(sftp, remote_path)
-            if actual_size != expected_size:
-                raise IOError(f"remote size mismatch after upload: {actual_size} != {expected_size}")
+            _wait_for_remote_size(sftp, temp_remote_path, expected_size)
+            try:
+                sftp.remove(remote_path)
+            except FileNotFoundError:
+                pass
+            sftp.rename(temp_remote_path, remote_path)
+            _wait_for_remote_size(sftp, remote_path, expected_size, attempts=4, delay_s=0.25)
             return
         except Exception as exc:
             last_error = exc
             try:
                 sftp.remove(remote_path)
+            except Exception:
+                pass
+            try:
+                sftp.remove(temp_remote_path)
             except Exception:
                 pass
             if attempt < 3:

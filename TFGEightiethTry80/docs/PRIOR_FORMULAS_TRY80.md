@@ -35,6 +35,11 @@ The implementation is taken from the calibrated LoS branch in:
 - [prior_try78.py](/c:/TFG/TFGpractice/TFGSeventyEighthTry78/prior_try78.py)
 - [los_two_ray_calibration.json](/c:/TFG/TFGpractice/TFGSeventyEighthTry78/final_calibrations/los_two_ray_calibration.json)
 
+Try 80 also vendors this recalibration source locally:
+
+- [try78_los_path_loss_prior.py](/c:/TFG/TFGpractice/TFGEightiethTry80/scripts/recalibrate_priors/try78_los_path_loss_prior.py)
+- [try78_hybrid_path_loss_reference.py](/c:/TFG/TFGpractice/TFGEightiethTry80/scripts/recalibrate_priors/try78_hybrid_path_loss_reference.py)
+
 Reference logic:
 
 - free-space path loss
@@ -112,6 +117,7 @@ and then mapped back with:
 This directly follows the `Try 79` implementation in:
 
 - [prior_try79.py](/c:/TFG/TFGpractice/TFGSeventyNinthTry79/prior_try79.py)
+- [try79_spread_priors.py](/c:/TFG/TFGpractice/TFGEightiethTry80/scripts/recalibrate_priors/try79_spread_priors.py)
 
 ### 2.2 Shared feature stack
 
@@ -145,6 +151,7 @@ and the same fallback hierarchy documented in `Try 79`.
 This is loaded from:
 
 - [calibration.json](/c:/TFG/TFGpractice/TFGSeventyNinthTry79/calibration.json)
+- [try79_calibration.json](/c:/TFG/TFGpractice/TFGEightiethTry80/calibrations/try79_calibration.json)
 
 ### 2.4 Why log-domain
 

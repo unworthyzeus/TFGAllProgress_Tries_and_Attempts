@@ -62,6 +62,53 @@ parameters originate from \texttt{Try 78} and \texttt{Try 79}, the relevant
 source artifacts are the JSON calibration files stored under those project
 directories.
 
+\subsection*{Executive summary}
+
+The main message of this note is that \texttt{Try 80} is not presented as a
+new closed-form propagation model. It is a hybrid, prior-anchored learning
+pipeline. The classical and empirical formulas provide interpretable starting
+points, \texttt{Try 78} and \texttt{Try 79} calibrate those starting points to
+the CKM map setting, and \texttt{Try 80} learns only controlled residual
+corrections around the frozen calibrated priors.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\textwidth}{p{2.2cm} p{3.1cm} p{4.0cm} X}
+\toprule
+\textbf{Block} & \textbf{Literature basis} & \textbf{CKM adaptation} &
+\textbf{Role in \texttt{Try 80}} \\
+\midrule
+Path-loss LoS & FSPL and coherent two-ray propagation &
+Effective height-dependent reflection parameters and radial residuals fitted
+from CKM LoS pixels &
+Frozen LoS prior, injected as an input channel and used as the anchor for
+bounded residual learning. \\
+\addlinespace
+Path-loss NLoS & COST-231/Hata-style urban loss and A2G elevation envelopes &
+Regime-wise calibration with local density, height, shadowing and elevation
+features &
+Frozen NLoS prior selected by the explicit LoS/NLoS geometry mask. \\
+\addlinespace
+Delay and angular spread & Log-domain large-scale spread modelling and
+LoS/NLoS separation &
+Regime-wise ridge regression in \(\log(1+y)\) space using multiscale
+morphology and obstruction features &
+Frozen spread priors used as anchors for the multi-task residual model. \\
+\addlinespace
+\texttt{Try 80} residual model & Probabilistic regression and mixture-density
+ideas &
+Prior-anchored per-pixel GMM with residual caps, anchor gates, explicit
+region masks and shared multi-task trunk &
+Learns residual uncertainty and local corrections without replacing the
+interpretable priors. \\
+\bottomrule
+\end{tabularx}
+\caption{One-page summary of what is inherited from the literature, what is
+adapted to CKM, and what is reused or newly assembled in \texttt{Try 80}.}
+\label{tab:executive_summary}
+\end{table}
+
 %% ============================================================
 \section{High-level architecture}
 %% ============================================================
@@ -2039,6 +2086,42 @@ The following are inherited and frozen:
       (Eq.~\ref{eq:inv_log}).
 \end{itemize}
 
+\subsection{Experimental protocol and reporting status}
+
+\texttt{Try 80} follows the same strict split philosophy as the recent
+distribution-first tries. The split is a city-holdout split with
+\texttt{split\_seed = 42}, \texttt{val\_ratio = 0.15}, and
+\texttt{test\_ratio = 0.15}. Metrics and losses are computed only on valid
+ground pixels, using the target-specific no-data masks and the explicit
+LoS/NLoS masks. The model input contains nine spatial channels:
+
+\begin{enumerate}
+\item normalized topology,
+\item LoS mask,
+\item NLoS mask,
+\item ground mask,
+\item combined path-loss prior,
+\item LoS path-loss prior,
+\item NLoS path-loss prior,
+\item delay-spread prior,
+\item angular-spread prior.
+\end{enumerate}
+
+The scalar UAV height is not appended as a constant image channel. It is
+encoded with a sinusoidal embedding and injected into the network through FiLM
+conditioning. The default \texttt{try80\_joint\_big} configuration uses a
+shared encoder-decoder with \texttt{base\_width = 96}, three GMM components
+per task and region, \(\alpha\)-gate bias \(-2\), and fixed residual caps
+specified separately for path loss, delay spread and angular spread.
+
+Because the full \texttt{Try 80} run is still in training, this note does not
+claim final numerical improvements for the deep model. Final validation/test
+tables should be inserted only after the selected checkpoint and test
+evaluation are frozen. Until then, the quantitative tables in this document
+should be interpreted as documenting the frozen \texttt{Try 78}/\texttt{Try 79}
+priors and the calibration assets consumed by \texttt{Try 80}, not as final
+\texttt{Try 80} performance claims.
+
 \subsection{What is new in Try 80}
 
 \texttt{Try 80} introduces a joint multi-task architecture that predicts a
@@ -2112,6 +2195,59 @@ The four components of the Try 80 pipeline are therefore:
 \item multi-task DNN predicts a per-pixel GMM anchored to the prior,
 \item train via NLL alongside a pixel-wise prior-preserving loss term,
 \item final point prediction is the expected value of the mixture.
+\end{enumerate}
+
+\subsection{Novelty relative to common implementations}
+
+Compared with common deep-learning implementations for radio-map prediction,
+\texttt{Try 80} differs in several practical ways:
+
+\begin{enumerate}
+\item \textbf{It is not a black-box image-to-image regressor.}
+      A common approach is to feed the topology map, transmitter position and
+      height to a UNet-like model and let the network learn the full target
+      map directly. \texttt{Try 80} instead gives the network calibrated
+      physics/statistics priors and asks it to learn only the residual part.
+
+\item \textbf{The residual is bounded in native physical units.}
+      The network cannot move arbitrarily far from the prior. The residual caps
+      are specified in dB for path loss, ns for delay spread, and degrees for
+      angular spread. This is more constrained than ordinary residual learning,
+      where the residual branch is typically unconstrained.
+
+\item \textbf{The prior is protected pixel by pixel, not only on average.}
+      Many hybrid models compare against a baseline only through aggregate RMSE.
+      Here, the prior guard penalizes individual pixels where the learned model
+      becomes worse than the frozen prior, discouraging the model from trading
+      local degradation for a small global improvement.
+
+\item \textbf{LoS and NLoS are explicit regions inside the head.}
+      Instead of expecting one shared output distribution to cover both regimes,
+      the model predicts separate LoS and NLoS mixture structures and then
+      selects the appropriate regional prediction using the geometry mask.
+
+\item \textbf{Global scenario uncertainty and local spatial corrections are
+      separated.}
+      The global head predicts map-level mixture structure from pooled context,
+      while the local head predicts per-pixel residual refinements. This is
+      different from a standard fully convolutional head, where global and
+      local effects are mixed implicitly in the same output tensor.
+
+\item \textbf{The same architecture couples three related propagation targets.}
+      Instead of training independent models for path loss, delay spread and
+      angular spread, \texttt{Try 80} shares the spatial representation and
+      height conditioning while keeping task-specific probabilistic heads.
+
+\item \textbf{Uncertainty is modeled around a prior, not around zero.}
+      The GMM components describe plausible residual modes relative to the
+      calibrated physical/statistical prediction. This is different from a
+      conventional mixture-density network that directly models the absolute
+      target distribution.
+
+\item \textbf{The model remains inspectable after training.}
+      The residual gates, capped offsets, global mixture weights, LoS/NLoS
+      branches and frozen prior maps can be inspected separately. This makes
+      failure analysis easier than in a single unconstrained dense output map.
 \end{enumerate}
 
 \subsubsection{Architecture: Shared UNet with FiLM}
@@ -2246,6 +2382,221 @@ Global Head (predicting map-level GMM constants from pooled features) and a Loca
 \label{fig:try80_arch}
 \end{figure}
 
+\paragraph{Detailed sinusoidal height embedding and FiLM path.}
+The implementation used in \texttt{Try 80} is slightly more specific than the
+high-level diagram above. The scalar UAV height $h_{\mathrm{tx}}$ is first
+converted into a 32-dimensional sinusoidal embedding using 16 log-spaced
+frequencies between 12 m and 478 m:
+\begin{equation}
+f_i
+=
+\exp\!\left(
+\log 12
++
+\frac{i-1}{15}\bigl(\log 478 - \log 12\bigr)
+\right),
+\qquad i=1,\dots,16
+\end{equation}
+\begin{equation}
+\mathbf{e}(h_{\mathrm{tx}})
+=
+\left[
+\sin\!\left(\frac{h_{\mathrm{tx}}}{f_1}\right), \dots,
+\sin\!\left(\frac{h_{\mathrm{tx}}}{f_{16}}\right),
+\cos\!\left(\frac{h_{\mathrm{tx}}}{f_1}\right), \dots,
+\cos\!\left(\frac{h_{\mathrm{tx}}}{f_{16}}\right)
+\right]
+\in \mathbb{R}^{32}
+\label{eq:try80_height_embed}
+\end{equation}
+
+This embedding is processed by a two-layer MLP to obtain
+$\mathbf{h}_{\mathrm{cond}} \in \mathbb{R}^{128}$, which modulates the encoder
+FiLM blocks. After the deepest feature map is pooled, the model concatenates
+$\mathbf{h}_{\mathrm{cond}}$ with the first 128 pooled channels and passes that
+through a second MLP to obtain a fused condition vector
+$\mathbf{c}_{\mathrm{fused}} \in \mathbb{R}^{128}$. This fused condition is
+then reused by the decoder FiLM blocks and the global GMM heads.
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    >=stealth,
+    font=\normalsize,
+    smallbox/.style={draw, thick, rounded corners=2pt, rectangle, minimum width=3.0cm, minimum height=1.3cm, align=center},
+    opbox/.style={draw, thick, rounded corners=2pt, rectangle, minimum width=3.5cm, minimum height=1.4cm, align=center, fill=orange!15},
+    featbox/.style={draw, thick, rounded corners=2pt, rectangle, minimum width=3.9cm, minimum height=1.4cm, align=center, fill=blue!10},
+    condbox/.style={draw, thick, rounded corners=2pt, rectangle, minimum width=4.0cm, minimum height=1.4cm, align=center, fill=green!10},
+    note/.style={font=\normalsize, align=left},
+    arr/.style={->, thick},
+    condarr/.style={->, thick, orange!80!black, dashed}
+]
+
+\node[smallbox, fill=gray!15] (h) at (0,0) {Scalar height\\$h_{\mathrm{tx}} \in \mathbb{R}$};
+\node[opbox] (embed) at (4.0,0) {Sin/Cos embedding\\16 frequencies\\$\mathbf{e}(h_{\mathrm{tx}})\in\mathbb{R}^{32}$};
+\node[condbox] (mlp1) at (9.0,0) {Height MLP\\Linear $32\!\to\!128$\\SiLU\\Linear $128\!\to\!128$\\$\mathbf{h}_{\mathrm{cond}}$};
+
+\draw[arr] (h) -- node[above, font=\scriptsize] {$\mathbb{R}^{1}$} (embed);
+\draw[arr] (embed) -- node[above, font=\scriptsize] {$\mathbb{R}^{32}$} (mlp1);
+
+\node[featbox] (enc2) at (4.0,-3.5) {Encoder FiLM at Down2\\feature channels $C=192$};
+\node[featbox] (enc4) at (11.5,-3.5) {Encoder FiLM at Down4\\feature channels $C=384$};
+\draw[thick, orange, dashed] (mlp1.south) -- (9.0, -1.8);
+\draw[condarr] (9.0, -1.8) -- node[above, font=\scriptsize] {$\mathbb{R}^{128}$} (4.0, -1.8) -- (enc2.north);
+\draw[condarr] (9.0, -1.8) -- node[above, font=\scriptsize] {$\mathbb{R}^{128}$} (11.5, -1.8) -- (enc4.north);
+
+\node[featbox] (pool) at (18.0,-3.5) {Global average pool\\deepest map\\$\mathbb{R}^{384\times H_{16}\times W_{16}} \to \mathbb{R}^{384}$};
+\draw[arr] (enc4.east) -- node[above, font=\scriptsize] {$\mathbb{R}^{384\times H_{16}\times W_{16}}$} (pool.west);
+
+\node[condbox] (fuse) at (18.0,0) {Condition fusion\\concat$\bigl[\mathbf{h}_{\mathrm{cond}},\,\mathbf{z}_{1:128}\bigr]$\\Linear $256\!\to\!128$\\SiLU\\Linear $128\!\to\!128$\\$\mathbf{c}_{\mathrm{fused}}$};
+\draw[arr] (mlp1.east) -- node[above, font=\scriptsize] {$\mathbb{R}^{128}$} (fuse.west);
+\draw[arr] (pool.north) -- node[right, font=\scriptsize] {$\mathbb{R}^{384}$} (fuse.south);
+
+\node[featbox] (dec3) at (25.5, 1.5) {Decoder FiLM at Dec3\\feature channels $C=384$};
+\node[featbox] (dec1) at (25.5,-1.0) {Decoder FiLM at Dec1\\feature channels $C=192$};
+\node[featbox] (gh) at (25.5,-3.5) {Global task heads\\PL / DS / AS};
+\draw[condarr] (fuse.east) -- node[above, sloped, font=\scriptsize] {$\mathbb{R}^{128}$} (dec3.west);
+\draw[condarr] (fuse.east) -- node[above, sloped, font=\scriptsize] {$\mathbb{R}^{128}$} (dec1.west);
+\draw[condarr] (fuse.east) -- node[above, sloped, font=\scriptsize] {$\mathbb{R}^{128}$} (gh.west);
+
+\node[opbox] (filmproj) at (31.0,0.0) {Per-FiLM projection\\Linear $128\!\to\!2C$\\split into $\gamma,\beta \in \mathbb{R}^{C}$};
+\node[smallbox, fill=purple!10] (affine) at (36.0,0.0) {$\mathbf{X}'=\mathbf{X}\odot(1+\gamma)+\beta$\\broadcast over $(H,W)$};
+\draw[arr] (dec3.east) -- node[above, font=\scriptsize] {$\mathbb{R}^{128}$} (filmproj.west);
+\draw[arr] (filmproj.east) -- node[above, font=\scriptsize] {$\mathbb{R}^{2C}$} (affine.west);
+
+\node[note] at (25.5,-5.5) {Encoder FiLM uses $\mathbf{h}_{\mathrm{cond}}$.\\Decoder FiLM and the global heads use $\mathbf{c}_{\mathrm{fused}}$.\\The affine FiLM rule is the same in all cases.};
+
+\end{tikzpicture}%
+}
+\caption{Detailed \texttt{Try 80} sinusoidal height-conditioning path. The scalar
+UAV height is encoded by a 32-dimensional sinusoidal embedding, lifted to
+$\mathbf{h}_{\mathrm{cond}} \in \mathbb{R}^{128}$, and used to FiLM-modulate
+the encoder. After pooling the deepest map, a fused condition
+$\mathbf{c}_{\mathrm{fused}}$ is built and reused by decoder FiLM layers and
+the global task heads.}
+\label{fig:try80_film_detail}
+\end{figure}
+
+\paragraph{Detailed prior-anchored GMM head.}
+The actual GMM assembly is also more structured than the compact summary in
+Figure~\ref{fig:try80_arch}. For each task
+$k \in \{\mathrm{PL},\mathrm{DS},\mathrm{AS}\}$ and for each region
+$r \in \{\mathrm{LoS},\mathrm{NLoS}\}$, the model predicts a 3-component
+mixture. The global head outputs
+$\pi^{(g)}_{k,r,j}$, $\delta^{(g)}_{k,r,j}$ and $\sigma^{(g)}_{k,r,j}$, while
+the local head outputs per-pixel maps
+$p^{(\ell)}_{k,r,j}(x)$, $\delta^{(\ell)}_{k,r}(x)$, $\alpha_{k,r}(x)$, and
+$\tilde\sigma_{k,r}(x)$. In code, these are transformed as
+\begin{align}
+\pi_{k,r,j} &= \mathrm{softmax}\!\left(\mathrm{pi\_logits}_{k,r,\cdot}\right)_j \\
+p_{k,r,j}(x) &= \mathrm{softmax}\!\left(\mathrm{p\_logits}_{k,r,\cdot}(x)\right)_j \\
+\delta^{(g)}_{k,r,j} &= \tanh\!\left(\delta^{(g),\mathrm{raw}}_{k,r,j}\right)\,\delta_{\max,k,r} \\
+\delta^{(\ell)}_{k,r}(x) &= \tanh\!\left(\delta^{(\ell),\mathrm{raw}}_{k,r}(x)\right)\,\delta_{\max,k,r} \\
+\alpha_{k,r}(x) &= \sigma\!\left(\alpha^{\mathrm{raw}}_{k,r}(x) - 2\right) \\
+\sigma^{(g)}_{k,r,j} &= \sigma_{\min} + \sigma\!\left(s^{(g),\mathrm{raw}}_{k,r,j}\right)\left(\sigma_{\max}-\sigma_{\min}\right) \\
+\tilde\sigma_{k,r}(x) &= \sigma_{\min} + \sigma\!\left(\tilde s^{\mathrm{raw}}_{k,r}(x)\right)\left(\sigma_{\max}-\sigma_{\min}\right)
+\end{align}
+with $\sigma_{\min}=0.05$ and $\sigma_{\max}=3.0$ in the default
+configuration. The final component parameters are
+\begin{align}
+\Delta_{k,r,j}(x) &= \mathrm{clip}\!\left(\delta^{(g)}_{k,r,j} + \delta^{(\ell)}_{k,r}(x),\,
+[-\delta_{\max,k,r}, +\delta_{\max,k,r}]\right) \\
+\mu_{k,r,j}(x) &= y^{\mathrm{prior}}_{k,r}(x) + \alpha_{k,r}(x)\,\Delta_{k,r,j}(x) \\
+\sigma_{k,r,j}(x) &= \sqrt{\left(\sigma^{(g)}_{k,r,j}\right)^2 + \left(\tilde\sigma_{k,r}(x)\right)^2}
+\label{eq:try80_sigma_detail}
+\end{align}
+For path loss, this is already the transformed training space because path loss
+is trained directly in dB. For delay spread and angular spread, the residual
+cap and the anchored mean are defined in native units first, and the resulting
+mean is then mapped through $\log(1+\cdot)$ before evaluating the Gaussian NLL.
+and the regional deterministic prediction becomes
+\begin{equation}
+\hat y_{k,r}(x) = \sum_{j=1}^{3} p_{k,r,j}(x)\,\mu_{k,r,j}(x)
+\label{eq:try80_region_point}
+\end{equation}
+after which the final map uses the explicit LoS/NLoS masks to select the
+appropriate regional prediction at each pixel.
+The quantities $\delta_{\max,k,r}$ are not additional GMM outputs. They are
+fixed task- and region-specific safety caps that define how far the learned
+residual is allowed to move away from the frozen prior. Conceptually, the caps
+used for the three native targets are:
+\begin{equation}
+\delta_{\max,k,r}
+=
+\begin{cases}
+2~\mathrm{dB}, & k=\mathrm{PL},\ r=\mathrm{LoS},\\
+4~\mathrm{dB}, & k=\mathrm{PL},\ r=\mathrm{NLoS},\\
+30, & k=\mathrm{DS},\ r=\mathrm{LoS},\\
+40, & k=\mathrm{DS},\ r=\mathrm{NLoS},\\
+9, & k=\mathrm{AS},\ r=\mathrm{LoS},\\
+13, & k=\mathrm{AS},\ r=\mathrm{NLoS}.
+\end{cases}
+\label{eq:try80_native_residual_caps}
+\end{equation}
+The larger NLoS caps reflect the higher uncertainty and stronger residual
+structure in obstructed pixels.
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    >=stealth,
+    font=\normalsize,
+    box/.style={draw, thick, rounded corners=2pt, rectangle, minimum width=4.0cm, minimum height=1.4cm, align=center},
+    prior/.style={draw, thick, rounded corners=2pt, rectangle, minimum width=4.0cm, minimum height=1.4cm, align=center, fill=gray!15},
+    global/.style={draw, thick, rounded corners=2pt, rectangle, minimum width=4.5cm, minimum height=1.5cm, align=center, fill=green!12},
+    local/.style={draw, thick, rounded corners=2pt, rectangle, minimum width=4.5cm, minimum height=1.5cm, align=center, fill=blue!12},
+    mix/.style={draw, thick, rounded corners=2pt, rectangle, minimum width=4.8cm, minimum height=1.5cm, align=center, fill=purple!12},
+    arr/.style={->, thick}
+]
+
+\node[global] (globin) at (0,3.5) {Global head input\\pooled bottleneck $+\ \mathbf{c}_{\mathrm{fused}}$};
+\node[global] (globraw) at (8.0,3.5) {MLP output\\reshaped to $(2,\ 3,\ 3)$\\region / component / parameter};
+\node[global] (globpars) at (17.0,3.5) {Global branch after transforms\\$\pi^{(g)}_{r,j}$, $\delta^{(g)}_{r,j}$, $\sigma^{(g)}_{r,j}$};
+\draw[arr] (globin) -- node[above, font=\scriptsize] {$\mathbb{R}^{512}$} (globraw);
+\draw[arr] (globraw) -- node[above, font=\scriptsize] {$\mathbb{R}^{2 \times 3 \times 3}$} (globpars);
+
+\node[local] (locin) at (0,0.5) {Local head input\\decoder map $\mathbf{F}\in\mathbb{R}^{96\times H\times W}$};
+\node[local] (locraw) at (8.0,0.5) {ConvBlock $96\to96$\\then $1\times1$ conv\\to 12 channels};
+\node[local] (locpars) at (17.0,0.5) {Local branch after transforms\\$p_{r,j}(x)$, $\delta^{(\ell)}_{r}(x)$, $\alpha_r(x)$, $\tilde\sigma_r(x)$};
+\draw[arr] (locin) -- node[above, font=\scriptsize] {$\mathbb{R}^{96 \times H \times W}$} (locraw);
+\draw[arr] (locraw) -- node[above, font=\scriptsize] {$\mathbb{R}^{12 \times H \times W}$} (locpars);
+
+\node[mix] (delta) at (12.5,-3.0) {Residual assembly\\$\Delta_{r,j}(x)=\mathrm{clip}\!\left(\delta^{(g)}_{r,j}+\delta^{(\ell)}_{r}(x),\ \pm\delta_{\max,k,r}\right)$};
+\node[prior] (prior) at (0,-6.5) {Frozen regional prior\\$y^{\mathrm{prior}}_{k,r}(x)$};
+\node[mix] (mu) at (17.0,-6.5) {Anchored means\\$\mu_{r,j}(x)=y^{\mathrm{prior}}_{k,r}(x)+\alpha_r(x)\Delta_{r,j}(x)$};
+\node[mix] (sigma) at (21.5,-3.0) {Variance merge\\$\sigma_{r,j}(x)=\sqrt{(\sigma^{(g)}_{r,j})^2+(\tilde\sigma_r(x))^2}$};
+
+\draw[thick] (globpars.south) -- (17.0, 1.8);
+\draw[arr] (17.0, 1.8) -- node[above, font=\scriptsize] {$\mathbb{R}^{6}$} (12.5, 1.8) -- (delta.north);
+\draw[arr] (17.0, 1.8) -- node[above, font=\scriptsize] {$\mathbb{R}^{6}$} (21.5, 1.8) -- (sigma.north);
+
+\draw[thick] (locpars.south) -- (17.0, -1.0);
+\draw[arr] (17.0, -1.0) -- node[above, font=\scriptsize] {$\mathbb{R}^{2 \times H \times W}$} (12.5, -1.0) -- (delta.north);
+\draw[arr] (17.0, -1.0) -- node[above, font=\scriptsize] {$\mathbb{R}^{2 \times H \times W}$} (21.5, -1.0) -- (sigma.north);
+
+\draw[arr] (delta.south) -- node[above right, font=\scriptsize] {$\mathbb{R}^{6 \times H \times W}$} (mu.north);
+\draw[arr] (prior.east) -- node[above, font=\scriptsize] {$\mathbb{R}^{2 \times H \times W}$} (mu.west);
+
+\node[mix] (expv) at (17.0,-10.0) {Regional expectation\\$\hat y_{k,r}(x)=\sum_{j=1}^{3} p_{k,r,j}(x)\,\mu_{k,r,j}(x)$};
+\node[box, fill=orange!15] (mask) at (25.0,-10.0) {Region selection\\LoS/NLoS masks choose\\$\hat y_{k,\mathrm{LoS}}$ or $\hat y_{k,\mathrm{NLoS}}$};
+\node[box, fill=red!10] (out) at (31.0,-10.0) {Final task map\\$\hat y_k(x)$};
+
+\draw[arr] (mu.south) -- node[right, font=\scriptsize] {$\mathbb{R}^{6 \times H \times W}$} (expv.north);
+\draw[arr] (expv.east) -- node[above, font=\scriptsize] {$\mathbb{R}^{2 \times H \times W}$} (mask.west);
+\draw[arr] (mask.east) -- node[above, font=\scriptsize] {$\mathbb{R}^{1 \times H \times W}$} (out.west);
+
+\end{tikzpicture}%
+}
+\caption{Detailed prior-anchored GMM head used by \texttt{Try 80} for each task (path loss, delay spread or angular spread).
+Each task predicts separate LoS and NLoS 3-component mixtures. The global head
+produces map-level mixture structure, the local head produces pixelwise
+refinements, and both are combined around the frozen prior under explicit
+residual caps.}
+\label{fig:try80_gmm_detail}
+\end{figure}
+
 \subsubsection{Composite Optimization Objective}
 
 Equation~\ref{eq:try80_loss} highlights the core philosophy, but the actual implementation utilizes a robust composite loss to stabilize the GMM training and prevent mode collapse:
@@ -2258,6 +2609,46 @@ Equation~\ref{eq:try80_loss} highlights the core philosophy, but the actual impl
 \item \textbf{Outlier Budget}: A penalty that bounds the probability mass assigned to the third GMM component (designed for severe multipath outliers), preventing it from indiscriminately absorbing general variance.
 \item \textbf{Moment Matching \& Auxiliary Losses}: Includes RMSE, MAE, and spatial moment-matching (penalizing differences in map mean and variance) applied directly to the deterministic expected value $\hat y_k(x)$ to accelerate early-stage convergence.
 \end{itemize}
+
+%% ============================================================
+\section{Limitations and validity considerations}
+%% ============================================================
+
+The hybrid design is intentionally more interpretable than a purely black-box
+model, but the following limitations should be stated explicitly:
+
+\begin{itemize}
+\item \textbf{The priors are calibrated to CKM.}
+      The fitted two-ray parameters, morphology coefficients and ridge
+      coefficients are not universal propagation constants. They are
+      dataset-calibrated parameters for the CKM map distribution and split.
+
+\item \textbf{COST-231 is used outside its original validation regime.}
+      In this work it serves as a coarse NLoS envelope, not as a claim that
+      terrestrial COST-231/Hata is directly valid for all UAV heights.
+
+\item \textbf{The LoS/NLoS mask is a geometric dataset signal.}
+      \texttt{Try 80} uses explicit LoS and NLoS masks produced from the CKM
+      geometry. This is appropriate for the current map-based setting, but it
+      should be described as a geometry-informed model rather than a model that
+      infers LoS/NLoS from raw measurements alone.
+
+\item \textbf{The GMM is predictive, not a full 3GPP channel simulator.}
+      The mixture describes uncertainty and residual modes of the map target at
+      each pixel. It does not generate a complete stochastic multipath channel
+      realization with delays, angles, cluster powers and temporal evolution.
+
+\item \textbf{Final \texttt{Try 80} claims require a frozen checkpoint.}
+      Since the full training is still ongoing, any final comparison against
+      the frozen priors or previous deep models should be made only after the
+      selected checkpoint, validation criterion and held-out test evaluation
+      are fixed.
+\end{itemize}
+
+Recommended ablations for the final report are: frozen prior only,
+\texttt{Try 80} without the prior guard, without residual caps, without
+multi-task sharing, without FiLM height conditioning, and with deterministic
+regression losses instead of the prior-anchored GMM head.
 
 %% ============================================================
 \section{Why these changes were made}
@@ -2296,11 +2687,14 @@ to adapt those ideas to the CKM map setting, calibrate them with map-derived
 features, and then integrate them into a single residual multi-task deep model
 in \texttt{Try 80}. The calibration methodology was: grid search over the
 two-ray parameters $(\rho, \phi)$ for the LoS branch, followed by Gaussian
-post-smoothing; and ridge regression with $\lambda = 10^{-3}$ over 15 (path
-loss) and 23 (spread) morphology/geometry features per regime for the NLoS and
-spread branches. Therefore, the novelty is not ``inventing a new textbook
-propagation law'', but building a practical hybrid pipeline that is both
-interpretable and trainable on the dataset at hand.
+post-smoothing; regime-wise linear calibration over 15 morphology/geometry
+features for the path-loss branch; and ridge regression with
+$\lambda = 10^{-3}$ over 23 morphology/geometry features for the spread
+branches. Therefore, the novelty is not ``inventing a new textbook propagation
+law'', but building a practical hybrid pipeline that is both interpretable and
+trainable on the dataset at hand. The final quantitative claims for
+\texttt{Try 80} itself should be added only after the ongoing training run has
+finished and a checkpoint has been selected.
 \end{quote}
 
 %% ============================================================
@@ -2316,6 +2710,13 @@ interpretable and trainable on the dataset at hand.
 
 \item \textbf{Try 80 design note:}
       \texttt{TFGEightiethTry80/DESIGN\_TRY80.md}.
+
+\item \textbf{Try 80 model and loss implementation:}
+      \texttt{TFGEightiethTry80/src/model\_try80.py} and
+      \texttt{TFGEightiethTry80/src/losses\_try80.py}.
+
+\item \textbf{Try 80 resolved training configuration:}
+      \texttt{cluster\_outputs/TFGEightiethTry80/try80\_joint\_big/resolved\_config.json}.
 
 \item \textbf{Try 78 final result file:}
       \texttt{TFGSeventyEighthTry78/hybrid\_out\_final\_dml/hybrid\_eval\_summary.json}.

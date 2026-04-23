@@ -21,7 +21,7 @@ nvidia-smi || true
 if [ -n "${PREV_JOB_ID:-}" ]; then
   # scontrol listpids <jobid> returns only PIDs that belong to that specific
   # job's cgroup on this node — bounded kill, never touches other chains.
-  pids=$(scontrol listpids "$PREV_JOB_ID" 2>/dev/null | awk 'NR>1 && $1 ~ /^[0-9]+$/ {print $1}' | sort -u)
+  pids=$({ scontrol listpids "$PREV_JOB_ID" 2>/dev/null || true; } | awk 'NR>1 && $1 ~ /^[0-9]+$/ {print $1}' | sort -u)
   if [ -n "${pids:-}" ]; then
     echo "[cleanup] killing leftover pids from job $PREV_JOB_ID: $pids"
     for pid in $pids; do

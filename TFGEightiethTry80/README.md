@@ -25,11 +25,17 @@ Main entry points:
 - evaluation: [evaluate_try80.py](/c:/TFG/TFGpractice/TFGEightiethTry80/evaluate_try80.py)
 - default config: [try80_joint_big.yaml](/c:/TFG/TFGpractice/TFGEightiethTry80/experiments/try80_joint_big.yaml)
 - prior precompute: [precompute_priors_hdf5.py](/c:/TFG/TFGpractice/TFGEightiethTry80/scripts/precompute_priors_hdf5.py)
+- prior-only evaluation: [evaluate_frozen_priors.py](/c:/TFG/TFGpractice/TFGEightiethTry80/scripts/evaluate_frozen_priors.py)
+- prior recalibration sources: [scripts/recalibrate_priors/](/c:/TFG/TFGpractice/TFGEightiethTry80/scripts/recalibrate_priors)
 - history plotting: [plot_history.py](/c:/TFG/TFGpractice/TFGEightiethTry80/scripts/plot_history.py)
 
 Runtime calibration assets are vendored under
 [calibrations/](/c:/TFG/TFGpractice/TFGEightiethTry80/calibrations) so cluster
 runs stay self-contained.
+The original Try 78 / Try 79 calibration scripts are also vendored under
+[scripts/recalibrate_priors/](/c:/TFG/TFGpractice/TFGEightiethTry80/scripts/recalibrate_priors)
+for auditability and optional future recalibration; normal Try 80 runs still
+load the frozen JSON files.
 
 Core technical notes:
 

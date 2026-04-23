@@ -172,12 +172,12 @@ class Try80ModelConfig:
     alpha_bias: float = -2.0
     sigma_min: float = 0.05
     sigma_max: float = 3.00
-    path_residual_los_max: float = 6.0
-    path_residual_nlos_max: float = 18.0
-    delay_residual_los_max: float = 0.45
-    delay_residual_nlos_max: float = 1.20
-    angular_residual_los_max: float = 0.35
-    angular_residual_nlos_max: float = 0.95
+    path_residual_los_max: float = 2.0
+    path_residual_nlos_max: float = 4.0
+    delay_residual_los_max: float = 30.0
+    delay_residual_nlos_max: float = 40.0
+    angular_residual_los_max: float = 9.0
+    angular_residual_nlos_max: float = 13.0
 
 
 class Try80Model(nn.Module):
@@ -243,21 +243,40 @@ class Try80Model(nn.Module):
         prior_trans = torch.nan_to_num(prior_trans, nan=0.0, posinf=0.0, neginf=0.0)
         b, _, h, w = prior_trans.shape
         k = self.cfg.num_components
-        residual_max = self.residual_max[task].to(prior_trans.device).view(1, 2, 1, 1, 1)
+        residual_max_native = self.residual_max[task].to(prior_trans.device).view(1, 2, 1, 1, 1)
 
         pi = F.softmax(global_raw["pi_logits"], dim=-1)  # (B, 2, K)
-        global_delta = torch.tanh(global_raw["delta_mu_raw"]).unsqueeze(-1).unsqueeze(-1) * residual_max
+        global_delta_native = torch.tanh(global_raw["delta_mu_raw"]).unsqueeze(-1).unsqueeze(-1) * residual_max_native
         sigma = self.cfg.sigma_min + torch.sigmoid(global_raw["sigma_raw"]) * (self.cfg.sigma_max - self.cfg.sigma_min)
         sigma = sigma.unsqueeze(-1).unsqueeze(-1)
 
         p = F.softmax(local_raw["p_logits"], dim=2)
-        local_delta = torch.tanh(local_raw["local_delta_raw"]) * residual_max
+        local_delta_native = torch.tanh(local_raw["local_delta_raw"]) * residual_max_native
         alpha = torch.sigmoid(local_raw["alpha_logits"] + self.cfg.alpha_bias)
         sigma_tilde = self.cfg.sigma_min + torch.sigmoid(local_raw["sigma_tilde_raw"]) * (self.cfg.sigma_max - self.cfg.sigma_min)
 
         prior_region = prior_trans.unsqueeze(1).expand(b, 2, k, h, w)
-        delta_total = torch.clamp(global_delta + local_delta, min=-residual_max, max=residual_max)
-        mu = prior_region + alpha * delta_total
+        delta_total_native = torch.clamp(
+            global_delta_native + local_delta_native,
+            min=-residual_max_native,
+            max=residual_max_native,
+        )
+        # Residual caps are specified in native units. Spread targets are still
+        # modeled with Gaussian NLL in log1p space, so their capped native means
+        # are mapped back to transformed space after the residual is assembled.
+        if task == "path_loss":
+            global_delta = global_delta_native
+            local_delta = local_delta_native
+            mu = prior_region + alpha * delta_total_native
+        else:
+            prior_native = torch.expm1(prior_trans).clamp_min(0.0)
+            prior_native_region = prior_native.unsqueeze(1).expand(b, 2, k, h, w)
+            mu_native = (prior_native_region + alpha * delta_total_native).clamp_min(0.0)
+            mu = torch.log1p(mu_native)
+            global_anchor_native = (prior_native_region + global_delta_native).clamp_min(0.0)
+            local_anchor_native = (prior_native_region + local_delta_native).clamp_min(0.0)
+            global_delta = torch.log1p(global_anchor_native) - prior_region
+            local_delta = torch.log1p(local_anchor_native) - prior_region
         sigma_total = torch.sqrt(torch.clamp(sigma.pow(2) + sigma_tilde.pow(2), min=1.0e-8))
 
         pred_region = (p * mu).sum(dim=2)
@@ -269,6 +288,8 @@ class Try80Model(nn.Module):
             "p": p,
             "global_delta": global_delta,
             "local_delta": local_delta,
+            "global_delta_native": global_delta_native,
+            "local_delta_native": local_delta_native,
             "alpha": alpha,
             "mu": mu,
             "sigma": sigma_total,

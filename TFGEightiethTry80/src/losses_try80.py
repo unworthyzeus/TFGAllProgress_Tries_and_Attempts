@@ -15,9 +15,9 @@ EPS = 1.0e-6
 LOG_2PI = math.log(2.0 * math.pi)
 
 RESIDUAL_HIST_RANGE = {
-    "path_loss": {"los": 8.0, "nlos": 20.0},
-    "delay_spread": {"los": 1.2, "nlos": 1.6},
-    "angular_spread": {"los": 0.9, "nlos": 1.3},
+    "path_loss": {"los": 2.0, "nlos": 4.0},
+    "delay_spread": {"los": 30.0, "nlos": 40.0},
+    "angular_spread": {"los": 9.0, "nlos": 13.0},
 }
 
 
@@ -61,12 +61,20 @@ def combined_loss(
         target_native = batch[f"{task}_target"]
         valid_mask = batch[f"{task}_mask"]
         target_trans = transform_target(task, target_native)
-        prior_trans = transform_target(task, priors_native[task])
         pred_trans = outputs[task]["pred_trans"]
         pred_native = preds_native[task]
 
         l_map = _map_nll_loss(task, target_trans, valid_mask, los_mask, nlos_mask, outputs[task])
-        l_kl = _dist_kl_loss(task, target_trans, prior_trans, valid_mask, los_mask, nlos_mask, outputs[task]["pi"], outputs[task]["global_delta"])
+        l_kl = _dist_kl_loss(
+            task,
+            target_native,
+            priors_native[task],
+            valid_mask,
+            los_mask,
+            nlos_mask,
+            outputs[task]["pi"],
+            outputs[task]["global_delta_native"],
+        )
         l_mom = _moment_match_loss(target_native, pred_native, valid_mask)
         l_anchor = _anchor_loss(outputs[task]["alpha"], outputs[task]["global_delta"], outputs[task]["local_delta"])
         l_guard = _prior_guard_loss(target_native, pred_native, priors_native[task], valid_mask)
@@ -161,8 +169,8 @@ def _map_nll_loss(
 
 def _dist_kl_loss(
     task: str,
-    target_trans: torch.Tensor,
-    prior_trans: torch.Tensor,
+    target_native: torch.Tensor,
+    prior_native: torch.Tensor,
     valid_mask: torch.Tensor,
     los_mask: torch.Tensor,
     nlos_mask: torch.Tensor,
@@ -175,7 +183,7 @@ def _dist_kl_loss(
         region_mask = (valid_mask > 0.5) & ((los_mask if region_name == "los" else nlos_mask) > 0.5)
         if not torch.any(region_mask):
             continue
-        residual = target_trans - prior_trans
+        residual = target_native - prior_native
         clip = RESIDUAL_HIST_RANGE[task][region_name]
         emp = _soft_bin(residual, region_mask, -clip, clip, n_bins=n_bins)
         mix = _global_delta_pmf(pi[:, region_idx], global_delta[:, region_idx], -clip, clip, n_bins=n_bins)
@@ -183,7 +191,7 @@ def _dist_kl_loss(
         mix = mix.clamp_min(EPS)
         losses.append(torch.nan_to_num((emp * (emp.log() - mix.log())).sum(dim=1).mean(), nan=0.0, posinf=1.0e6, neginf=-1.0e6))
     if not losses:
-        return target_trans.new_zeros(())
+        return target_native.new_zeros(())
     return torch.stack(losses).mean()
 
 
@@ -202,7 +210,7 @@ def _global_delta_pmf(pi: torch.Tensor, global_delta: torch.Tensor, lo: float, h
     centers = torch.linspace(lo, hi, n_bins, device=pi.device)
     binwidth = (hi - lo) / max(n_bins - 1, 1)
     mu = global_delta.squeeze(-1).squeeze(-1)
-    sigma = torch.full_like(mu, 0.20)
+    sigma = torch.full_like(mu, max(binwidth * 1.5, EPS))
     diffs = (centers.view(1, 1, -1) - mu.unsqueeze(-1)) / sigma.unsqueeze(-1).clamp_min(EPS)
     pdf = torch.exp(-0.5 * diffs.pow(2)) / (sigma.unsqueeze(-1) * math.sqrt(2.0 * math.pi))
     pmf = (pi.unsqueeze(-1) * pdf * binwidth).sum(dim=1)

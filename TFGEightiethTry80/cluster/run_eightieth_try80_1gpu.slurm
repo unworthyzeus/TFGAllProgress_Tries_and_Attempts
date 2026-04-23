@@ -13,6 +13,7 @@
 #SBATCH --error=logs_train_try80_%x_%j.err
 
 set -euo pipefail
+ulimit -c 0
 
 CONFIG_PATH=${CONFIG_PATH:-experiments/try80_joint_big.yaml}
 TRAIN_SCRIPT=${TRAIN_SCRIPT:-train_try80.py}

@@ -1,21 +1,24 @@
-# Experiment Versions (Try 1 → Try 77)
+﻿# Experiment Versions (Try 1 -> Try 80)
 
-This document summarizes the evolution from `TFG_FirstTry1` through the latest numbered try (`TFGSeventyFifthTry75` as of Try 75), what each family predicts, and why each new branch was opened.
+This document summarizes the evolution from `TFG_FirstTry1` through the latest numbered try (`TFGEightiethTry80`), what each family predicts, and why each new branch was opened.
 
 ## Current status
 
-- **`Try 77`** (`TFGSeventySeventhTry77`) applies the **same GMM-distribution-first design as Try 76** to the `delay_spread` and `angular_spread` targets. Evidence (`docs/distribution_classes.md` from Try 76): both spread targets follow a **spike_plus_exp** mixture — a delta spike near 0 ns / 0° plus a heavy exponential tail (skew +5…+8, kurtosis +40…+80). A standard MSE head collapses to the spike mode and misses the tail. Architecture: same two-stage GMM as Try 76 (`model_try77.py`) with extra model params (`sigma_min`, `sigma_max`, `spike_mu_max`, `spike_sigma_min/max`) for the spike+exp prior and `Dropout2d(0.1)` in Stage-B. **12 experts** = 6 topology classes × {`delay_spread`, `angular_spread`} — no LoS/NLoS region split; `metric` key in YAML selects the target. Training: AdamW + ReduceLROnPlateau (patience=15); no SWA, no label noise, no CutMix, no EMA. Key files: `train_try77.py`, `src/model_try77.py`, `src/losses_try77.py`, `src/config_try77.py`.
-- **`Try 76`** (`TFGSeventySixthTry76`) is the **distribution-first, outlier-aware** rewrite of the path-loss pipeline, built from scratch with no weight/loss/architecture inheritance from Tries 67–75. Motivation: Tries 67–75 showed catastrophic NLoS mode collapse (predicted NLoS mean ~36.5 dB vs target ~107.1 dB); `docs/distribution_classes.md` confirms GMM-3 as best fit for every LoS/NLoS target histogram, with Laplace placing third for NLoS (heavier-than-Gaussian tails). Architecture: two-stage network — **Stage-A** (shallow conv encoder + GAP → K-component GMM parameters (π_k, μ_k, σ_k), height-conditional via sinusoidal FiLM) and **Stage-B** (small U-Net decoder conditioned on Stage-A GMM via FiLM → per-pixel soft assignment, within-component position, and residual log-variance). **12 experts** = 6 topology classes × LoS/NLoS region split. Inputs: `topology_map`, `los_mask`, `nlos_mask`, `ground_mask` + scalar `antenna_height_m` (FiLM) — **no** knife-edge, **no** COST-231 prior, **no** elevation/depth maps, **no** Laplacian HF stem. Loss: `map_nll` (GMM NLL + heteroscedastic widening) + `dist_kl` + `moment_match` + `outlier_budget` + aux `rmse_db`. Training: AdamW, warmup, ReduceLROnPlateau (patience=15); **no SWA, no label noise, no CutMix, no EMA**. Key files: `train_try76.py`, `src/model_try76.py`, `src/losses_try76.py`, `src/config_try76.py`, `DESIGN_TRY76.md`. Configs: `experiments/seventysixth_try76_experts/try76_expert_*.yaml`. Overfitting note (April 2025): mild train/val gap after epoch ~40; consider `sigma_db=0.5` label noise if retraining.
-- **`Try 75`** (`TFGSeventyFifthTry75`) is the **second stage** of the new **3-expert no-prior curriculum**. It keeps the `Try 74` city-type experts (`open_lowrise`, `mixed_midrise`, `dense_highrise`), reopens the **full antenna-height range**, restores **scalar height conditioning + FiLM**, and by default **resumes from the matching `Try 74` checkpoint** for each expert. Configs: `scripts/generate_try75_configs.py` → `experiments/seventyfifth_try75_experts/try75_expert_*.yaml`. Plotters: `scripts/plot_try75_metrics.py`, `scripts/plot_try73_metrics.py`. Details: `TFGSeventyFifthTry75/README.md`.
-- **`Try 74`** (`TFGSeventyFourthTry74`) is the **first stage** of that curriculum: **3 experts**, **no prior**, **tight antenna-height band `47.5–52.5 m`**, and **no explicit height modulation** (`scalar_feature_columns = []`, `use_scalar_channels = false`, `use_scalar_film = false`). It is designed to learn the morphology/path-loss mapping at near-constant geometry before reopening all heights. Configs: `scripts/generate_try74_configs.py` → `experiments/seventyfourth_try74_experts/try74_expert_*.yaml`. Plotters: `scripts/plot_try74_metrics.py`, `scripts/plot_try73_metrics.py`. Details: `TFGSeventyFourthTry74/README.md`.
-- **`Try 73`** (`TFGSeventyThirdTry73`) is the **no-prior direct-prediction rerun** of the stable `Try 66/68` 6-expert PMHHNet family. It keeps the mature data/training layout, removes the formula prior and confidence channel, removes residual-over-prior optimization, keeps the building mask input, removes per-expert target clamps, and adds an **EMA non-finite guard** so invalid source tensors do not poison validation EMA weights. Configs: `scripts/generate_try73_configs.py` → `experiments/seventythird_try73_experts/try73_expert_*.yaml`. Plots: `scripts/plot_try73_metrics.py`. Details: `TFGSeventyThirdTry73/README.md`.
-- **`Try 72`** (`TFGSeventySecondTry72`) is a **Try 68** fork with **sparse receiver supervision**: `data_utils.apply_receiver_subsample_mask` keeps roughly **`keep_fraction` of all originally valid ground pixels** (default **1%**, i.e. `0.01`), after a **per–1000 m tile** cap (`max_rx_per_tile`). Train uses a **new random mask each step** (seed from epoch/step); val uses **`val_seed`** for reproducibility. **Primary** `metrics.path_loss` RMSE is on the **sparse** mask; **`metrics.path_loss_dense_reference`** reports the same on **all valid pixels** for comparison to Try 68-style numbers. **Smaller PMHHNet** (`base_channels: 20`, `hf_channels: 10`) and **larger micro-batches** (`batch_size: 4`, `val_batch_size: 4`, `gradient_accumulation_steps: 4`). Configs: `scripts/generate_try72_configs.py` → `experiments/seventysecond_try72_experts/try72_expert_*.yaml`. Cluster: `cluster/submit_try72_experts_*`, `cluster/run_seventysecond_try72_*.slurm`. Plots: `scripts/plot_try72_metrics.py`. Details: `TFGSeventySecondTry72/README.md`.
-- **`Try 71`** (`TFGSeventyFirstTry71`) is a **heteroscedastic uncertainty** fork of Try 68: the model predicts a **mean residual + log-variance** (2 output channels), trained with the Kendall & Gal (NeurIPS 2017) NLL loss `(μ-y)²/σ² + log σ²`. This automatically down-weights unresolvable NLoS pixels (high σ) and produces a **per-pixel confidence map**; evaluation reports RMSE at varying σ-threshold coverage levels. Only `open_sparse_lowrise`; resumes from Try 68 cluster checkpoint. Bootstrap: `TFGpractice/scripts/bootstrap_try71_from_try68.py`.
-- **`Try 70`** (`TFGSeventiethTry70`) is an **experimental multi-scale quad-head** fork of Try 68: auxiliary residuals at 257 / 129 / 65 with quadrant tiling + global low-res branches; `train_try70_multiquad.py`. **Bug fixes applied (2025-04):** (1) global-branch double-counting in `try70_auxiliary_loss` (loops `range(5/17/65)` → `range(4/16/64)`); (2) aux heads supervising full target instead of residual target — fixed by passing `prior` to the loss; (3) blend search now accumulates SSE over the full val set (not just first batch) with alpha sweep [0.0…1.0].
-- **`Try 69`** (`TFGSixtyNinthTry69`) — recipe from **Try 67** (dual LoS/NLoS heads, D4 TTA on val, SOA training stack) with **six `topology_class` experts** (Try 54 partition: `open_sparse_lowrise` … `dense_block_highrise`), **`knife_edge_channel` on**, **`path_loss_obstruction_features` off**; registry `experiments/sixtyninth_try69_experts/try69_expert_registry.yaml`. (Earlier revision used 3-class ITU YAMLs `open_lowrise` / `mixed_midrise` / `dense_highrise`.) **Bug fixes applied (2025-04):** (1) `lambda_recon: 0.0→1.0` and `mse_weight: 0.0→1.0` — the main 513px loss was completely disabled; (2) `generator_objective: full_map_rmse_only→legacy` — removes sqrt-loss instability at high error; (3) `corridor_weighting disabled` — sigma=40 on 513px map was centre-only, degrading edge RMSE; (4) `prior_residual_path_loss.loss_weight: 0→0.5` — no residual supervision; (5) regularisation relaxed (dropout 0.2→0.12, wd 0.03→0.015, cutmix 0.45→0.25); (6) clamp max +25 dB per expert. **SOA training added:** SWA (`start_fraction=0.6`), target label noise (`sigma_db=0.5`), LR score EMA smoothing (0.6). DataLoader: workers 0→6, batch 1→2, grad_accum 16→8.
-- **`Try 68`** (`TFGSixtyEighthTry68`) continues the **Try 66** 6-expert PMHHNet synthesis + stem+HF fix + FiLM-safe CutMix. **Bug fixes applied (2025-04):** (1) `weight_decay: 0.1→0.015` — catastrophic regularisation caused pred≈prior, loss decreased while RMSE stalled; (2) `loss_type: huber→mse` inside `full_map_rmse_only` — switches to `masked_rmse_loss` (direct RMSE optimisation); (3) `corridor_weighting disabled` (same sigma=40 centre-only problem); (4) `prior_residual_path_loss.loss_weight: 0→0.5`; (5) `nlos_focus_loss enabled` (weight 0.2). **SOA training added:** SWA, target label noise, LR score EMA smoothing. Workers 4→6, batch 1→2, grad_accum 16→8.
+- **`Try 80`** (`TFGEightiethTry80`) is the **joint prior-anchored mega-model**: one shared network predicts `path_loss`, `delay_spread`, and `angular_spread` together, while consuming **frozen non-DL priors** from `Try 78` (path loss) and `Try 79` (spreads). It keeps the late-project `Try 76 / 77` philosophy: sinusoidal UAV-height conditioning, GroupNorm, strict city-holdout, ground-only masking, and residual/distribution-aware decoding, but no longer asks the network to rediscover the strongest low-level physics/statistics from scratch. Main files: `train_try80.py`, `evaluate_try80.py`, `experiments/try80_joint_big.yaml`, `scripts/precompute_priors_hdf5.py`, `DESIGN_TRY80.md`.
+- **`Try 79`** (`TFGSeventyNinthTry79`) is the **pure `numpy` non-DL spread baseline** for `delay_spread` and `angular_spread`. It works in `log1p(spread)` space, builds TX-centred geometry + multiscale morphology features, models explicit `LoS / NLoS` effects, and fits **ridge regressors** by `metric x topology_class x LoS/NLoS x antenna_bin` with a fallback hierarchy for sparse regimes. Main file: `prior_try79.py`.
+- **`Try 78`** (`TFGSeventyEighthTry78`) is the **non-DL path-loss prior branch**. It evolved from `FSPL`, to `FSPL + radial residual`, to a **coherent two-ray** LoS model with fitted effective reflection parameters by height bin. The corrected hybrid evaluation reports about **1.7516 dB LoS RMSE**, **3.3967 dB NLoS RMSE**, and **1.9246 dB overall RMSE**. Main files: `prior_try78.py`, `evaluate_hybrid_try78.py`, `TRY78_LOS_DOCUMENTATION.md`.
+- **`Try 77`** (`TFGSeventySeventhTry77`) applies the **same GMM-distribution-first design as Try 76** to the `delay_spread` and `angular_spread` targets. Evidence (`docs/distribution_classes.md` from Try 76): both spread targets follow a **spike_plus_exp** mixture â€” a delta spike near 0 ns / 0Â° plus a heavy exponential tail (skew +5â€¦+8, kurtosis +40â€¦+80). A standard MSE head collapses to the spike mode and misses the tail. Architecture: same two-stage GMM as Try 76 (`model_try77.py`) with extra model params (`sigma_min`, `sigma_max`, `spike_mu_max`, `spike_sigma_min/max`) for the spike+exp prior and `Dropout2d(0.1)` in Stage-B. **12 experts** = 6 topology classes Ã— {`delay_spread`, `angular_spread`} â€” no LoS/NLoS region split; `metric` key in YAML selects the target. Training: AdamW + ReduceLROnPlateau (patience=15); no SWA, no label noise, no CutMix, no EMA. Key files: `train_try77.py`, `src/model_try77.py`, `src/losses_try77.py`, `src/config_try77.py`.
+- **`Try 76`** (`TFGSeventySixthTry76`) is the **distribution-first, outlier-aware** rewrite of the path-loss pipeline, built from scratch with no weight/loss/architecture inheritance from Tries 67â€“75. Motivation: Tries 67â€“75 showed catastrophic NLoS mode collapse (predicted NLoS mean ~36.5 dB vs target ~107.1 dB); `docs/distribution_classes.md` confirms GMM-3 as best fit for every LoS/NLoS target histogram, with Laplace placing third for NLoS (heavier-than-Gaussian tails). Architecture: two-stage network â€” **Stage-A** (shallow conv encoder + GAP â†’ K-component GMM parameters (Ï€_k, Î¼_k, Ïƒ_k), height-conditional via sinusoidal FiLM) and **Stage-B** (small U-Net decoder conditioned on Stage-A GMM via FiLM â†’ per-pixel soft assignment, within-component position, and residual log-variance). **12 experts** = 6 topology classes Ã— LoS/NLoS region split. Inputs: `topology_map`, `los_mask`, `nlos_mask`, `ground_mask` + scalar `antenna_height_m` (FiLM) â€” **no** knife-edge, **no** COST-231 prior, **no** elevation/depth maps, **no** Laplacian HF stem. Loss: `map_nll` (GMM NLL + heteroscedastic widening) + `dist_kl` + `moment_match` + `outlier_budget` + aux `rmse_db`. Training: AdamW, warmup, ReduceLROnPlateau (patience=15); **no SWA, no label noise, no CutMix, no EMA**. Key files: `train_try76.py`, `src/model_try76.py`, `src/losses_try76.py`, `src/config_try76.py`, `DESIGN_TRY76.md`. Configs: `experiments/seventysixth_try76_experts/try76_expert_*.yaml`. Overfitting note (April 2025): mild train/val gap after epoch ~40; consider `sigma_db=0.5` label noise if retraining.
+- **`Try 75`** (`TFGSeventyFifthTry75`) is the **second stage** of the new **3-expert no-prior curriculum**. It keeps the `Try 74` city-type experts (`open_lowrise`, `mixed_midrise`, `dense_highrise`), reopens the **full antenna-height range**, restores **scalar height conditioning + FiLM**, and by default **resumes from the matching `Try 74` checkpoint** for each expert. Configs: `scripts/generate_try75_configs.py` â†’ `experiments/seventyfifth_try75_experts/try75_expert_*.yaml`. Plotters: `scripts/plot_try75_metrics.py`, `scripts/plot_try73_metrics.py`. Details: `TFGSeventyFifthTry75/README.md`.
+- **`Try 74`** (`TFGSeventyFourthTry74`) is the **first stage** of that curriculum: **3 experts**, **no prior**, **tight antenna-height band `47.5â€“52.5 m`**, and **no explicit height modulation** (`scalar_feature_columns = []`, `use_scalar_channels = false`, `use_scalar_film = false`). It is designed to learn the morphology/path-loss mapping at near-constant geometry before reopening all heights. Configs: `scripts/generate_try74_configs.py` â†’ `experiments/seventyfourth_try74_experts/try74_expert_*.yaml`. Plotters: `scripts/plot_try74_metrics.py`, `scripts/plot_try73_metrics.py`. Details: `TFGSeventyFourthTry74/README.md`.
+- **`Try 73`** (`TFGSeventyThirdTry73`) is the **no-prior direct-prediction rerun** of the stable `Try 66/68` 6-expert PMHHNet family. It keeps the mature data/training layout, removes the formula prior and confidence channel, removes residual-over-prior optimization, keeps the building mask input, removes per-expert target clamps, and adds an **EMA non-finite guard** so invalid source tensors do not poison validation EMA weights. Configs: `scripts/generate_try73_configs.py` â†’ `experiments/seventythird_try73_experts/try73_expert_*.yaml`. Plots: `scripts/plot_try73_metrics.py`. Details: `TFGSeventyThirdTry73/README.md`.
+- **`Try 72`** (`TFGSeventySecondTry72`) is a **Try 68** fork with **sparse receiver supervision**: `data_utils.apply_receiver_subsample_mask` keeps roughly **`keep_fraction` of all originally valid ground pixels** (default **1%**, i.e. `0.01`), after a **perâ€“1000 m tile** cap (`max_rx_per_tile`). Train uses a **new random mask each step** (seed from epoch/step); val uses **`val_seed`** for reproducibility. **Primary** `metrics.path_loss` RMSE is on the **sparse** mask; **`metrics.path_loss_dense_reference`** reports the same on **all valid pixels** for comparison to Try 68-style numbers. **Smaller PMHHNet** (`base_channels: 20`, `hf_channels: 10`) and **larger micro-batches** (`batch_size: 4`, `val_batch_size: 4`, `gradient_accumulation_steps: 4`). Configs: `scripts/generate_try72_configs.py` â†’ `experiments/seventysecond_try72_experts/try72_expert_*.yaml`. Cluster: `cluster/submit_try72_experts_*`, `cluster/run_seventysecond_try72_*.slurm`. Plots: `scripts/plot_try72_metrics.py`. Details: `TFGSeventySecondTry72/README.md`.
+- **`Try 71`** (`TFGSeventyFirstTry71`) is a **heteroscedastic uncertainty** fork of Try 68: the model predicts a **mean residual + log-variance** (2 output channels), trained with the Kendall & Gal (NeurIPS 2017) NLL loss `(Î¼-y)Â²/ÏƒÂ² + log ÏƒÂ²`. This automatically down-weights unresolvable NLoS pixels (high Ïƒ) and produces a **per-pixel confidence map**; evaluation reports RMSE at varying Ïƒ-threshold coverage levels. Only `open_sparse_lowrise`; resumes from Try 68 cluster checkpoint. Bootstrap: `TFGpractice/scripts/bootstrap_try71_from_try68.py`.
+- **`Try 70`** (`TFGSeventiethTry70`) is an **experimental multi-scale quad-head** fork of Try 68: auxiliary residuals at 257 / 129 / 65 with quadrant tiling + global low-res branches; `train_try70_multiquad.py`. **Bug fixes applied (2025-04):** (1) global-branch double-counting in `try70_auxiliary_loss` (loops `range(5/17/65)` â†’ `range(4/16/64)`); (2) aux heads supervising full target instead of residual target â€” fixed by passing `prior` to the loss; (3) blend search now accumulates SSE over the full val set (not just first batch) with alpha sweep [0.0â€¦1.0].
+- **`Try 69`** (`TFGSixtyNinthTry69`) â€” recipe from **Try 67** (dual LoS/NLoS heads, D4 TTA on val, SOA training stack) with **six `topology_class` experts** (Try 54 partition: `open_sparse_lowrise` â€¦ `dense_block_highrise`), **`knife_edge_channel` on**, **`path_loss_obstruction_features` off**; registry `experiments/sixtyninth_try69_experts/try69_expert_registry.yaml`. (Earlier revision used 3-class ITU YAMLs `open_lowrise` / `mixed_midrise` / `dense_highrise`.) **Bug fixes applied (2025-04):** (1) `lambda_recon: 0.0â†’1.0` and `mse_weight: 0.0â†’1.0` â€” the main 513px loss was completely disabled; (2) `generator_objective: full_map_rmse_onlyâ†’legacy` â€” removes sqrt-loss instability at high error; (3) `corridor_weighting disabled` â€” sigma=40 on 513px map was centre-only, degrading edge RMSE; (4) `prior_residual_path_loss.loss_weight: 0â†’0.5` â€” no residual supervision; (5) regularisation relaxed (dropout 0.2â†’0.12, wd 0.03â†’0.015, cutmix 0.45â†’0.25); (6) clamp max +25 dB per expert. **SOA training added:** SWA (`start_fraction=0.6`), target label noise (`sigma_db=0.5`), LR score EMA smoothing (0.6). DataLoader: workers 0â†’6, batch 1â†’2, grad_accum 16â†’8.
+- **`Try 68`** (`TFGSixtyEighthTry68`) continues the **Try 66** 6-expert PMHHNet synthesis + stem+HF fix + FiLM-safe CutMix. **Bug fixes applied (2025-04):** (1) `weight_decay: 0.1â†’0.015` â€” catastrophic regularisation caused predâ‰ˆprior, loss decreased while RMSE stalled; (2) `loss_type: huberâ†’mse` inside `full_map_rmse_only` â€” switches to `masked_rmse_loss` (direct RMSE optimisation); (3) `corridor_weighting disabled` (same sigma=40 centre-only problem); (4) `prior_residual_path_loss.loss_weight: 0â†’0.5`; (5) `nlos_focus_loss enabled` (weight 0.2). **SOA training added:** SWA, target label noise, LR score EMA smoothing. Workers 4â†’6, batch 1â†’2, grad_accum 16â†’8.
 - **`Try 67`** (`TFGSixtySeventhTry67`) remains the **3-class ITU** expert line with knife-edge channel + anti-overfitting recipe. **Bug fixes applied (2025-04):** same `lambda_recon/mse_weight/generator_objective/corridor/residual/regularisation/clamp` fixes as Try 69. **SOA training added:** SWA, target label noise, LR score EMA smoothing.
-- **`Try 66`** (`TFGSixtySixthTry66`) synthesis try — unchanged (reference baseline at ~9.3 dB with overfitting plateau).
+- **`Try 66`** (`TFGSixtySixthTry66`) synthesis try â€” unchanged (reference baseline at ~9.3 dB with overfitting plateau).
 - `Try 20` and `Try 21` were useful controlled tests, but `Try 22` became the stronger clean `path_loss` baseline.
 - `Try 22` established the best recent path-loss base:
   - bilinear decoder
@@ -113,7 +116,7 @@ This document summarizes the evolution from `TFG_FirstTry1` through the latest n
   - adds stage3: a small global-context model refining only `NLoS` on top of stage2
   - cleaner config naming; stale `Try 51` paths removed
 - `Try 53` is a cyclic feedback branch:
-  - stages 1 → 2 → 3 → stage1 resume → 2 → 3 ...
+  - stages 1 â†’ 2 â†’ 3 â†’ stage1 resume â†’ 2 â†’ 3 ...
   - metric-guided: stage1 regime weights are re-tuned from stage2/stage3 validation JSON before each stage1 resume
 - `Try 54` introduces the **partitioned expert strategy and PMHHNet**:
   - 6 topology classes (`open_sparse_lowrise`, `open_sparse_vertical`, `mixed_compact_lowrise`, `mixed_compact_midrise`, `dense_block_midrise`, `dense_block_highrise`)
@@ -146,30 +149,30 @@ This document summarizes the evolution from `TFG_FirstTry1` through the latest n
   - restores the formula-prior input channel
   - adds obstruction proxy channels: `shadow_depth`, `distance_since_los_break`, `max_blocker_height`
 - `Try 63` is a coarse-to-fine follow-up to `Try 62`:
-  - stage1 trains at `128×128` (cheap and fast)
-  - stage2 refines at full `513×513`
+  - stage1 trains at `128Ã—128` (cheap and fast)
+  - stage2 refines at full `513Ã—513`
   - stage2 teacher upsamples stage1 prediction to full resolution before refinement
 - `Try 64` is a coarse-to-fine follow-up to `Try 63` with adjusted hyperparameters
 - `Try 65` is a **grokking-style stress test**:
-  - single stage only, full `513×513`, no early stopping, no rewind to best model
+  - single stage only, full `513Ã—513`, no early stopping, no rewind to best model
   - very long horizon (10 000 epochs), high LR, high weight decay
   - tests whether long regularized training can achieve deep generalization without stage decomposition
 - `Try 66` is the **synthesis try**: combines all validated ingredients with novel paper-backed additions:
   - 6-class topology-partitioned experts (validated from `Try 54`)
-  - PMHHNet with sinusoidal height embedding → per-layer FiLM at 8 points (vs. 4 previously) — inspired by DDPM/ADM timestep conditioning
+  - PMHHNet with sinusoidal height embedding â†’ per-layer FiLM at 8 points (vs. 4 previously) â€” inspired by DDPM/ADM timestep conditioning
   - elevation angle map as an explicit input channel (Al-Hourani et al., 3GPP TR 38.901)
   - Tx-relative depth map (`building_height - antenna_height`) as input channel
   - propagation corridor weighting map in the loss (Gao et al. 2026)
-  - single-stage direct 513×513 training (stage2 refiner dropped: never added >0.5 dB)
+  - single-stage direct 513Ã—513 training (stage2 refiner dropped: never added >0.5 dB)
   - best result per expert: `open_sparse_lowrise` ~`9.3 dB` (plateaued/overfitting at epoch 96)
 - `Try 67` replaces the arbitrary 6-class topology partition with a **physically motivated 3-class partition** (ITU-R P.1411 / 3GPP TR 38.901) and closes the train/val gap that caused `Try 66` to overfit:
   - 3 experts: `open_lowrise` (RMa/suburban), `mixed_midrise` (UMi), `dense_highrise` (UMa)
-  - routing by building density/height thresholds — generalizes to unseen cities at inference without retraining
-  - adds **knife-edge diffraction channel** (ITU-R P.526-15 §4.5.1 single-edge approximation)
-  - anti-overfitting recipe: dropout ↑ 0.20, weight_decay ↑ 0.030, CutMix ↑ 0.45, `ReduceLROnPlateau` (replaces cosine warm restarts), MSE loss (replaces Huber)
+  - routing by building density/height thresholds â€” generalizes to unseen cities at inference without retraining
+  - adds **knife-edge diffraction channel** (ITU-R P.526-15 Â§4.5.1 single-edge approximation)
+  - anti-overfitting recipe: dropout â†‘ 0.20, weight_decay â†‘ 0.030, CutMix â†‘ 0.45, `ReduceLROnPlateau` (replaces cosine warm restarts), MSE loss (replaces Huber)
   - **PDE residual loss** (masked Laplacian, ReVeal-style)
-  - **D4 test-time augmentation** (8 orientations: identity, hflip, vflip, 180°, 90°, 270°, transpose, anti-transpose) at final test
-  - per-expert tight output clamping (e.g., `open_lowrise`: 60–125 dB)
+  - **D4 test-time augmentation** (8 orientations: identity, hflip, vflip, 180Â°, 90Â°, 270Â°, transpose, anti-transpose) at final test
+  - per-expert tight output clamping (e.g., `open_lowrise`: 60â€“125 dB)
   - current active experiment
 
 ## Fast table
@@ -228,7 +231,7 @@ This document summarizes the evolution from `TFG_FirstTry1` through the latest n
 | 50 | `TFGFiftiethTry50` | `path_loss` | prior-research sandbox: height-dependent NLoS PLE, A2G elevation-angle excess-loss; archived as inconclusive (~41 dB NLoS) |
 | 51 | `TFGFiftyFirstTry51` | `path_loss` | literature-aligned reboot: supervised-only, automatic city-type routing, regime-aware loss reweighting, city_holdout split, transfer from trained checkpoint |
 | 52 | `TFGFiftySecondTry52` | `path_loss` | clean `Try 51` continuation + stage3 NLoS global-context refiner; cleaner config naming |
-| 53 | `TFGFiftyThirdTry53` | `path_loss` | cyclic feedback: stages 1→2→3→stage1 resume→...; metric-guided regime-weight updates between cycles |
+| 53 | `TFGFiftyThirdTry53` | `path_loss` | cyclic feedback: stages 1â†’2â†’3â†’stage1 resumeâ†’...; metric-guided regime-weight updates between cycles |
 | 54 | `TFGFiftyFourthTry54` | `path_loss` | **partitioned expert strategy + PMHHNet**: 6 topology experts, topology classifier routing, sinusoidal-FiLM height conditioning, HF branch |
 | 55 | `TFGFiftyFifthTry55` | `path_loss` | `Try 54` experts with final-map RMSE-only objective (no residual-only term, no multiscale reconstruction) |
 | 56 | `TFGFiftySixthTry56` | `path_loss` | `Try 26` U-Net family + 6-expert partition + topology_mask input + no_data BCE auxiliary |
@@ -238,21 +241,24 @@ This document summarizes the evolution from `TFG_FirstTry1` through the latest n
 | 60 | `TFGSixtiethTry60` | `path_loss` | no-prior ablation of the 6-expert PMHHNet family: direct path_loss prediction without prior channel |
 | 61 | `TFGSixtyFirstTry61` | `path_loss` | `Try 60` + strong LoS/NLoS regime reweighting + composite checkpoint selection; vertical expert split into LoS/NLoS sub-experts (7 total) |
 | 62 | `TFGSixtySecondTry62` | `path_loss` | paper-like reset: 6 experts, formula prior restored, obstruction proxy channels added |
-| 63 | `TFGSixtyThirdTry63` | `path_loss` | coarse-to-fine: stage1 at 128×128, stage2 refiner at 513×513 |
+| 63 | `TFGSixtyThirdTry63` | `path_loss` | coarse-to-fine: stage1 at 128Ã—128, stage2 refiner at 513Ã—513 |
 | 64 | `TFGSixtyFourthTry64` | `path_loss` | `Try 63` coarse-to-fine with adjusted hyperparameters |
 | 65 | `TFGSixtyFifthTry65` | `path_loss` | grokking-style stress test: single stage, 10 000 epochs, no early stopping, high LR + weight decay |
-| 66 | `TFGSixtySixthTry66` | `path_loss` | **synthesis try**: sinusoidal FiLM at 8 points, elevation angle map, Tx depth map, corridor loss weighting, single-stage 513×513; best ~9.3 dB (overfitting plateau) |
-| 67 | `TFGSixtySeventhTry67` | `path_loss` | **3-class ITU partition** + knife-edge diffraction channel + anti-overfitting recipe (dropout↑, CutMix↑, ReduceLROnPlateau) + PDE loss + D4 TTA |
+| 66 | `TFGSixtySixthTry66` | `path_loss` | **synthesis try**: sinusoidal FiLM at 8 points, elevation angle map, Tx depth map, corridor loss weighting, single-stage 513Ã—513; best ~9.3 dB (overfitting plateau) |
+| 67 | `TFGSixtySeventhTry67` | `path_loss` | **3-class ITU partition** + knife-edge diffraction channel + anti-overfitting recipe (dropoutâ†‘, CutMixâ†‘, ReduceLROnPlateau) + PDE loss + D4 TTA |
 | 68 | `TFGSixtyEighthTry68` | `path_loss` | **Try 66 synthesis rerun** on PMHHNet: stem + high-frequency injection fix, FiLM-safe CutMix guard, six topology experts; optional resume from Try 66 checkpoints |
 | 69 | `TFGSixtyNinthTry69` | `path_loss` | **Try 67 recipe + SOA tooling** on **6 topology experts**, knife-edge **on**, obstruction **off**; dual LoS/NLoS head, D4 val TTA, FiLM-safe CutMix; `scripts/run_try69_component_ablation.py` |
-| 70 | `TFGSeventiethTry70` | `path_loss` | **Try 68 + multi-scale quad heads**: same PMHHNet fused map → 513 residual plus aux at 257 (4 tiles + global), 129 (16+1), 65 (64+1); `train_try70_multiquad.py` + optional Try 68 init; blend RMSE report over full val set |
+| 70 | `TFGSeventiethTry70` | `path_loss` | **Try 68 + multi-scale quad heads**: same PMHHNet fused map â†’ 513 residual plus aux at 257 (4 tiles + global), 129 (16+1), 65 (64+1); `train_try70_multiquad.py` + optional Try 68 init; blend RMSE report over full val set |
 | 71 | `TFGSeventyFirstTry71` | `path_loss` | **Try 68 + heteroscedastic uncertainty**: model predicts mean residual + log-variance (2 channels), Kendall & Gal NLL loss, per-pixel confidence map, RMSE-vs-coverage evaluation; `open_sparse_lowrise` only, resumes from Try 68 checkpoint |
 | 72 | `TFGSeventySecondTry72` | `path_loss` | **Try 68 + sparse receiver supervision**: train/val on reproducible sparse ground-pixel masks, dense-reference metric still reported; smaller PMHHNet, larger micro-batches |
 | 73 | `TFGSeventyThirdTry73` | `path_loss` | **No-prior direct-prediction rerun** of the mature 6-expert PMHHNet line: formula/confidence channels off, residual-over-prior off, building mask kept, output clamps removed, EMA non-finite guard |
-| 74 | `TFGSeventyFourthTry74` | `path_loss` | **3-expert no-prior fixed-height curriculum stage**: city-type experts, height band `47.5–52.5 m`, no scalar channels/FiLM, designed to learn near-constant-height morphology mapping |
+| 74 | `TFGSeventyFourthTry74` | `path_loss` | **3-expert no-prior fixed-height curriculum stage**: city-type experts, height band `47.5â€“52.5 m`, no scalar channels/FiLM, designed to learn near-constant-height morphology mapping |
 | 75 | `TFGSeventyFifthTry75` | `path_loss` | **3-expert no-prior continuation from Try 74**: all heights reopened, scalar height FiLM restored, each expert resumes from the matching `Try 74` checkpoint |
 | 76 | `TFGSeventySixthTry76` | `path_loss` | **Distribution-first GMM, 12 LoS/NLoS experts**: Stage-A GMM head (K=5) + Stage-B U-Net map head; no physics priors; built from scratch; ReduceLROnPlateau, no SWA/label-noise/CutMix/EMA |
-| 77 | `TFGSeventySeventhTry77` | `delay_spread`, `angular_spread` | **GMM spread experts**: same Try 76 two-stage GMM applied to spike_plus_exp spread distributions; 12 experts (6 topology × 2 metrics); extra spike prior params in model |
+| 77 | `TFGSeventySeventhTry77` | `delay_spread`, `angular_spread` | **GMM spread experts**: same Try 76 two-stage GMM applied to spike_plus_exp spread distributions; 12 experts (6 topology Ã— 2 metrics); extra spike prior params in model |
+| 78 | `TFGSeventyEighthTry78` | `path_loss` | **Non-DL path-loss prior**: LoS coherent two-ray after FSPL + radial analysis; final hybrid evaluator combines that LoS prior with calibrated NLoS handling |
+| 79 | `TFGSeventyNinthTry79` | `delay_spread`, `angular_spread` | **Pure `numpy` spread baseline**: `log1p` geometry+morphology features plus regime-wise ridge calibration and fallback hierarchy |
+| 80 | `TFGEightiethTry80` | `path_loss`, `delay_spread`, `angular_spread` | **Joint prior-anchored mega-model**: one shared network trained around frozen Try 78/79 priors |
 
 ## Main family transitions
 
@@ -517,7 +523,7 @@ where PMNet is described as a stronger alternative than plain RadioUNet when lon
 - RMSE by antenna-height bin;
 - RMSE by the combined calibration regime.
 
-So `Try 42` is not just “another try”.
+So `Try 42` is not just â€œanother tryâ€.
 
 It is the first branch in this family that tests whether a different path-loss backbone can exploit the calibrated prior better than the old U-Net/cGAN line.
 
@@ -591,13 +597,13 @@ The `Try 42` result showed a clear pattern:
 
 `Try 45` therefore attacks both sides:
 
-**Prior side** — adds to the prior:
+**Prior side** â€” adds to the prior:
 - train-only calibration by regime;
 - multiscale local topology descriptors;
 - local shadow-support proxies from the LoS map;
 - A2G-inspired elevation terms for hard `NLoS`.
 
-**Residual side** — spatial MoE head:
+**Residual side** â€” spatial MoE head:
 - shared PMNet-style encoder/context backbone;
 - several small residual experts;
 - per-pixel gating maps;
@@ -655,7 +661,7 @@ The prior calibration now runs as a separate cluster job with an `afterok` depen
 
 Stage 2 only starts after Stage 1 exits (SLURM `afterany` dependency). Stages write to separate output folders to avoid checkpoint mixing.
 
-## Tries 49–53: prior refinement and literature alignment
+## Tries 49â€“53: prior refinement and literature alignment
 
 `Try 49` adds a **prior confidence channel** heuristically derived from `LoS` probability, distance, and local obstruction density, giving the model spatial awareness of prior reliability. The model is widened to 112 channels and uses a MAE-dominant stage1 loss. A lightweight stage2 tail refiner trains on frozen stage1 teacher outputs.
 
@@ -684,7 +690,7 @@ Four linked ideas:
 
 The `Try 47` calibrated prior is retained. Per-expert RMSE is consistently lower than monolithic models.
 
-## Tries 55–59: objective and structural variants on the 6-expert family
+## Tries 55â€“59: objective and structural variants on the 6-expert family
 
 `Try 55` changes the generator objective on the `Try 54` experts to **final-map RMSE only** (plus no-data auxiliary), removing the residual-only term and multiscale reconstruction. Aligns training loss directly with the reported metric.
 
@@ -712,18 +718,18 @@ The `open_sparse_vertical` expert is split into `_los` and `_nlos` sub-experts (
 - formula-prior input channel restored;
 - obstruction proxy channels added: `shadow_depth`, `distance_since_los_break`, `max_blocker_height`.
 
-## Tries 63–64: coarse-to-fine pipeline
+## Tries 63â€“64: coarse-to-fine pipeline
 
 `Try 63` and `Try 64` test a coarse-to-fine pipeline:
-- stage1 trains at 128×128 (cheap, fast, learns global structure);
-- stage2 refines at full 513×513 (teacher upsamples stage1 to full resolution before refinement).
+- stage1 trains at 128Ã—128 (cheap, fast, learns global structure);
+- stage2 refines at full 513Ã—513 (teacher upsamples stage1 to full resolution before refinement).
 
-Result: stage2 refiner added <0.5 dB gain — below the 1 dB quantization floor of the uint8 ground truth. Removed in `Try 66`.
+Result: stage2 refiner added <0.5 dB gain â€” below the 1 dB quantization floor of the uint8 ground truth. Removed in `Try 66`.
 
 ## Try 65: grokking-style stress test
 
 `Try 65` tests whether a stubborn long-horizon training regime can achieve deep generalization without stage decomposition:
-- single stage, full 513×513, 10 000 epoch horizon;
+- single stage, full 513Ã—513, 10 000 epoch horizon;
 - no early stopping, no rewind to `best_model`;
 - large constant LR, high weight decay.
 
@@ -737,52 +743,52 @@ Result: stage2 refiner added <0.5 dB gain — below the 1 dB quantization floor 
 
 | Level | Mechanism | Source |
 |---|---|---|
-| 1 | Physical prior channel (two-ray/COST231) uses `h_tx` directly | — |
-| 2 | Tx-depth map: `building_height − h_tx` per pixel | Gao et al. 2026 |
-| 3 | Elevation angle map: `atan2(h_tx − h_rx, d)` per pixel | Al-Hourani et al. 2014; 3GPP TR 38.901 |
+| 1 | Physical prior channel (two-ray/COST231) uses `h_tx` directly | â€” |
+| 2 | Tx-depth map: `building_height âˆ’ h_tx` per pixel | Gao et al. 2026 |
+| 3 | Elevation angle map: `atan2(h_tx âˆ’ h_rx, d)` per pixel | Al-Hourani et al. 2014; 3GPP TR 38.901 |
 | 4 | Sinusoidal embedding: 64-dim (32 sin/cos pairs), resolves ~0.3 m | DDPM (Ho et al. 2020) |
 | 5 | Per-layer FiLM at 8 points in the network | ADM (Dhariwal & Nichol 2021) |
-| 6 | SE channel attention operating on FiLM'd features | — |
-| 7 | ~~Stage 2 height FiLM~~ — removed; single-stage 513×513 | — |
+| 6 | SE channel attention operating on FiLM'd features | â€” |
+| 7 | ~~Stage 2 height FiLM~~ â€” removed; single-stage 513Ã—513 | â€” |
 
 **What is kept (validated across multiple tries):**
 - 6-class topology-partitioned experts (Try 54)
 - PMHHNet backbone (Try 54)
-- Calibrated physical prior + residual learning (Try 41–42)
+- Calibrated physical prior + residual learning (Try 41â€“42)
 - Building mask exclusion (Try 33)
 - City-holdout data split (Try 51)
 - EMA decay 0.99 (Try 55)
 - GroupNorm (Try 22)
 - Geometric augmentation hflip/vflip/rot90 (Try 22+)
 - Multiscale path-loss loss (Try 22)
-- Supervised regression only — no GAN (Try 51)
+- Supervised regression only â€” no GAN (Try 51)
 
 **What is new (paper-backed):**
 - Sinusoidal height embedding + per-layer FiLM at 8 points (DDPM/ADM pattern)
 - Elevation angle map as input channel (Al-Hourani/3GPP)
 - Tx-relative depth map as input channel (Gao et al. 2026)
-- Propagation corridor weighting map in the loss (Gao et al. 2026; ~0.55–1.16 dB gain reported)
-- Single-stage direct 513×513 (stage2 dropped: <0.5 dB and unjustified complexity)
+- Propagation corridor weighting map in the loss (Gao et al. 2026; ~0.55â€“1.16 dB gain reported)
+- Single-stage direct 513Ã—513 (stage2 dropped: <0.5 dB and unjustified complexity)
 
 **Reference numbers from cluster:**
 
 | Try | Setting | Overall RMSE | LoS RMSE | NLoS RMSE |
 |---|---|---|---|---|
 | 42 | PMNet + prior (single) | ~19.78 dB | ~3.86 dB | ~34.47 dB |
-| 49 | PMNet stage1 w112 | ~18.96 dB | — | — |
+| 49 | PMNet stage1 w112 | ~18.96 dB | â€” | â€” |
 | 55 | PMHHNet expert (open_sparse_lowrise) | ~10.53 dB | ~3.76 dB | ~35.82 dB |
 | 64 | Coarse 128 + refiner (open_sparse_lowrise) | ~7.76 dB (128px) | ~2.97 dB | ~24.91 dB |
-| 66 | Synthesis try (open_sparse_lowrise) | ~9.3 dB | — | — |
+| 66 | Synthesis try (open_sparse_lowrise) | ~9.3 dB | â€” | â€” |
 
-**Problem:** `Try 66` plateaued and started overfitting after the best epoch (e.g., `open_sparse_lowrise` stalled at 9.34 dB). Root cause: cosine warm-restarts reset LR to peak at exactly the epochs when overfitting began; Huber loss with δ=6 dB masked NLoS tail errors; dropout and weight decay too weak for 400-sample expert datasets.
+**Problem:** `Try 66` plateaued and started overfitting after the best epoch (e.g., `open_sparse_lowrise` stalled at 9.34 dB). Root cause: cosine warm-restarts reset LR to peak at exactly the epochs when overfitting began; Huber loss with Î´=6 dB masked NLoS tail errors; dropout and weight decay too weak for 400-sample expert datasets.
 
-**Architecture note (discovered later):** In `PMHHNetResidualRegressor.forward`, when FiLM height conditioning was added on top of `PMHNetResidualRegressor`, the **stem no longer added** the high-frequency map `hf_project(|∇²x|)` to the stem output. `PMHNet` does `x0 = stem(x) + hf` so building edges drive the whole encoder; the buggy `PMHHNet` path only concatenated `hf` at the FPN fusion, starving early layers of that signal. The fix restores `stem(x) + hf` before `film_stem` and reuses the same `hf` tensor for `film_hf` + fusion. See **Try 68** and `TFGSixtySeventhTry67/model_pmhhnet.py`.
+**Architecture note (discovered later):** In `PMHHNetResidualRegressor.forward`, when FiLM height conditioning was added on top of `PMHNetResidualRegressor`, the **stem no longer added** the high-frequency map `hf_project(|âˆ‡Â²x|)` to the stem output. `PMHNet` does `x0 = stem(x) + hf` so building edges drive the whole encoder; the buggy `PMHHNet` path only concatenated `hf` at the FPN fusion, starving early layers of that signal. The fix restores `stem(x) + hf` before `film_stem` and reuses the same `hf` tensor for `film_hf` + fusion. See **Try 68** and `TFGSixtySeventhTry67/model_pmhhnet.py`.
 
 ## Try 67: 3-class ITU partition + anti-overfitting + knife-edge diffraction
 
 `Try 67` addresses the two problems from `Try 66`: arbitrary topology partition and overfitting.
 
-**Partition change: 6 classes → 3 city-morphology classes (ITU-R P.1411 / 3GPP TR 38.901):**
+**Partition change: 6 classes â†’ 3 city-morphology classes (ITU-R P.1411 / 3GPP TR 38.901):**
 
 | Expert | Morphology | ITU/3GPP analogue |
 |---|---|---|
@@ -790,14 +796,14 @@ Result: stage2 refiner added <0.5 dB gain — below the 1 dB quantization floor 
 | `mixed_midrise` | medium density, medium height | UMi street-canyon |
 | `dense_highrise` | high density, tall buildings | UMa |
 
-Routing uses fixed thresholds on building density + mean building height from a calibration JSON — no city-name lookup, generalizes to unseen cities at inference.
+Routing uses fixed thresholds on building density + mean building height from a calibration JSON â€” no city-name lookup, generalizes to unseen cities at inference.
 
-**New input channel: knife-edge diffraction (ITU-R P.526-15 §4.5.1):**
+**New input channel: knife-edge diffraction (ITU-R P.526-15 Â§4.5.1):**
 - For every pixel, a ray is cast from TX (map center, altitude `h_tx`) to the receiver pixel (`h_rx = 1.5 m`).
-- 48 samples along the ray; dominant blocker found via argmax of excess height above the straight TX→RX line (Bullington 1947 single-edge approximation).
-- Fresnel parameter `v = h · √(2(d₁+d₂)/(λ·d₁·d₂))`; Lee 1985 closed form for `J(v)`.
+- 48 samples along the ray; dominant blocker found via argmax of excess height above the straight TXâ†’RX line (Bullington 1947 single-edge approximation).
+- Fresnel parameter `v = h Â· âˆš(2(dâ‚+dâ‚‚)/(Î»Â·dâ‚Â·dâ‚‚))`; Lee 1985 closed form for `J(v)`.
 - Map normalized to [0,1] by a 40 dB scale; appended as extra input channel.
-- Expected gain: 1–3 dB NLoS.
+- Expected gain: 1â€“3 dB NLoS.
 
 **Anti-overfitting recipe (all changes motivated by `Try 66` training logs):**
 
@@ -808,15 +814,15 @@ Routing uses fixed thresholds on building density + mean building height from a 
 | `cutmix_prob` | 0.25 | 0.45 | Zhang et al. MICCAI 2024: strongest regularizer for limited dense tasks |
 | `learning_rate` | 4e-4 | 3e-4 | Lower peak LR prevents instant re-overfitting after rewind |
 | `lr_scheduler` | cosine_warm_restarts | reduce_on_plateau | Warm-restart spikes reset LR to peak right when overfitting began |
-| `loss_type` | huber (δ=6) | mse | Huber's tolerance masked NLoS tail errors |
+| `loss_type` | huber (Î´=6) | mse | Huber's tolerance masked NLoS tail errors |
 | `epochs` | 1000 | 800 | Early stopping trips much earlier anyway |
 | `early_stopping.patience` | 50 | 25 | Stop wasting ~25 epochs after the best epoch |
 | `ema_decay` | 0.995 | 0.9975 | Slower EMA averages more weights, smoother validation |
 | `lr_warmup_steps` | 0 | 500 | Gentle warmup from 10% LR avoids large early gradients |
 
 **Additional techniques:**
-- **PDE residual loss** (masked Laplacian, ReVeal-style, arXiv:2502.19646): expected 0.3–1.0 dB NLoS gain.
-- **D4 test-time augmentation** at final test: 8 orientations (identity, hflip, vflip, 180°, 90°, 270°, transpose, anti-transpose); expected 0.3–1.0 dB.
+- **PDE residual loss** (masked Laplacian, ReVeal-style, arXiv:2502.19646): expected 0.3â€“1.0 dB NLoS gain.
+- **D4 test-time augmentation** at final test: 8 orientations (identity, hflip, vflip, 180Â°, 90Â°, 270Â°, transpose, anti-transpose); expected 0.3â€“1.0 dB.
 - **Per-expert tight output clamping**: `open_lowrise` [60, 125] dB; `mixed_midrise` [58, 135] dB; `dense_highrise` [55, 145] dB.
 - **LR warmup**: 500 steps from 10% of base LR.
 
@@ -831,20 +837,20 @@ Six configuration bugs were identified that collectively disabled most of the tr
 | `loss.lambda_recon` | 0.0 | 1.0 | Main 513px reconstruction loss was completely disabled |
 | `loss.mse_weight` | 0.0 | 1.0 | MSE term inside reconstruction also zero |
 | `training.generator_objective` | `full_map_rmse_only` | `legacy` | Switched from `sqrt(MSE)` (unstable gradient at high error) to proper MSE |
-| `corridor_weighting.enabled` | true (sigma=40) | false | sigma=40 on 513px map → ~0 weight at edges; degraded far-field RMSE |
+| `corridor_weighting.enabled` | true (sigma=40) | false | sigma=40 on 513px map â†’ ~0 weight at edges; degraded far-field RMSE |
 | `prior_residual_path_loss.loss_weight` | 0.0 | 0.5 | No residual supervision at 513px |
-| `regularisation` | dropout=0.2, wd=0.03, cutmix=0.45 | 0.12 / 0.015 / 0.25 | Over-regularised for 3-class experts with ≥400 training samples |
+| `regularisation` | dropout=0.2, wd=0.03, cutmix=0.45 | 0.12 / 0.015 / 0.25 | Over-regularised for 3-class experts with â‰¥400 training samples |
 | `clip_max_db` | `open_lowrise` 125 dB | 150 dB | Clipped valid high-path-loss predictions in open expert |
 
 ### SOA training additions to Try 67 (2025-04)
 
 Three SOA training techniques added to `train_partitioned_pathloss_expert.py` (shared across Try 67 / 68 / 69):
 
-**1. Stochastic Weight Averaging (SWA)** — Izmailov et al. NeurIPS 2018: running uniform average of checkpoints from `swa.start_fraction × total_epochs`. Finds wider loss-surface optima; reported +0.5–1.0 dB on city-holdout generalization vs standard EMA. Implemented as `_update_swa_model()` helper; activated by `training.swa.enabled: true` + `swa_lr` in YAML.
+**1. Stochastic Weight Averaging (SWA)** â€” Izmailov et al. NeurIPS 2018: running uniform average of checkpoints from `swa.start_fraction Ã— total_epochs`. Finds wider loss-surface optima; reported +0.5â€“1.0 dB on city-holdout generalization vs standard EMA. Implemented as `_update_swa_model()` helper; activated by `training.swa.enabled: true` + `swa_lr` in YAML.
 
-**2. Target label noise** — Müller et al. 2019 (label smoothing generalization): Gaussian noise `N(0, 0.5 dB)` added to uint8 training targets. The CKM dataset stores path-loss at 1 dB integer resolution; the model tends to predict constant-integer-level plateaus and the loss surface has grid-aligned narrow valleys. Adding σ=0.5 dB noise (≈0.5/180 normalized) breaks the quantization grid while staying below the dataset's physical uncertainty floor. Activated by `training.target_noise.enabled: true` + `sigma_db` in YAML.
+**2. Target label noise** â€” MÃ¼ller et al. 2019 (label smoothing generalization): Gaussian noise `N(0, 0.5 dB)` added to uint8 training targets. The CKM dataset stores path-loss at 1 dB integer resolution; the model tends to predict constant-integer-level plateaus and the loss surface has grid-aligned narrow valleys. Adding Ïƒ=0.5 dB noise (â‰ˆ0.5/180 normalized) breaks the quantization grid while staying below the dataset's physical uncertainty floor. Activated by `training.target_noise.enabled: true` + `sigma_db` in YAML.
 
-**3. LR-score EMA smoothing** — `training.lr_scheduler_score_ema: 0.6` smooths the RMSE fed to `ReduceLROnPlateau`. Raw per-epoch RMSE has ~0.3 dB noise from batch sampling; without smoothing the plateau scheduler triggers 3–5 epochs early, dropping LR while the model is still improving. The smoothed score is stored on the scheduler object (`_smoothed_score`) and passed to `scheduler_g.step()`.
+**3. LR-score EMA smoothing** â€” `training.lr_scheduler_score_ema: 0.6` smooths the RMSE fed to `ReduceLROnPlateau`. Raw per-epoch RMSE has ~0.3 dB noise from batch sampling; without smoothing the plateau scheduler triggers 3â€“5 epochs early, dropping LR while the model is still improving. The smoothed score is stored on the scheduler object (`_smoothed_score`) and passed to `scheduler_g.step()`.
 
 ## Try 68: Try 66 recipe + PMHHNet stem+HF bugfix + cluster resume from Try 66
 
@@ -862,19 +868,19 @@ Three SOA training techniques added to `train_partitioned_pathloss_expert.py` (s
 
 | Script | Role |
 |--------|------|
-| `cluster/launch_try68_resume_from_try66.py` | SSH: `cp -a` each `outputs/try66_expert_*` → `outputs/try68_expert_*` on the cluster (same `expert_id` suffix). Optional `--submit` runs upload with `--no-clean-outputs`, sync, then `submit_try68_experts_4gpu_sequential.py --skip-upload`. |
-| `cluster/submit_try68_experts_4gpu_sequential.py` | Chained **6 train (4× RTX2080) + 6 cleanup** jobs; pass **`--no-clean-outputs`** with upload if `outputs/` was populated by the sync first (otherwise the uploader’s default remote output clean would delete resumed checkpoints). |
+| `cluster/launch_try68_resume_from_try66.py` | SSH: `cp -a` each `outputs/try66_expert_*` â†’ `outputs/try68_expert_*` on the cluster (same `expert_id` suffix). Optional `--submit` runs upload with `--no-clean-outputs`, sync, then `submit_try68_experts_4gpu_sequential.py --skip-upload`. |
+| `cluster/submit_try68_experts_4gpu_sequential.py` | Chained **6 train (4Ã— RTX2080) + 6 cleanup** jobs; pass **`--no-clean-outputs`** with upload if `outputs/` was populated by the sync first (otherwise the uploaderâ€™s default remote output clean would delete resumed checkpoints). |
 
 ### Root-cause analysis and bug fixes applied to Try 68 (2025-04)
 
-**Root cause of loss↓ / RMSE stall** (confirmed from cluster epoch-164 JSON for `open_sparse_lowrise`):
+**Root cause of lossâ†“ / RMSE stall** (confirmed from cluster epoch-164 JSON for `open_sparse_lowrise`):
 
-- `weight_decay: 0.1` — catastrophically large for a 400-sample expert. The L2 regularisation gradient dominated the loss gradient; the model converged to `pred ≈ prior`. By epoch 164: val RMSE 10.75 dB vs prior 10.86 dB — only 0.12 dB improvement despite clean loss curve.
-- `lambda_recon: 0.0` / `mse_weight: 0.0` — main 513px reconstruction loss was completely switched off; only the lower-resolution multiscale auxiliary was active. Training loss decreased (multiscale converged) while full-res RMSE barely moved.
+- `weight_decay: 0.1` â€” catastrophically large for a 400-sample expert. The L2 regularisation gradient dominated the loss gradient; the model converged to `pred â‰ˆ prior`. By epoch 164: val RMSE 10.75 dB vs prior 10.86 dB â€” only 0.12 dB improvement despite clean loss curve.
+- `lambda_recon: 0.0` / `mse_weight: 0.0` â€” main 513px reconstruction loss was completely switched off; only the lower-resolution multiscale auxiliary was active. Training loss decreased (multiscale converged) while full-res RMSE barely moved.
 
 | Bug | Bad value | Fixed value | Impact |
 |-----|-----------|-------------|--------|
-| `training.weight_decay` | 0.1 | 0.015 | Catastrophic over-regularisation → pred≈prior |
+| `training.weight_decay` | 0.1 | 0.015 | Catastrophic over-regularisation â†’ predâ‰ˆprior |
 | `loss.lambda_recon` | 0.0 | 1.0 | 513px reconstruction completely off |
 | `loss.loss_type` | `huber` (delta=0.14 norm) | `mse` | Removes threshold masking of small errors |
 | `corridor_weighting.enabled` | true (sigma=40) | false | Centre-only weighting degraded edge pixels |
@@ -883,8 +889,8 @@ Three SOA training techniques added to `train_partitioned_pathloss_expert.py` (s
 
 **Speed improvements applied:**
 
-- DataLoader: `num_workers` 4→6, `val_num_workers` 2→4, `persistent_workers: true`, `prefetch_factor: 4`
-- `batch_size` 1→2, `gradient_accumulation_steps` 16→8 (same effective batch; faster GPU utilisation)
+- DataLoader: `num_workers` 4â†’6, `val_num_workers` 2â†’4, `persistent_workers: true`, `prefetch_factor: 4`
+- `batch_size` 1â†’2, `gradient_accumulation_steps` 16â†’8 (same effective batch; faster GPU utilisation)
 
 **SOA training additions:** same SWA, target label noise, and LR-score EMA smoothing as Try 67 (see above).
 
@@ -918,9 +924,9 @@ Try 69 inherited the same Try 67 configuration bugs (all three expert YAMLs patc
 | `cutmix_prob` | 0.45 | 0.25 |
 | `clip_max_db` per expert | 125 / 135 / 145 | 150 / 160 / 175 |
 
-**Speed improvements:** DataLoader workers 0→6, `val_num_workers` 0→4, `persistent_workers: true`, `prefetch_factor: 4`, `batch_size` 1→2, `gradient_accumulation_steps` 16→8.
+**Speed improvements:** DataLoader workers 0â†’6, `val_num_workers` 0â†’4, `persistent_workers: true`, `prefetch_factor: 4`, `batch_size` 1â†’2, `gradient_accumulation_steps` 16â†’8.
 
-**SOA additions:** SWA, target label noise, LR-score EMA smoothing (same as Try 67 — see details there).
+**SOA additions:** SWA, target label noise, LR-score EMA smoothing (same as Try 67 â€” see details there).
 
 ## Try 70: Try 68 PMHHNet + multi-scale quad auxiliary heads
 
@@ -928,66 +934,66 @@ Try 69 inherited the same Try 67 configuration bugs (all three expert YAMLs patc
 
 | Piece | Where |
 |-------|--------|
-| Extra heads (257: 4+1, 129: 16+1, 65: 64+1) | `model_try70_multiquad.py`; fused features → tiled + global low-res residuals |
+| Extra heads (257: 4+1, 129: 16+1, 65: 64+1) | `model_try70_multiquad.py`; fused features â†’ tiled + global low-res residuals |
 | Main loss | Same Huber + multiscale on 513 as Try 68 `full_map_rmse_only` |
-| Aux loss | `try70.aux_loss_weight` × mean Huber over native + bilinear-up global branches |
-| Warm-start from Try 68 | `try70.init_checkpoint` (or Slurm `TRY70_INIT_CHECKPOINT` via `prepare_runtime_config.py --try70-init-checkpoint`) — `load_state_dict(..., strict=False)` |
-| Val blend diagnostic | `try70.blend_report_first_batch` → `try70_blend_first_batch` in `evaluate_validation` summary (first val batch) |
+| Aux loss | `try70.aux_loss_weight` Ã— mean Huber over native + bilinear-up global branches |
+| Warm-start from Try 68 | `try70.init_checkpoint` (or Slurm `TRY70_INIT_CHECKPOINT` via `prepare_runtime_config.py --try70-init-checkpoint`) â€” `load_state_dict(..., strict=False)` |
+| Val blend diagnostic | `try70.blend_report_first_batch` â†’ `try70_blend_first_batch` in `evaluate_validation` summary (first val batch) |
 
 **Folder:** `TFGpractice/TFGSeventiethTry70/` (full tree copied from Try 68; cluster scripts renamed for Try 70).
 
 **Cluster:** `cluster/run_seventieth_try70_4gpu.slurm`, `cluster/submit_try70_open_sparse_4gpu_sequential.py` (optional `--cancel-all-user-jobs`, default `MASTER_PORT` base **30290**). Upload uses shared `TFGpractice/cluster/upload_and_submit_experiments.py` with `--local-dir TFGSeventiethTry70`. Remote path: `/scratch/nas/3/gmoreno/TFGpractice/TFGSeventiethTry70`.
 
-**Launch (sert, 2026-04-14):** after `scancel -u gmoreno`, repo sync + four chained `sbatch` on `sert-2001` for `try70_expert_open_sparse_lowrise.yaml`: job IDs **10030660** → **10030661** → **10030662** → **10030663** (`afterany` chain). Job 1 exported `TRY70_INIT_CHECKPOINT` = Try 68 `try68_expert_open_sparse_lowrise/best_model.pt`; segments 2–4 resume `outputs/try70_expert_open_sparse_lowrise/best_model.pt`.
+**Launch (sert, 2026-04-14):** after `scancel -u gmoreno`, repo sync + four chained `sbatch` on `sert-2001` for `try70_expert_open_sparse_lowrise.yaml`: job IDs **10030660** â†’ **10030661** â†’ **10030662** â†’ **10030663** (`afterany` chain). Job 1 exported `TRY70_INIT_CHECKPOINT` = Try 68 `try68_expert_open_sparse_lowrise/best_model.pt`; segments 2â€“4 resume `outputs/try70_expert_open_sparse_lowrise/best_model.pt`.
 
 ### Bug fixes applied to Try 70 (2025-04)
 
 Three bugs found and fixed in `model_try70_multiquad.py` and `train_try70_multiquad.py`:
 
-**Bug 1 — Global-branch double-counting in `try70_auxiliary_loss`:**
+**Bug 1 â€” Global-branch double-counting in `try70_auxiliary_loss`:**
 The loss loops counted the global branch channel inside the per-tile range, then added it again explicitly:
 ```python
 # BEFORE (wrong): range(5) counted 4 tiles + global channel 4
 for k in range(5):  # should be range(4)
     total += _hub(o257[:, k:k+1], ...)
 ```
-Fixed: `range(5/17/65)` → `range(4/16/64)` so the global branch is only counted once via the explicit bilinear-upsample path.
+Fixed: `range(5/17/65)` â†’ `range(4/16/64)` so the global branch is only counted once via the explicit bilinear-upsample path.
 
-**Bug 2 — Aux heads supervised against full target instead of residual target:**
-Aux heads predict the **residual** (same space as the main head: `pred − prior`). The loss was comparing them to the full path-loss `target`, not `target − prior`, inflating the loss by the mean prior value (~80–120 dB normalized). Fixed by adding `prior: Optional[torch.Tensor]` parameter to `try70_auxiliary_loss`; internally uses `res_target = target − prior` for all auxiliary comparisons.
+**Bug 2 â€” Aux heads supervised against full target instead of residual target:**
+Aux heads predict the **residual** (same space as the main head: `pred âˆ’ prior`). The loss was comparing them to the full path-loss `target`, not `target âˆ’ prior`, inflating the loss by the mean prior value (~80â€“120 dB normalized). Fixed by adding `prior: Optional[torch.Tensor]` parameter to `try70_auxiliary_loss`; internally uses `res_target = target âˆ’ prior` for all auxiliary comparisons.
 
-**Bug 3 — Blend search ran on first batch only:**
-`_validate_rmse` called `try70_blend_search_rmse_physical` on a single validation sample (first batch). This gave noisy alpha/channel rankings driven by one city. Fixed: SSE is now accumulated per `(channel, alpha)` across the **full validation set**; RMSE is computed from the aggregated SSE at the end. Alpha sweep [0.0 … 1.0] in configurable steps (`try70.blend_alpha_steps`, default 11). Results sorted by `best_rmse_phys` ascending in the JSON report.
+**Bug 3 â€” Blend search ran on first batch only:**
+`_validate_rmse` called `try70_blend_search_rmse_physical` on a single validation sample (first batch). This gave noisy alpha/channel rankings driven by one city. Fixed: SSE is now accumulated per `(channel, alpha)` across the **full validation set**; RMSE is computed from the aggregated SSE at the end. Alpha sweep [0.0 â€¦ 1.0] in configurable steps (`try70.blend_alpha_steps`, default 11). Results sorted by `best_rmse_phys` ascending in the JSON report.
 
 ## Try 71: Try 68 + heteroscedastic uncertainty (Kendall & Gal 2017)
 
 `Try 71` forks Try 68's `open_sparse_lowrise` expert to add **per-pixel aleatoric uncertainty estimation** using the heteroscedastic regression formulation of Kendall & Gal (NeurIPS 2017).
 
 **Core idea:** Instead of predicting a single mean residual, the model outputs two channels:
-- channel 0: mean residual `μ` (same as Try 68)
-- channel 1: log-variance `log σ²` (new)
+- channel 0: mean residual `Î¼` (same as Try 68)
+- channel 1: log-variance `log ÏƒÂ²` (new)
 
 The NLL loss is:
 ```
-L_NLL = (μ − y)² / exp(log σ²) + log σ²
+L_NLL = (Î¼ âˆ’ y)Â² / exp(log ÏƒÂ²) + log ÏƒÂ²
 ```
 
-This automatically down-weights pixels where the model is uncertain (high `σ²`), which in practice corresponds to deep-NLoS / hard-diffraction pixels where ray-traced ground truth itself has high variance. The model learns **where not to be confident** rather than forcing uniform fit across all pixels.
+This automatically down-weights pixels where the model is uncertain (high `ÏƒÂ²`), which in practice corresponds to deep-NLoS / hard-diffraction pixels where ray-traced ground truth itself has high variance. The model learns **where not to be confident** rather than forcing uniform fit across all pixels.
 
 **Evaluation: RMSE-vs-coverage curve**
 
-At inference the per-pixel uncertainty σ is used as a confidence score. The evaluation sweeps confidence thresholds τ ∈ [0, ∞) and reports:
-- `coverage`: fraction of ground pixels with σ ≤ τ
+At inference the per-pixel uncertainty Ïƒ is used as a confidence score. The evaluation sweeps confidence thresholds Ï„ âˆˆ [0, âˆž) and reports:
+- `coverage`: fraction of ground pixels with Ïƒ â‰¤ Ï„
 - `rmse_dB`: RMSE on the covered subset
 
-This produces a selective-prediction curve: at 100% coverage the RMSE is the full-map result; as τ decreases the model only commits to easy pixels and RMSE drops. The gap between full-coverage RMSE and 50%-coverage RMSE measures how much uncertainty the model has captured.
+This produces a selective-prediction curve: at 100% coverage the RMSE is the full-map result; as Ï„ decreases the model only commits to easy pixels and RMSE drops. The gap between full-coverage RMSE and 50%-coverage RMSE measures how much uncertainty the model has captured.
 
 Output: both the JSON metrics file and the per-epoch JSONL include a `coverage_rmse_curve` list `[{tau, coverage, rmse_phys}]` at 20 threshold steps.
 
 **Architecture change:**
 - `model.out_channels: 2` in YAML
 - `PMHHNetResidualRegressor` with `out_channels=2` already outputs the correct shape; channel 0 = mean, channel 1 = log_var
-- `log_var` is clamped to `[−10, 10]` to avoid numerical explosion
+- `log_var` is clamped to `[âˆ’10, 10]` to avoid numerical explosion
 
 **Loss change (in `train_partitioned_pathloss_expert.py`):**
 ```python
@@ -998,7 +1004,7 @@ loss = (nll * mask).sum() / mask.sum().clamp_min(1)
 ```
 Multiscale and NLoS focus losses are computed on `mu` only (not `lv`).
 
-**Folder:** `TFGpractice/TFGSeventyFirstTry71/` — generated from Try 68 via `TFGpractice/scripts/bootstrap_try71_from_try68.py`.
+**Folder:** `TFGpractice/TFGSeventyFirstTry71/` â€” generated from Try 68 via `TFGpractice/scripts/bootstrap_try71_from_try68.py`.
 
 **Scope:** `open_sparse_lowrise` only (mirrors the Try 68 checkpoint available on the cluster). Cluster script copies `outputs/try68_expert_open_sparse_lowrise/best_model.pt` into `outputs/try71_expert_open_sparse_lowrise/` before the first epoch; `load_state_dict(strict=False)` loads all shared weights (new log_var head initialises randomly).
 
@@ -1006,7 +1012,7 @@ Multiscale and NLoS focus losses are computed on `mu` only (not `lv`).
 
 ## Try 72: Try 68 + sparse receivers + smaller model + larger batch
 
-`Try 72` copies the **Try 68** training stack (`train_partitioned_pathloss_expert.py`, six topology experts, PMHHNet, prior + residual, same data channels and splits) and adds **receiver subsampling** to stress generalisation under **fewer supervised pixels per map** (closer in spirit to sparse drive-test links than “every raster cell always counts”).
+`Try 72` copies the **Try 68** training stack (`train_partitioned_pathloss_expert.py`, six topology experts, PMHHNet, prior + residual, same data channels and splits) and adds **receiver subsampling** to stress generalisation under **fewer supervised pixels per map** (closer in spirit to sparse drive-test links than â€œevery raster cell always countsâ€).
 
 ### Receiver subsample (`data.receiver_subsample`)
 
@@ -1018,7 +1024,7 @@ Multiscale and NLoS focus losses are computed on `mu` only (not `lv`).
 | `max_rx_per_tile` | Max receivers sampled per tile (default 32). |
 | `val_seed` | Base for deterministic val subsampling (+ internal offset per batch index). |
 
-Implementation: `data_utils.apply_receiver_subsample_mask` (numpy grouping per sample). Train multiplies the loss mask by a **new** gate each step (`seed = cfg.seed + epoch×1_000_003 + step×47`). When enabled, JSON includes **`metrics.path_loss_dense_reference`** (RMSE on **dense** valid pixels) alongside sparse `metrics.path_loss`.
+Implementation: `data_utils.apply_receiver_subsample_mask` (numpy grouping per sample). Train multiplies the loss mask by a **new** gate each step (`seed = cfg.seed + epochÃ—1_000_003 + stepÃ—47`). When enabled, JSON includes **`metrics.path_loss_dense_reference`** (RMSE on **dense** valid pixels) alongside sparse `metrics.path_loss`.
 
 ### Model / batch (vs Try 68 defaults in repo YAML)
 
@@ -1027,6 +1033,49 @@ Implementation: `data_utils.apply_receiver_subsample_mask` (numpy grouping per s
 
 **Folder:** `TFGpractice/TFGSeventySecondTry72/`. **Docs:** `README.md` (overview + config pointers). **Plots:** `scripts/plot_try72_metrics.py` (val sparse vs dense reference on panel 0).
 
+## Try 78: non-DL path-loss prior (FSPL -> radial -> coherent two-ray)
+
+`Try 78` leaves the PMHHNet family aside and asks whether the CKM LoS map is already dominated by a deterministic structure. The branch progressed from raw `FSPL`, to a height-binned **radial residual** lookup, and finally to a **coherent two-ray** model with fitted effective reflection parameters (`rho`, `phi`, `bias`) per height bin.
+
+**Main files:** `prior_try78.py`, `evaluate_hybrid_try78.py`, `TRY78_LOS_DOCUMENTATION.md`.
+
+**Key documented numbers:**
+- smoke-test LoS RMSE (`coherent two-ray`): about `1.7649 dB`
+- full eval LoS RMSE (`coherent two-ray`): about `1.7574 dB`
+- corrected hybrid eval: `LoS ~= 1.7516 dB`, `NLoS ~= 3.3967 dB`, `overall ~= 1.9246 dB`
+
+**Main insight:** CKM LoS residuals exhibit a strong **ring / radial** structure around the transmitter, so in LoS the buildings often behave more like a **visibility mask** than the primary generator of residual shape.
+
+## Try 79: pure `numpy` non-DL spread baseline
+
+`Try 79` is the spread-side analogue of `Try 78`: a transparent, thesis-friendly baseline for `delay_spread` and `angular_spread` that avoids deep learning entirely.
+
+**Main file:** `prior_try79.py`.
+
+**Recipe:**
+- regress in `log1p(target)` space
+- use TX-centred geometry (`log(1 + d_2D)`, normalized radius, azimuth harmonics, elevation angle)
+- add multi-scale morphology features from `15 x 15` and `41 x 41` box filters
+- treat `LoS / NLoS` explicitly
+- fit **ridge regressors** over `metric x topology_class x LoS/NLoS x antenna_bin`
+- use a fallback hierarchy for sparse regimes
+
+**Purpose:** not to beat `Try 77`, but to quantify how much spread prediction can already be explained by **geometry + morphology + lightweight calibration**.
+
+## Try 80: joint prior-anchored mega-model
+
+`Try 80` brings path loss and both spreads back into one multitask model, but now around the strongest interpretable priors already discovered.
+
+**Targets:** `path_loss`, `delay_spread`, `angular_spread`.
+
+**Frozen priors consumed by the model:**
+- `Try 78` path-loss prior
+- `Try 79` delay-spread prior
+- `Try 79` angular-spread prior
+
+**Main files:** `train_try80.py`, `evaluate_try80.py`, `experiments/try80_joint_big.yaml`, `scripts/precompute_priors_hdf5.py`, `DESIGN_TRY80.md`, `docs/PRIOR_FORMULAS_TRY80.md`, `docs/TRY78_TRY79_EQUATIONS_FOR_TRY80.md`.
+
+**Design reading:** `Try 80` keeps the late-project ideas from `Try 76 / 77` (sinusoidal height conditioning, GroupNorm, strict city holdout, ground-only masking, residual/distribution-aware decoding), but replaces hand-wavy re-discovery with **frozen priors that already work well on CKM**.
 ## Related documents
 
 - `SUPERVISOR_SUMMARY_TRIES_20_TO_32.md`
@@ -1046,3 +1095,4 @@ Implementation: `data_utils.apply_receiver_subsample_mask` (numpy grouping per s
 - `FOR_GENIA_SUMMARY_TRIES_20_TO_44.md`
 - `PAPER_SOURCES_TRIES_20_TO_44.md`
 - `TRY43_TRY44_PMNET_CONTROLS.md`
+
