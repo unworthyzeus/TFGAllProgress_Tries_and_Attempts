@@ -13,7 +13,9 @@
 #SBATCH --error=logs_train_try80_%x_%j.err
 
 set -euo pipefail
-ulimit -c 0
+# Keep NCCL/C++ aborts from filling the 30 GB scratch quota with core.* dumps.
+ulimit -S -c 0 || true
+ulimit -H -c 0 || true
 
 CONFIG_PATH=${CONFIG_PATH:-experiments/try80_joint_big.yaml}
 TRAIN_SCRIPT=${TRAIN_SCRIPT:-train_try80.py}
@@ -80,7 +82,7 @@ export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}
 export SLURM_STEP_KILL_TIMEOUT=${SLURM_STEP_KILL_TIMEOUT:-30}
 export MASTER_ADDR MASTER_PORT
 
-srun --ntasks=1 --cpu-bind=none --kill-on-bad-exit=1 \
+srun --ntasks=1 --cpu-bind=none --kill-on-bad-exit=1 --propagate=CORE \
   "$TORCHRUN_BIN" --nnodes=1 --nproc-per-node="$NPROC_PER_NODE" \
   --rdzv-backend=c10d --rdzv-endpoint "${MASTER_ADDR}:${MASTER_PORT}" --rdzv-id "$RDZV_ID" \
   "$TRAIN_SCRIPT" --config "$runtime_config" &

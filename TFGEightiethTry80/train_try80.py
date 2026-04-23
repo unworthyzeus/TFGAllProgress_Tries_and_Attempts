@@ -8,6 +8,7 @@ import os
 import random
 import time
 from dataclasses import asdict
+from datetime import timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -45,7 +46,8 @@ def resolve_single_process_device(preferred: str | None = None) -> torch.device:
 def init_distributed(preferred_device: str | None = None) -> Tuple[bool, int, int, torch.device]:
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         backend = os.environ.get("DDP_BACKEND", "nccl")
-        dist.init_process_group(backend=backend)
+        timeout_seconds = int(os.environ.get("DDP_TIMEOUT_SECONDS", "7200"))
+        dist.init_process_group(backend=backend, timeout=timedelta(seconds=timeout_seconds))
         rank = dist.get_rank()
         world = dist.get_world_size()
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
