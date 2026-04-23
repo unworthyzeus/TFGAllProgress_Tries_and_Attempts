@@ -172,11 +172,11 @@ class Try80ModelConfig:
     alpha_bias: float = -2.0
     sigma_min: float = 0.05
     sigma_max: float = 3.00
-    path_residual_los_max: float = 2.0
-    path_residual_nlos_max: float = 4.0
-    delay_residual_los_max: float = 30.0
+    path_residual_los_max: float = 5.0
+    path_residual_nlos_max: float = 20.0
+    delay_residual_los_max: float = 40.0
     delay_residual_nlos_max: float = 40.0
-    angular_residual_los_max: float = 9.0
+    angular_residual_los_max: float = 15.0
     angular_residual_nlos_max: float = 13.0
 
 
