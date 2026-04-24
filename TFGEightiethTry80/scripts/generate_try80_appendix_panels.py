@@ -1,12 +1,23 @@
 """Generate Try 80 inspection panels for the thesis appendix.
 
-Each panel uses a wide six-column by three-row layout:
-  rows: path loss, delay spread, angular spread
-  cols: ground truth, frozen prior, Try 80 output, context/mask,
-        model minus ground truth, model minus prior
+Each panel is rendered twice, in two layouts that share the same content:
 
-The script chooses representative validation samples from different Try 80
-macro experts and writes a manifest next to the generated PNG files.
+  - 3x6 (wide):  rows = tasks (path loss, delay spread, angular spread)
+                 cols = ground truth, frozen prior, Try 80 output, context,
+                        prior minus ground truth (prior error),
+                        Try 80 minus prior (model correction)
+
+  - 6x3 (tall):  rows = the six stages listed above
+                 cols = tasks
+
+The two right-most columns describe the prior-anchored residual story:
+column 5 shows what the frozen prior got wrong, and column 6 shows the signed
+correction the Try 80 residual head applied on top of the prior.
+
+Sample selection: the script only keeps candidates for which the Try 80
+prediction beats the frozen prior on all three outputs simultaneously (path
+loss, delay spread, angular spread). Each macro-expert x antenna-bin bucket
+then picks the candidate with the best mean model RMSE.
 """
 from __future__ import annotations
 
@@ -89,8 +100,27 @@ def parse_args() -> argparse.Namespace:
         default=REPO_ROOT / "FINAL_THESIS" / "TFG" / "img" / "thesis_figures" / "try80_appendix_panels",
     )
     parser.add_argument("--max-experts", type=int, default=6)
-    parser.add_argument("--candidates-per-expert", type=int, default=4)
+    parser.add_argument("--candidates-per-expert", type=int, default=8)
     parser.add_argument("--dpi", type=int, default=120)
+    parser.add_argument(
+        "--require-improvement",
+        action="store_true",
+        default=True,
+        help="Only keep candidates where Try 80 beats the prior on all three outputs.",
+    )
+    parser.add_argument(
+        "--no-require-improvement",
+        dest="require_improvement",
+        action="store_false",
+        help="Disable the all-tasks-improved filter.",
+    )
+    parser.add_argument(
+        "--layouts",
+        nargs="+",
+        choices=("3x6", "6x3"),
+        default=("3x6", "6x3"),
+        help="Which layouts to render (default: both).",
+    )
     return parser.parse_args()
 
 
@@ -239,79 +269,148 @@ def add_map(ax, image, title: str, cmap: str, vmin=None, vmax=None, colorbar=Tru
     return im
 
 
-def render_panel(record: Dict[str, object], out_path: Path, dpi: int) -> Dict[str, object]:
-    cand: Candidate = record["candidate"]
+STAGE_ORDER = ("gt", "prior", "pred", "context", "prior_err", "model_corr")
+
+
+def _build_stage_plan(record: Dict[str, object]) -> Dict[str, Dict[str, Dict[str, object]]]:
+    """Return a stage -> task -> {image, title, cmap, vmin, vmax} plan.
+
+    Centralising the plan makes the 3x6 and 6x3 renderers share identical
+    content: the only difference between them is the axes orientation.
+    """
     arrays = record["arrays"]
     raw = record["raw"]
     metrics = record["metrics"]
 
-    fig, axes = plt.subplots(3, 6, figsize=(23, 11), constrained_layout=True)
-
-    task_ranges = {}
-    for task in TASKS:
-        task_ranges[task] = robust_range(
+    task_ranges = {
+        task: robust_range(
             [arrays["target"][task], arrays["prior"][task], arrays["pred"][task]],
-            [arrays["mask"][task], arrays["mask"][task], arrays["mask"][task]],
+            [arrays["mask"][task]] * 3,
         )
-
+        for task in TASKS
+    }
+    prior_err_ranges = {
+        task: symmetric_range(
+            [arrays["prior"][task] - arrays["target"][task]], [arrays["mask"][task]]
+        )
+        for task in TASKS
+    }
+    model_corr_ranges = {
+        task: symmetric_range(
+            [arrays["pred"][task] - arrays["prior"][task]], [arrays["mask"][task]]
+        )
+        for task in TASKS
+    }
     context_maps = {
         "path_loss": (raw["topology"], "Topology height (m)", "terrain", None, None),
-        "delay_spread": (record["nlos"], f"NLoS support ({100.0 * np.mean(record['nlos']):.1f}%)", "gray", 0, 1),
-        "angular_spread": (record["los"], f"LoS support ({100.0 * np.mean(record['los']):.1f}%)", "gray", 0, 1),
+        "delay_spread": (
+            record["nlos"],
+            f"NLoS support ({100.0 * np.mean(record['nlos']):.1f}%)",
+            "gray",
+            0,
+            1,
+        ),
+        "angular_spread": (
+            record["los"],
+            f"LoS support ({100.0 * np.mean(record['los']):.1f}%)",
+            "gray",
+            0,
+            1,
+        ),
     }
 
-    error_ranges = {
-        task: symmetric_range([arrays["pred"][task] - arrays["target"][task]], [arrays["mask"][task]])
-        for task in TASKS
-    }
-    residual_ranges = {
-        task: symmetric_range([arrays["pred"][task] - arrays["prior"][task]], [arrays["mask"][task]])
-        for task in TASKS
-    }
-
-    for row, task in enumerate(TASKS):
+    plan: Dict[str, Dict[str, Dict[str, object]]] = {s: {} for s in STAGE_ORDER}
+    for task in TASKS:
         label, unit, cmap = TASK_LABELS[task]
         mask = arrays["mask"][task]
         vmin, vmax = task_ranges[task]
-        add_map(axes[row, 0], masked(arrays["target"][task], mask), f"GT {label} ({unit})", cmap, vmin, vmax)
-        add_map(
-            axes[row, 1],
-            masked(arrays["prior"][task], mask),
-            f"Prior {label}\nRMSE {metrics[task]['prior_rmse']:.2f} {unit}",
-            cmap,
-            vmin,
-            vmax,
-        )
-        add_map(
-            axes[row, 2],
-            masked(arrays["pred"][task], mask),
-            f"Try 80 {label}\nRMSE {metrics[task]['model_rmse']:.2f} {unit}",
-            cmap,
-            vmin,
-            vmax,
-        )
-        ctx, ctx_title, ctx_cmap, ctx_vmin, ctx_vmax = context_maps[task]
-        add_map(axes[row, 3], ctx, ctx_title, ctx_cmap, ctx_vmin, ctx_vmax)
-        err = arrays["pred"][task] - arrays["target"][task]
-        residual = arrays["pred"][task] - arrays["prior"][task]
-        add_map(
-            axes[row, 4],
-            masked(err, mask),
-            f"Try 80 - GT {label} ({unit})",
-            "seismic",
-            -error_ranges[task],
-            error_ranges[task],
-        )
-        add_map(
-            axes[row, 5],
-            masked(residual, mask),
-            f"Try 80 - Prior {label} ({unit})",
-            "coolwarm",
-            -residual_ranges[task],
-            residual_ranges[task],
-        )
 
-    score = float(np.nanmean([metrics[task]["model_rmse"] for task in TASKS]))
+        plan["gt"][task] = {
+            "image": masked(arrays["target"][task], mask),
+            "title": f"Ground truth\n{label} ({unit})",
+            "cmap": cmap,
+            "vmin": vmin,
+            "vmax": vmax,
+        }
+        plan["prior"][task] = {
+            "image": masked(arrays["prior"][task], mask),
+            "title": (
+                f"Frozen prior (Try 78/79)\n{label} — RMSE "
+                f"{metrics[task]['prior_rmse']:.2f} {unit}"
+            ),
+            "cmap": cmap,
+            "vmin": vmin,
+            "vmax": vmax,
+        }
+        plan["pred"][task] = {
+            "image": masked(arrays["pred"][task], mask),
+            "title": (
+                f"Try 80 prediction\n{label} — RMSE "
+                f"{metrics[task]['model_rmse']:.2f} {unit}"
+            ),
+            "cmap": cmap,
+            "vmin": vmin,
+            "vmax": vmax,
+        }
+        ctx, ctx_title, ctx_cmap, ctx_vmin, ctx_vmax = context_maps[task]
+        plan["context"][task] = {
+            "image": ctx,
+            "title": f"Context\n{ctx_title}",
+            "cmap": ctx_cmap,
+            "vmin": ctx_vmin,
+            "vmax": ctx_vmax,
+        }
+
+        prior_err = arrays["prior"][task] - arrays["target"][task]
+        plan["prior_err"][task] = {
+            "image": masked(prior_err, mask),
+            "title": f"Prior error\n(Prior - GT) {label} ({unit})",
+            "cmap": "seismic",
+            "vmin": -prior_err_ranges[task],
+            "vmax": prior_err_ranges[task],
+        }
+        model_corr = arrays["pred"][task] - arrays["prior"][task]
+        plan["model_corr"][task] = {
+            "image": masked(model_corr, mask),
+            "title": f"Model correction\n(Try 80 - Prior) {label} ({unit})",
+            "cmap": "coolwarm",
+            "vmin": -model_corr_ranges[task],
+            "vmax": model_corr_ranges[task],
+        }
+
+    return plan
+
+
+def _render_layout(plan, cand, layout: str, out_path: Path, dpi: int) -> None:
+    if layout == "3x6":
+        fig, axes = plt.subplots(3, 6, figsize=(24, 11), constrained_layout=True)
+        for row, task in enumerate(TASKS):
+            for col, stage in enumerate(STAGE_ORDER):
+                spec = plan[stage][task]
+                add_map(
+                    axes[row, col],
+                    spec["image"],
+                    spec["title"],
+                    spec["cmap"],
+                    spec["vmin"],
+                    spec["vmax"],
+                )
+    elif layout == "6x3":
+        fig, axes = plt.subplots(6, 3, figsize=(12, 22), constrained_layout=True)
+        for row, stage in enumerate(STAGE_ORDER):
+            for col, task in enumerate(TASKS):
+                spec = plan[stage][task]
+                add_map(
+                    axes[row, col],
+                    spec["image"],
+                    spec["title"],
+                    spec["cmap"],
+                    spec["vmin"],
+                    spec["vmax"],
+                )
+    else:
+        raise ValueError(f"Unknown layout {layout!r}")
+
     fig.suptitle(
         f"{cand.city} / {cand.sample}    {cand.topology_class_6}    {cand.expert}    "
         f"h_tx={cand.h_tx:.1f} m",
@@ -320,8 +419,32 @@ def render_panel(record: Dict[str, object], out_path: Path, dpi: int) -> Dict[st
     fig.savefig(out_path, dpi=dpi)
     plt.close(fig)
 
+
+def render_panel(
+    record: Dict[str, object],
+    out_path_base: Path,
+    dpi: int,
+    layouts: Iterable[str] = ("3x6", "6x3"),
+) -> Dict[str, object]:
+    cand: Candidate = record["candidate"]
+    metrics = record["metrics"]
+    plan = _build_stage_plan(record)
+
+    files: Dict[str, str] = {}
+    for layout in layouts:
+        if layout == "3x6":
+            out_path = out_path_base
+        else:
+            out_path = out_path_base.with_name(
+                out_path_base.stem + f"_{layout}" + out_path_base.suffix
+            )
+        _render_layout(plan, cand, layout, out_path, dpi)
+        files[layout] = out_path.name
+
+    score = float(np.nanmean([metrics[task]["model_rmse"] for task in TASKS]))
     return {
-        "file": out_path.name,
+        "file": files.get("3x6", next(iter(files.values()))),
+        "files": files,
         "city": cand.city,
         "sample": cand.sample,
         "h_tx_m": cand.h_tx,
@@ -352,23 +475,38 @@ def main() -> None:
     height_embed = HeightEmbedding()
 
     by_expert: Dict[str, List[Dict[str, object]]] = {}
+    skipped_no_improvement = 0
     for cand in candidates:
         print(f"[try80-panels] scoring {cand.expert} {cand.city}/{cand.sample}")
         record = infer_one(model, height_embed, ds, cand, device)
-        score = float(np.nanmean([record["metrics"][task]["model_rmse"] for task in TASKS]))
+        metrics = record["metrics"]
+        improves_all = all(
+            metrics[task]["model_rmse"] < metrics[task]["prior_rmse"] for task in TASKS
+        )
+        if args.require_improvement and not improves_all:
+            skipped_no_improvement += 1
+            continue
+        score = float(np.nanmean([metrics[task]["model_rmse"] for task in TASKS]))
         by_expert.setdefault(cand.expert, []).append({"record": record, "score": score})
+
+    if skipped_no_improvement:
+        print(
+            f"[try80-panels] skipped {skipped_no_improvement} candidates that did not "
+            "beat the prior on all three outputs."
+        )
 
     rendered: List[Dict[str, object]] = []
     for expert in EXPERT_ORDER:
         bucket = by_expert.get(expert)
         if not bucket:
+            print(f"[try80-panels] no improving candidate for expert {expert}")
             continue
         chosen = sorted(bucket, key=lambda row: row["score"])[0]["record"]
         cand = chosen["candidate"]
         safe_expert = slug(cand.expert.replace("|", "_"))
         out_path = args.out_dir / f"try80_panel_{safe_expert}_{slug(cand.city)}_{slug(cand.sample)}.png"
-        print(f"[try80-panels] rendering {out_path.name}")
-        rendered.append(render_panel(chosen, out_path, args.dpi))
+        print(f"[try80-panels] rendering {out_path.name} ({', '.join(args.layouts)})")
+        rendered.append(render_panel(chosen, out_path, args.dpi, layouts=args.layouts))
 
     main_row = sorted(rendered, key=lambda row: row["score_mean_model_rmse"])[0]
     main_src = args.out_dir / str(main_row["file"])
