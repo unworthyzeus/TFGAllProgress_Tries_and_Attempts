@@ -34,28 +34,39 @@ model:
   angular_residual_nlos_max: 15.0
 
 losses:
-  map_nll: 1.0
-  dist_kl: 0.25
-  moment_match: 0.10
-  anchor: 0.05
-  prior_guard: 0.10
-  outlier_budget: 0.02
+  map_nll: 0.0
+  dist_kl: 0.0
+  moment_match: 0.0
+  anchor: 0.01
+  prior_guard: 0.02
+  outlier_budget: 0.0
   outlier_budget_threshold: 0.60
-  rmse: 1.5
-  mae: 0.10
+  rmse: 1.0
+  mae: 0.05
+
+task_weights:
+  path_loss: 1.0
+  delay_spread: 0.25
+  angular_spread: 0.25
+
+score_weights:
+  path_loss: 1.0
+  delay_spread: 0.30
+  angular_spread: 0.25
 
 training:
   optimizer: adamw
-  lr: 2.0e-4
+  lr: 5.0e-5
   weight_decay: 0.01
-  warmup_epochs: 2
-  epochs: 180
+  warmup_epochs: 1
+  epochs: 40
   batch_size: 1
   grad_accum_steps: 8
-  patience: 20
+  patience: 10
   num_workers: 6
 
 runtime:
   device: cuda
-  output_dir: outputs/try80_joint_huge_relaxed_residuals
-  resume_checkpoint: outputs/try80_joint_huge_relaxed_residuals/best_model.pt
+  output_dir: outputs/try80_joint_huge_pathloss_finetune
+  resume_checkpoint: outputs/try80_joint_huge_pathloss_finetune/best_model.pt
+  reset_optimizer_on_resume: true

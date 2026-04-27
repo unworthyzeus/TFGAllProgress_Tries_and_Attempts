@@ -62,6 +62,20 @@ class LossSection:
 
 
 @dataclass
+class TaskWeightsSection:
+    path_loss: float = 1.0
+    delay_spread: float = 1.0
+    angular_spread: float = 1.0
+
+
+@dataclass
+class ScoreWeightsSection:
+    path_loss: float = 1.0
+    delay_spread: float = 0.05
+    angular_spread: float = 0.10
+
+
+@dataclass
 class TrainingSection:
     optimizer: str = "adamw"
     lr: float = 2.0e-4
@@ -79,6 +93,7 @@ class RuntimeSection:
     device: str = "cuda"
     output_dir: Path = field(default_factory=lambda: Path("outputs/try80_joint_big"))
     resume_checkpoint: Optional[Path] = None
+    reset_optimizer_on_resume: bool = False
 
 
 @dataclass
@@ -88,6 +103,8 @@ class Try80Cfg:
     prior: PriorSection
     model: ModelSection
     losses: LossSection
+    task_weights: TaskWeightsSection
+    score_weights: ScoreWeightsSection
     training: TrainingSection
     runtime: RuntimeSection
 
@@ -160,6 +177,20 @@ class Try80Cfg:
             outlier_budget_threshold=float(l.get("outlier_budget_threshold", 0.60)),
         )
 
+        tw = raw.get("task_weights", {}) or {}
+        task_weights = TaskWeightsSection(
+            path_loss=float(tw.get("path_loss", 1.0)),
+            delay_spread=float(tw.get("delay_spread", 1.0)),
+            angular_spread=float(tw.get("angular_spread", 1.0)),
+        )
+
+        sw = raw.get("score_weights", {}) or {}
+        score_weights = ScoreWeightsSection(
+            path_loss=float(sw.get("path_loss", 1.0)),
+            delay_spread=float(sw.get("delay_spread", 0.05)),
+            angular_spread=float(sw.get("angular_spread", 0.10)),
+        )
+
         t = raw.get("training", {}) or {}
         training = TrainingSection(
             optimizer=str(t.get("optimizer", "adamw")),
@@ -180,6 +211,7 @@ class Try80Cfg:
             device=str(r.get("device", "cuda")),
             output_dir=_resolve_path(root, output_dir),
             resume_checkpoint=_resolve_path(root, resume) if resume else None,
+            reset_optimizer_on_resume=bool(r.get("reset_optimizer_on_resume", False)),
         )
 
         return cls(
@@ -188,6 +220,8 @@ class Try80Cfg:
             prior=prior,
             model=model,
             losses=losses,
+            task_weights=task_weights,
+            score_weights=score_weights,
             training=training,
             runtime=runtime,
         )

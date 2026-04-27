@@ -35,6 +35,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+try:
+    import torch_directml
+except ImportError:  # pragma: no cover - depends on local Windows runtime
+    torch_directml = None
+
 
 HERE = Path(__file__).resolve()
 TRY80_ROOT = HERE.parents[1]
@@ -121,6 +126,12 @@ def parse_args() -> argparse.Namespace:
         default=("3x6", "6x3"),
         help="Which layouts to render (default: both).",
     )
+    parser.add_argument(
+        "--device",
+        choices=("auto", "directml", "cuda", "cpu"),
+        default="auto",
+        help="Inference device. Auto prefers CUDA, then DirectML, then CPU.",
+    )
     return parser.parse_args()
 
 
@@ -172,6 +183,24 @@ def tensor_batch(item: Dict[str, object], device: torch.device) -> Dict[str, obj
         else:
             out[key] = [value]
     return out
+
+
+def resolve_device(name: str):
+    if name == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested, but torch.cuda.is_available() is false.")
+        return torch.device("cuda")
+    if name == "directml":
+        if torch_directml is None:
+            raise RuntimeError("DirectML was requested, but torch_directml is not installed.")
+        return torch_directml.device()
+    if name == "cpu":
+        return torch.device("cpu")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch_directml is not None:
+        return torch_directml.device()
+    return torch.device("cpu")
 
 
 def rmse(pred: np.ndarray, target: np.ndarray, mask: np.ndarray) -> float:
@@ -335,7 +364,7 @@ def _build_stage_plan(record: Dict[str, object]) -> Dict[str, Dict[str, Dict[str
         plan["prior"][task] = {
             "image": masked(arrays["prior"][task], mask),
             "title": (
-                f"Frozen prior (Try 78/79)\n{label} — RMSE "
+                f"Frozen prior (Try 78/79)\n{label} - RMSE "
                 f"{metrics[task]['prior_rmse']:.2f} {unit}"
             ),
             "cmap": cmap,
@@ -345,7 +374,7 @@ def _build_stage_plan(record: Dict[str, object]) -> Dict[str, Dict[str, Dict[str
         plan["pred"][task] = {
             "image": masked(arrays["pred"][task], mask),
             "title": (
-                f"Try 80 prediction\n{label} — RMSE "
+                f"Try 80 prediction\n{label} - RMSE "
                 f"{metrics[task]['model_rmse']:.2f} {unit}"
             ),
             "cmap": cmap,
@@ -467,10 +496,11 @@ def main() -> None:
     if not candidates:
         raise RuntimeError("No panel candidates were found.")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     model = Try80Model(build_model_cfg(cfg)).to(device)
-    state = torch.load(args.checkpoint, map_location=device)
+    state = torch.load(args.checkpoint, map_location="cpu")
     model.load_state_dict(state["model"], strict=False)
+    model.to(device)
     model.eval()
     height_embed = HeightEmbedding()
 
@@ -509,7 +539,7 @@ def main() -> None:
         rendered.append(render_panel(chosen, out_path, args.dpi, layouts=args.layouts))
 
     main_row = sorted(rendered, key=lambda row: row["score_mean_model_rmse"])[0]
-    main_src = args.out_dir / str(main_row["file"])
+    main_src = args.out_dir / str(main_row["files"].get("6x3", main_row["file"]))
     main_dst = args.out_dir / "try80_main_panel.png"
     shutil.copyfile(main_src, main_dst)
 
@@ -518,6 +548,7 @@ def main() -> None:
         "config": str(args.config),
         "checkpoint": str(args.checkpoint),
         "device": str(device),
+        "main_panel_layout": "6x3" if "6x3" in main_row["files"] else "3x6",
         "main_panel": main_dst.name,
         "panels": rendered,
     }

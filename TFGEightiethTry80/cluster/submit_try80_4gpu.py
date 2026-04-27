@@ -65,7 +65,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Submit 5 chained Try 80 4-GPU jobs (with cleanup between)."
     )
-    parser.add_argument("--config", default="experiments/try80_joint_big.yaml")
+    parser.add_argument("--config", default="experiments/try80_joint_huge_pathloss_finetune.yaml")
     parser.add_argument("--skip-upload", action="store_true")
     parser.add_argument("--host", default=HOST)
     parser.add_argument("--user", default=USER)

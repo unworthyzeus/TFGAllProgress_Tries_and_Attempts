@@ -32,6 +32,9 @@ class LossWeights:
     mae: float = 0.10
     outlier_budget: float = 0.02
     outlier_budget_threshold: float = 0.60
+    path_loss_task: float = 1.0
+    delay_spread_task: float = 1.0
+    angular_spread_task: float = 1.0
 
 
 def combined_loss(
@@ -91,7 +94,7 @@ def combined_loss(
             + weights.outlier_budget * l_out
             + weights.rmse * l_rmse
             + weights.mae * l_mae
-        )
+        ) * _task_weight(weights, task)
         total = task_total if total is None else total + task_total
 
         agg["map_nll"] += float(l_map.detach().item())
@@ -136,6 +139,16 @@ def _masked_mean(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     if not torch.any(active):
         return x.new_zeros(())
     return x.masked_select(active).mean()
+
+
+def _task_weight(weights: LossWeights, task: str) -> float:
+    if task == "path_loss":
+        return weights.path_loss_task
+    if task == "delay_spread":
+        return weights.delay_spread_task
+    if task == "angular_spread":
+        return weights.angular_spread_task
+    return 1.0
 
 
 def _map_nll_loss(
