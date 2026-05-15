@@ -115,7 +115,7 @@ def plot_try76() -> None:
         ax.set_xlabel("Path loss (dB)")
     handles, labels = axes[0, 0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", ncols=2, frameon=False, bbox_to_anchor=(0.5, 0.945))
-    fig.suptitle("Try 76 target GMM-5 fits per topology expert", y=0.995)
+    fig.suptitle("Full non-residual DL GMM-head model for PL", y=0.995)
     fig.tight_layout(rect=(0, 0, 1, 0.91))
     save(fig, "try76_los_vs_nlos_distribution")
 
