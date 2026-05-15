@@ -273,6 +273,16 @@ def robust_range(values: Iterable[np.ndarray], masks: Iterable[np.ndarray], lo=1
     return vmin, vmax
 
 
+def display_dynamic_range(record: Dict[str, object], task: str) -> float:
+    """Range used by the shared GT/prior/pred display scale for one task."""
+    arrays = record["arrays"]
+    vmin, vmax = robust_range(
+        [arrays["target"][task], arrays["prior"][task], arrays["pred"][task]],
+        [arrays["mask"][task]] * 3,
+    )
+    return float(vmax - vmin)
+
+
 def symmetric_range(values: Iterable[np.ndarray], masks: Iterable[np.ndarray]) -> float:
     flat = []
     for arr, mask in zip(values, masks):
@@ -480,6 +490,9 @@ def render_panel(
         "topology_class_6": cand.topology_class_6,
         "expert": cand.expert,
         "score_mean_model_rmse": score,
+        "display_dynamic_range": {
+            task: display_dynamic_range(record, task) for task in TASKS
+        },
         "metrics": metrics,
     }
 
@@ -506,10 +519,14 @@ def main() -> None:
 
     by_expert: Dict[str, List[Dict[str, object]]] = {}
     skipped_no_improvement = 0
+    skipped_flat_as = 0
     for cand in candidates:
         print(f"[try80-panels] scoring {cand.expert} {cand.city}/{cand.sample}")
         record = infer_one(model, height_embed, ds, cand, device)
         metrics = record["metrics"]
+        if display_dynamic_range(record, "angular_spread") < 5.0:
+            skipped_flat_as += 1
+            continue
         improves_all = all(
             metrics[task]["model_rmse"] < metrics[task]["prior_rmse"] for task in TASKS
         )
@@ -523,6 +540,11 @@ def main() -> None:
         print(
             f"[try80-panels] skipped {skipped_no_improvement} candidates that did not "
             "beat the prior on all three outputs."
+        )
+    if skipped_flat_as:
+        print(
+            f"[try80-panels] skipped {skipped_flat_as} candidates with collapsed "
+            "angular-spread display range."
         )
 
     rendered: List[Dict[str, object]] = []
@@ -538,7 +560,16 @@ def main() -> None:
         print(f"[try80-panels] rendering {out_path.name} ({', '.join(args.layouts)})")
         rendered.append(render_panel(chosen, out_path, args.dpi, layouts=args.layouts))
 
-    main_row = sorted(rendered, key=lambda row: row["score_mean_model_rmse"])[0]
+    # Avoid choosing an almost-flat angular-spread case as the thesis main panel:
+    # those samples are valid metrics, but percentile colour limits can collapse
+    # to a visually misleading near-zero AS colour bar.
+    main_candidates = [
+        row for row in rendered
+        if row.get("display_dynamic_range", {}).get("angular_spread", 0.0) >= 5.0
+    ]
+    if not main_candidates:
+        main_candidates = rendered
+    main_row = sorted(main_candidates, key=lambda row: row["score_mean_model_rmse"])[0]
     main_src = args.out_dir / str(main_row["files"].get("6x3", main_row["file"]))
     main_dst = args.out_dir / "try80_main_panel.png"
     shutil.copyfile(main_src, main_dst)
