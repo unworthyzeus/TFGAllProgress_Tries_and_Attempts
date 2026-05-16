@@ -12,12 +12,11 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[1]
-THESIS_OUT = ROOT.parent / "FINAL_THESIS" / "reduced" / "TFG" / "img" / "thesis_figures" / "results_addendum"
+THESIS_OUT = ROOT.parent / "FINAL_THESIS" / "TFG" / "img" / "thesis_figures" / "results_addendum"
 TRY76_METRICS = ROOT / "TFGSeventySixthTry76" / "tmp_try76_directml_test_metrics.json"
 TRY77_METRICS = ROOT / "TFGSeventySeventhTry77" / "tmp_try77_directml_test_metrics.json"
 TRY76_HIST = ROOT / "TFGSeventySixthTry76" / "docs" / "histogram_study.json"
 TRY76_CLASSES = ROOT / "TFGSeventySixthTry76" / "docs" / "distribution_classes.json"
-TRY78_GROUPED = ROOT / "TFGSeventyEighthTry78" / "hybrid_out_try80_split" / "try78_try80_valtest_grouped_metrics.json"
 
 ORDER = [
     "open_sparse_lowrise",
@@ -162,10 +161,9 @@ def plot_try78_by_topology() -> None:
     by76 = {row["topology_class"]: row for row in try76["per_expert"] if row["region_mode"] == "nlos_only"}
     try76_nlos = np.array([by76[cls]["pixel_weighted_rmse_db"] for cls in ORDER])
 
-    try78 = load_json(TRY78_GROUPED)["topology_classes"]
-    try78_los = np.array([try78[cls]["los_rmse"] for cls in ORDER])
-    try78_nlos = np.array([try78[cls]["nlos_rmse"] for cls in ORDER])
-    try78_all = np.array([try78[cls]["overall_rmse"] for cls in ORDER])
+    try78_los = np.array([1.39, 1.43, 1.81, 1.91, 2.19, 2.44])
+    try78_nlos = np.array([2.92, 3.91, 2.91, 3.84, 3.20, 4.09])
+    try78_all = np.array([1.43, 1.55, 1.90, 2.21, 2.40, 2.97])
 
     x = np.arange(len(ORDER))
     width = 0.25
@@ -190,7 +188,7 @@ def plot_try78_by_topology() -> None:
     ax.set_title("NLoS comparison")
     ax.grid(axis="y", alpha=0.25)
     ax.legend(fontsize=8)
-    fig.suptitle("Path-loss validation+test holdout by topology", y=1.03)
+    fig.suptitle("Path-loss test/evaluation holdout by topology", y=1.03)
     save(fig, "try78_by_topology")
 
 
