@@ -26,10 +26,3 @@ The headline numbers remained close to the previous thesis values:
 - Validation+test: 1.9072 dB overall, 1.7379 dB LoS, 3.3591 dB NLoS.
 - Test-only: 1.9273 dB overall, 1.7370 dB LoS, 3.5241 dB NLoS.
 
-Try80 thesis-table convention:
-
-- The final Try80 tables are intentionally left on the original frozen
-  Try78 prior calibration that was used together with the trained Try80
-  checkpoint. A later same-split sensitivity check changed the final-test
-  Try80 path-loss RMSE by only about 0.011 dB, so the reported Try80 text and
-  tables were not updated.
