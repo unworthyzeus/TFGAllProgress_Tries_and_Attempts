@@ -3,8 +3,8 @@
 This is a companion to the SSIM/RMSE evaluator. It keeps the same split,
 checkpoint, priors, masks, and output grouping, but measures structure with:
 
-- valid-pixel Pearson map correlation
-- valid-pixel gradient-magnitude correlation
+- per-map valid-pixel Pearson map correlation, aggregated by valid-pixel count
+- per-map valid-pixel gradient-magnitude correlation, aggregated by gradient-pixel count
 
 Those metrics separate spatial pattern alignment from SSIM's luminance/contrast
 terms, which can be misleading for heavy-tailed delay/angular spread maps.
@@ -56,17 +56,9 @@ SampleRef = Tuple[str, str]
 class PairUpdate:
     sse: float = 0.0
     n_rmse: int = 0
-    sum_x: float = 0.0
-    sum_y: float = 0.0
-    sum_x2: float = 0.0
-    sum_y2: float = 0.0
-    sum_xy: float = 0.0
+    map_corr_weighted_sum: float = 0.0
     n_corr: int = 0
-    grad_sum_x: float = 0.0
-    grad_sum_y: float = 0.0
-    grad_sum_x2: float = 0.0
-    grad_sum_y2: float = 0.0
-    grad_sum_xy: float = 0.0
+    grad_corr_weighted_sum: float = 0.0
     n_grad_corr: int = 0
 
 
@@ -78,37 +70,18 @@ class PairStat(PairUpdate):
     def add(self, update: PairUpdate) -> None:
         self.sse += update.sse
         self.n_rmse += update.n_rmse
-        self.sum_x += update.sum_x
-        self.sum_y += update.sum_y
-        self.sum_x2 += update.sum_x2
-        self.sum_y2 += update.sum_y2
-        self.sum_xy += update.sum_xy
+        self.map_corr_weighted_sum += update.map_corr_weighted_sum
         self.n_corr += update.n_corr
-        self.grad_sum_x += update.grad_sum_x
-        self.grad_sum_y += update.grad_sum_y
-        self.grad_sum_x2 += update.grad_sum_x2
-        self.grad_sum_y2 += update.grad_sum_y2
-        self.grad_sum_xy += update.grad_sum_xy
+        self.grad_corr_weighted_sum += update.grad_corr_weighted_sum
         self.n_grad_corr += update.n_grad_corr
 
     def to_json(self) -> Dict[str, float | int | None]:
         return {
             "rmse_pw": math.sqrt(self.sse / self.n_rmse) if self.n_rmse else None,
             "n_pixels": self.n_rmse,
-            "map_corr": corr_from_sums(
-                self.sum_x,
-                self.sum_y,
-                self.sum_x2,
-                self.sum_y2,
-                self.sum_xy,
-                self.n_corr,
-            ),
-            "grad_mag_corr": corr_from_sums(
-                self.grad_sum_x,
-                self.grad_sum_y,
-                self.grad_sum_x2,
-                self.grad_sum_y2,
-                self.grad_sum_xy,
+            "map_corr": weighted_mean_or_none(self.map_corr_weighted_sum, self.n_corr),
+            "grad_mag_corr": weighted_mean_or_none(
+                self.grad_corr_weighted_sum,
                 self.n_grad_corr,
             ),
         }
@@ -338,6 +311,22 @@ def main() -> None:
             "device": str(device),
             "mixed_precision": bool(args.mixed_precision),
             "pairs": PAIRS,
+            "metric_definition": {
+                "map_corr": (
+                    "Per-sample/per-scope Pearson correlation over finite valid pixels; "
+                    "equivalent to z-scoring each map on that sample/scope and averaging "
+                    "the resulting correlations by valid-pixel count."
+                ),
+                "grad_mag_corr": (
+                    "Per-sample/per-scope Pearson correlation between finite-difference "
+                    "gradient magnitudes. Gradients are computed only across same-mask "
+                    "finite neighbor pixels, then averaged by gradient-pixel count."
+                ),
+                "nonfinite_values": (
+                    "Pixels with non-finite target or prediction values are excluded "
+                    "rather than converted to zero."
+                ),
+            },
             "elapsed_seconds": time.time() - started,
         },
         "comparison": report.to_json(),
@@ -400,40 +389,80 @@ def extract_arrays(
 
 
 def make_pair_update(x: np.ndarray, y: np.ndarray, mask: np.ndarray) -> PairUpdate:
-    valid = mask.astype(bool, copy=False)
+    valid = mask.astype(bool, copy=False) & np.isfinite(x) & np.isfinite(y)
     if not np.any(valid):
         return PairUpdate()
-    x_clean = np.nan_to_num(x.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
-    y_clean = np.nan_to_num(y.astype(np.float32, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
+    x_clean = x.astype(np.float32, copy=False)
+    y_clean = y.astype(np.float32, copy=False)
     xv = x_clean[valid].astype(np.float64, copy=False)
     yv = y_clean[valid].astype(np.float64, copy=False)
     diff = yv - xv
 
-    y_for_grad = np.where(valid, y_clean, x_clean)
-    gx = gradient_magnitude(x_clean)[valid].astype(np.float64, copy=False)
-    gy = gradient_magnitude(y_for_grad)[valid].astype(np.float64, copy=False)
+    map_corr = corr_from_arrays(xv, yv)
+    map_corr_weight = int(xv.size) if map_corr is not None else 0
+
+    gx_map, grad_valid = masked_gradient_magnitude(x_clean, valid)
+    gy_map, _ = masked_gradient_magnitude(y_clean, valid)
+    gx = gx_map[grad_valid].astype(np.float64, copy=False)
+    gy = gy_map[grad_valid].astype(np.float64, copy=False)
+    grad_corr = corr_from_arrays(gx, gy)
+    grad_corr_weight = int(gx.size) if grad_corr is not None else 0
 
     return PairUpdate(
         sse=float(np.sum(diff * diff, dtype=np.float64)),
         n_rmse=int(valid.sum()),
-        sum_x=float(np.sum(xv, dtype=np.float64)),
-        sum_y=float(np.sum(yv, dtype=np.float64)),
-        sum_x2=float(np.sum(xv * xv, dtype=np.float64)),
-        sum_y2=float(np.sum(yv * yv, dtype=np.float64)),
-        sum_xy=float(np.sum(xv * yv, dtype=np.float64)),
-        n_corr=int(xv.size),
-        grad_sum_x=float(np.sum(gx, dtype=np.float64)),
-        grad_sum_y=float(np.sum(gy, dtype=np.float64)),
-        grad_sum_x2=float(np.sum(gx * gx, dtype=np.float64)),
-        grad_sum_y2=float(np.sum(gy * gy, dtype=np.float64)),
-        grad_sum_xy=float(np.sum(gx * gy, dtype=np.float64)),
-        n_grad_corr=int(gx.size),
+        map_corr_weighted_sum=float(map_corr * map_corr_weight) if map_corr is not None else 0.0,
+        n_corr=map_corr_weight,
+        grad_corr_weighted_sum=float(grad_corr * grad_corr_weight) if grad_corr is not None else 0.0,
+        n_grad_corr=grad_corr_weight,
     )
 
 
-def gradient_magnitude(arr: np.ndarray) -> np.ndarray:
-    gy, gx = np.gradient(arr.astype(np.float32, copy=False))
-    return np.sqrt(gx * gx + gy * gy, dtype=np.float32)
+def masked_gradient_magnitude(arr: np.ndarray, valid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Return finite-difference gradient magnitudes without crossing invalid pixels."""
+    v = valid.astype(bool, copy=False)
+    work = np.where(v, arr.astype(np.float32, copy=False), 0.0).astype(np.float32, copy=False)
+    gx = np.zeros_like(work, dtype=np.float32)
+    gy = np.zeros_like(work, dtype=np.float32)
+
+    left = np.zeros_like(v, dtype=bool)
+    right = np.zeros_like(v, dtype=bool)
+    up = np.zeros_like(v, dtype=bool)
+    down = np.zeros_like(v, dtype=bool)
+    left[:, 1:] = v[:, 1:] & v[:, :-1]
+    right[:, :-1] = v[:, :-1] & v[:, 1:]
+    up[1:, :] = v[1:, :] & v[:-1, :]
+    down[:-1, :] = v[:-1, :] & v[1:, :]
+
+    both_x = left & right
+    right_only = right & ~left
+    left_only = left & ~right
+    if work.shape[1] > 1:
+        gx[:, :-1] = np.where(right_only[:, :-1], work[:, 1:] - work[:, :-1], gx[:, :-1])
+        gx[:, 1:] = np.where(left_only[:, 1:], work[:, 1:] - work[:, :-1], gx[:, 1:])
+    if work.shape[1] > 2:
+        gx[:, 1:-1] = np.where(
+            both_x[:, 1:-1],
+            0.5 * (work[:, 2:] - work[:, :-2]),
+            gx[:, 1:-1],
+        )
+
+    both_y = up & down
+    down_only = down & ~up
+    up_only = up & ~down
+    if work.shape[0] > 1:
+        gy[:-1, :] = np.where(down_only[:-1, :], work[1:, :] - work[:-1, :], gy[:-1, :])
+        gy[1:, :] = np.where(up_only[1:, :], work[1:, :] - work[:-1, :], gy[1:, :])
+    if work.shape[0] > 2:
+        gy[1:-1, :] = np.where(
+            both_y[1:-1, :],
+            0.5 * (work[2:, :] - work[:-2, :]),
+            gy[1:-1, :],
+        )
+
+    grad_valid = v & (left | right | up | down)
+    mag = np.sqrt(gx * gx + gy * gy).astype(np.float32, copy=False)
+    return mag, grad_valid
 
 
 def corr_from_sums(
@@ -453,6 +482,21 @@ def corr_from_sums(
     if denom <= 1.0e-12:
         return None
     return cov / denom
+
+
+def corr_from_arrays(x: np.ndarray, y: np.ndarray) -> float | None:
+    return corr_from_sums(
+        float(np.sum(x, dtype=np.float64)),
+        float(np.sum(y, dtype=np.float64)),
+        float(np.sum(x * x, dtype=np.float64)),
+        float(np.sum(y * y, dtype=np.float64)),
+        float(np.sum(x * y, dtype=np.float64)),
+        int(x.size),
+    )
+
+
+def weighted_mean_or_none(weighted_sum: float, n: int) -> float | None:
+    return weighted_sum / n if n > 0 else None
 
 
 def to_device(batch: Mapping[str, object], device: torch.device) -> Dict[str, object]:

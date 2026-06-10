@@ -1,5 +1,9 @@
 # MapCorr and GradCorr Literature Notes
 
+> Stale numbers: this note quotes values generated before the MapCorr/GradCorr
+> metric fix. See `RERUN_REQUIRED_MAPCORR_GRADCORR_FIX.md` and rerun before
+> using the quoted values in the thesis/report.
+
 This note focuses only on the two structure metrics added after the SSIM/RMSE
 run: `MapCorr` and `GradCorr`.
 

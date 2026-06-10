@@ -1,5 +1,9 @@
 # GT-Prior vs GT-Model Structure Comparison
 
+> Stale numbers: this file was generated before the MapCorr/GradCorr metric fix.
+> See `RERUN_REQUIRED_MAPCORR_GRADCORR_FIX.md` and rerun before using these
+> values in the thesis/report.
+
 This table makes the Ground Truth comparison explicit. `GT-model` means Ground Truth vs frozen calibrated prior + Try80 residual model.
 
 Negative `dRMSE` is better; positive `dMapCorr` and `dGradCorr` are better.

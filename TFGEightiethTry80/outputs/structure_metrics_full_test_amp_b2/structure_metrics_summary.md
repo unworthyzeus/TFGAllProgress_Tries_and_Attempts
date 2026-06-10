@@ -1,5 +1,9 @@
 # Structure Metric Comparison
 
+> Stale numbers: this file was generated before the MapCorr/GradCorr metric fix.
+> See `RERUN_REQUIRED_MAPCORR_GRADCORR_FIX.md` and rerun before using these
+> values in the thesis/report.
+
 Negative dRMSE is better; positive correlation deltas are better.
 
 ## Global Overall
