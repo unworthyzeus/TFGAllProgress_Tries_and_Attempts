@@ -2,7 +2,8 @@
 
 > Stale numbers: this file was generated before the MapCorr/GradCorr metric fix.
 > See `RERUN_REQUIRED_MAPCORR_GRADCORR_FIX.md` and rerun before using these
-> values in the thesis/report.
+> values in the thesis/report. Preferred combined script:
+> `C:\TFG\TFGAllProgress_Tries_and_Attempts\TFGEightiethTry80\scripts\compare_prior_try80_all_quality_metrics.py`.
 
 This table makes the Ground Truth comparison explicit. `GT-model` means Ground Truth vs frozen calibrated prior + Try80 residual model.
 

@@ -2,7 +2,9 @@
 
 > Stale numbers: this explanation quotes values generated before the
 > MapCorr/GradCorr metric fix. See `RERUN_REQUIRED_MAPCORR_GRADCORR_FIX.md`
-> and rerun before using the quoted values in the thesis/report.
+> and rerun before using the quoted values in the thesis/report. Preferred
+> combined script:
+> `C:\TFG\TFGAllProgress_Tries_and_Attempts\TFGEightiethTry80\scripts\compare_prior_try80_all_quality_metrics.py`.
 
 This folder compares the frozen calibrated priors against the final Try80 model
 on the Try80 test split.

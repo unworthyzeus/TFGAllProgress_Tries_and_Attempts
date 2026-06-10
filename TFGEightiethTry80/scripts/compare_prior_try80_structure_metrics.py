@@ -4,7 +4,7 @@ This is a companion to the SSIM/RMSE evaluator. It keeps the same split,
 checkpoint, priors, masks, and output grouping, but measures structure with:
 
 - per-map valid-pixel Pearson map correlation, aggregated by valid-pixel count
-- per-map valid-pixel gradient-magnitude correlation, aggregated by gradient-pixel count
+- per-map gradient-magnitude correlation, aggregated by gradient-pixel count
 
 Those metrics separate spatial pattern alignment from SSIM's luminance/contrast
 terms, which can be misleading for heavy-tailed delay/angular spread maps.
@@ -64,8 +64,14 @@ class PairUpdate:
 
 @dataclass
 class PairStat(PairUpdate):
-    def update(self, x: np.ndarray, y: np.ndarray, mask: np.ndarray) -> None:
-        self.add(make_pair_update(x, y, mask))
+    def update(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        mask: np.ndarray,
+        gradient_mask: np.ndarray | None = None,
+    ) -> None:
+        self.add(make_pair_update(x, y, mask, gradient_mask=gradient_mask))
 
     def add(self, update: PairUpdate) -> None:
         self.sse += update.sse
@@ -181,16 +187,26 @@ class Report:
         ]
         updates: Dict[Tuple[str, str, str], PairUpdate] = {}
         for task in TASKS:
+            gradient_mask = masks[task]["overall"]
             for scope in SCOPES:
                 mask = masks[task][scope]
                 updates[("prior", task, scope)] = make_pair_update(
-                    refs["target"][task], refs["prior"][task], mask
+                    refs["target"][task],
+                    refs["prior"][task],
+                    mask,
+                    gradient_mask=gradient_mask,
                 )
                 updates[("model", task, scope)] = make_pair_update(
-                    refs["target"][task], refs["model"][task], mask
+                    refs["target"][task],
+                    refs["model"][task],
+                    mask,
+                    gradient_mask=gradient_mask,
                 )
                 updates[("prior_vs_model", task, scope)] = make_pair_update(
-                    refs["prior"][task], refs["model"][task], mask
+                    refs["prior"][task],
+                    refs["model"][task],
+                    mask,
+                    gradient_mask=gradient_mask,
                 )
         for g in groups:
             g.add_meta(city, top3, top6, antenna_bin)
@@ -219,6 +235,11 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Device to use: auto default, cpu, cuda, cuda:0, directml, or dml.",
+    )
     parser.add_argument("--mixed-precision", action="store_true")
     parser.add_argument("--progress-every", type=int, default=50)
     args = parser.parse_args()
@@ -246,7 +267,7 @@ def main() -> None:
     if args.limit:
         split_refs = split_refs[: args.limit]
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(args.device)
     dataset = Try80JointDataset(build_data_cfg(cfg), split_refs, augment=False)
     loader = DataLoader(
         dataset,
@@ -319,8 +340,9 @@ def main() -> None:
                 ),
                 "grad_mag_corr": (
                     "Per-sample/per-scope Pearson correlation between finite-difference "
-                    "gradient magnitudes. Gradients are computed only across same-mask "
-                    "finite neighbor pixels, then averaged by gradient-pixel count."
+                    "gradient magnitudes. Gradients are computed only across finite "
+                    "task-valid neighbor pixels; LoS/NLoS scopes select center pixels "
+                    "for aggregation but do not act as gradient-neighborhood boundaries."
                 ),
                 "nonfinite_values": (
                     "Pixels with non-finite target or prediction values are excluded "
@@ -388,7 +410,13 @@ def extract_arrays(
     return target, prior, model_pred, masks
 
 
-def make_pair_update(x: np.ndarray, y: np.ndarray, mask: np.ndarray) -> PairUpdate:
+def make_pair_update(
+    x: np.ndarray,
+    y: np.ndarray,
+    mask: np.ndarray,
+    *,
+    gradient_mask: np.ndarray | None = None,
+) -> PairUpdate:
     valid = mask.astype(bool, copy=False) & np.isfinite(x) & np.isfinite(y)
     if not np.any(valid):
         return PairUpdate()
@@ -401,8 +429,14 @@ def make_pair_update(x: np.ndarray, y: np.ndarray, mask: np.ndarray) -> PairUpda
     map_corr = corr_from_arrays(xv, yv)
     map_corr_weight = int(xv.size) if map_corr is not None else 0
 
-    gx_map, grad_valid = masked_gradient_magnitude(x_clean, valid)
-    gy_map, _ = masked_gradient_magnitude(y_clean, valid)
+    local_valid = (
+        valid
+        if gradient_mask is None
+        else gradient_mask.astype(bool, copy=False) & np.isfinite(x) & np.isfinite(y)
+    )
+    gx_map, local_grad_valid = masked_gradient_magnitude(x_clean, local_valid)
+    gy_map, _ = masked_gradient_magnitude(y_clean, local_valid)
+    grad_valid = valid & local_grad_valid
     gx = gx_map[grad_valid].astype(np.float64, copy=False)
     gy = gy_map[grad_valid].astype(np.float64, copy=False)
     grad_corr = corr_from_arrays(gx, gy)
@@ -497,6 +531,22 @@ def corr_from_arrays(x: np.ndarray, y: np.ndarray) -> float | None:
 
 def weighted_mean_or_none(weighted_sum: float, n: int) -> float | None:
     return weighted_sum / n if n > 0 else None
+
+
+def resolve_device(requested: str | None) -> torch.device:
+    if requested is None or requested.strip().lower() == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    name = requested.strip().lower()
+    if name in {"directml", "dml"}:
+        try:
+            import torch_directml  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "DirectML requested, but torch-directml is not installed. "
+                "Install torch-directml or use --device cpu/cuda."
+            ) from exc
+        return torch_directml.device()
+    return torch.device(requested)
 
 
 def to_device(batch: Mapping[str, object], device: torch.device) -> Dict[str, object]:

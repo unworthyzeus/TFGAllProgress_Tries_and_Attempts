@@ -1,5 +1,10 @@
 # Try80 Test SSIM/RMSE Comparison
 
+> Stale numbers: this file was generated before the SSIM mask fix and before
+> the combined RMSE/SSIM/MapCorr/GradCorr evaluator existed. Use
+> `C:\TFG\TFGAllProgress_Tries_and_Attempts\TFGEightiethTry80\scripts\compare_prior_try80_all_quality_metrics.py`
+> and see `RERUN_REQUIRED_SSIM_AND_ALL_METRICS_FIX.md`.
+
 - Samples: 2590
 - Elapsed: 2877.1s
 - SSIM backend: skimage

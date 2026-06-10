@@ -2,7 +2,8 @@
 
 > Stale numbers: this note quotes values generated before the MapCorr/GradCorr
 > metric fix. See `RERUN_REQUIRED_MAPCORR_GRADCORR_FIX.md` and rerun before
-> using the quoted values in the thesis/report.
+> using the quoted values in the thesis/report. Preferred combined script:
+> `C:\TFG\TFGAllProgress_Tries_and_Attempts\TFGEightiethTry80\scripts\compare_prior_try80_all_quality_metrics.py`.
 
 This note focuses only on the two structure metrics added after the SSIM/RMSE
 run: `MapCorr` and `GradCorr`.

@@ -1,7 +1,10 @@
 """Compare frozen priors vs Try80 residual model with SSIM and RMSE.
 
 The script evaluates both predictors in the same forward pass over a split.
-RMSE and SSIM are accumulated over the same valid pixels for each task/scope.
+RMSE and SSIM are accumulated over the same finite valid center pixels for each
+task/scope. SSIM local windows use finite task-valid pixels, so no-data pixels
+do not enter local statistics. LoS/NLoS scopes select center pixels for
+aggregation but do not act as SSIM-window boundaries.
 """
 from __future__ import annotations
 
@@ -16,10 +19,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
+import h5py
 import numpy as np
 import torch
 import torch.nn.functional as F
-from skimage.metrics import structural_similarity
 from torch.utils.data import DataLoader
 
 
@@ -30,9 +33,11 @@ if str(ROOT) not in sys.path:
 from src.config_try80 import Try80Cfg  # noqa: E402
 from src.data_utils import (  # noqa: E402
     HeightEmbedding,
+    PATH_LOSS_MIN_DB,
     Try80DataConfig,
     Try80JointDataset,
     list_hdf5_samples,
+    read_field,
     split_city_holdout,
 )
 from src.metrics_try80 import TASKS, inverse_transform, transform_target  # noqa: E402
@@ -46,6 +51,7 @@ DATA_RANGES = {
     "delay_spread": 400.0,
     "angular_spread": 90.0,
 }
+MIN_SSIM_DATA_RANGE = 1.0
 SampleRef = Tuple[str, str]
 
 
@@ -65,7 +71,7 @@ class MetricStat:
         mask: np.ndarray,
         ssim_map: np.ndarray,
     ) -> Tuple[Optional[float], Optional[float]]:
-        valid = mask.astype(bool, copy=False)
+        valid = mask.astype(bool, copy=False) & np.isfinite(pred) & np.isfinite(target)
         if not np.any(valid):
             return None, None
 
@@ -192,7 +198,7 @@ class ComparisonReport:
         masks: Mapping[str, Mapping[str, np.ndarray]],
         priors: Mapping[str, np.ndarray],
         preds: Mapping[str, np.ndarray],
-        ssim_maps: Mapping[str, Mapping[str, np.ndarray]],
+        ssim_maps: Mapping[str, Mapping[str, Mapping[str, np.ndarray]]],
         store_per_sample: bool,
     ) -> None:
         prior_expert = f"{top3}|{antenna_bin}"
@@ -237,7 +243,7 @@ class ComparisonReport:
                             pred_by_task[task],
                             target_by_task[task],
                             mask,
-                            ssim_maps[kind][task],
+                            ssim_maps[kind][task][scope],
                         )
                     if store_per_sample:
                         row[f"{task}_{scope}_{kind}_rmse"] = sample_rmse
@@ -278,7 +284,11 @@ def main() -> None:
     parser.add_argument("--try78-nlos-calibration-json", type=Path, default=None)
     parser.add_argument("--try79-calibration-json", type=Path, default=None)
     parser.add_argument("--precomputed-priors-hdf5-path", type=Path, default=None)
-    parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Device to use: auto default, cpu, cuda, cuda:0, directml, or dml.",
+    )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--limit", type=int, default=0)
@@ -303,7 +313,7 @@ def main() -> None:
         args.precomputed_priors_hdf5_path.resolve() if args.precomputed_priors_hdf5_path else None
     )
 
-    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    device = resolve_device(args.device)
     refs = list_hdf5_samples(cfg.data.hdf5_path)
     train_refs, val_refs, test_refs = split_city_holdout(
         refs,
@@ -323,6 +333,14 @@ def main() -> None:
     )
     if args.limit > 0:
         ordered_refs = ordered_refs[: args.limit]
+
+    ssim_data_ranges, ssim_data_range_stats = compute_task_data_ranges(
+        cfg.data.hdf5_path,
+        ordered_refs,
+        path_loss_no_data_mask_column=cfg.data.path_loss_no_data_mask_column,
+        derive_no_data_from_non_ground=cfg.data.derive_no_data_from_non_ground,
+    )
+    print(f"Resolved SSIM data ranges: {ssim_data_ranges}", flush=True)
 
     dataset = Try80JointDataset(build_data_cfg(cfg), ordered_refs, augment=False)
     loader = DataLoader(
@@ -357,7 +375,13 @@ def main() -> None:
 
             ssim_maps_batch = None
             if args.ssim_backend == "torch":
-                ssim_maps_batch = build_torch_ssim_maps(batch, priors_native, preds_native, args.ssim_win_size)
+                ssim_maps_batch = build_torch_ssim_maps(
+                    batch,
+                    priors_native,
+                    preds_native,
+                    args.ssim_win_size,
+                    ssim_data_ranges,
+                )
 
             bsz = int(preds_native["path_loss"].shape[0])
             for bi in range(bsz):
@@ -372,7 +396,10 @@ def main() -> None:
                 if ssim_maps_batch is not None:
                     ssim_maps = {
                         kind: {
-                            task: tensor_np(ssim_maps_batch[kind][task][bi, 0])
+                            task: {
+                                scope: tensor_np(ssim_maps_batch[kind][task][scope][bi, 0])
+                                for scope in SCOPES
+                            }
                             for task in TASKS
                         }
                         for kind in KINDS
@@ -380,33 +407,42 @@ def main() -> None:
                 else:
                     ssim_maps = {
                         "prior": {
-                            task: masked_ssim_map(
-                                target=targets[task],
-                                pred=priors[task],
-                                valid_mask=masks[task]["overall"],
-                                data_range=DATA_RANGES[task],
-                                win_size=args.ssim_win_size,
-                            )
+                            task: {
+                                scope: masked_ssim_map(
+                                    target=targets[task],
+                                    pred=priors[task],
+                                    valid_mask=masks[task]["overall"],
+                                    data_range=ssim_data_ranges[task],
+                                    win_size=args.ssim_win_size,
+                                )
+                                for scope in SCOPES
+                            }
                             for task in TASKS
                         },
                         "model": {
-                            task: masked_ssim_map(
-                                target=targets[task],
-                                pred=preds[task],
-                                valid_mask=masks[task]["overall"],
-                                data_range=DATA_RANGES[task],
-                                win_size=args.ssim_win_size,
-                            )
+                            task: {
+                                scope: masked_ssim_map(
+                                    target=targets[task],
+                                    pred=preds[task],
+                                    valid_mask=masks[task]["overall"],
+                                    data_range=ssim_data_ranges[task],
+                                    win_size=args.ssim_win_size,
+                                )
+                                for scope in SCOPES
+                            }
                             for task in TASKS
                         },
                         "prior_vs_model": {
-                            task: masked_ssim_map(
-                                target=priors[task],
-                                pred=preds[task],
-                                valid_mask=masks[task]["overall"],
-                                data_range=DATA_RANGES[task],
-                                win_size=args.ssim_win_size,
-                            )
+                            task: {
+                                scope: masked_ssim_map(
+                                    target=priors[task],
+                                    pred=preds[task],
+                                    valid_mask=masks[task]["overall"],
+                                    data_range=ssim_data_ranges[task],
+                                    win_size=args.ssim_win_size,
+                                )
+                                for scope in SCOPES
+                            }
                             for task in TASKS
                         },
                     }
@@ -459,15 +495,25 @@ def main() -> None:
             "ssim": {
                 "win_size": args.ssim_win_size,
                 "backend": args.ssim_backend,
-                "data_ranges": DATA_RANGES,
+                "data_range_mode": "evaluated_split_target_valid_max_minus_min",
+                "data_ranges": ssim_data_ranges,
+                "data_range_stats": ssim_data_range_stats,
+                "fallback_data_ranges": DATA_RANGES,
                 "pairs": {
                     "prior": "GT vs frozen calibrated prior",
                     "model": "GT vs frozen calibrated prior + Try80 residual model",
                     "prior_vs_model": "frozen calibrated prior vs prior + Try80 residual model",
                 },
                 "method": (
-                    "invalid pixels are filled with target values before SSIM, then "
-                    "the SSIM map is averaged over the same valid masks used for RMSE"
+                    "SSIM is computed with mask-aware local windows for each task. "
+                    "Only finite task-valid pixels contribute to each local mean, variance, "
+                    "and covariance. LoS/NLoS scopes select center pixels for aggregation "
+                    "but do not act as SSIM-window boundaries. Finite center pixels with "
+                    "fewer than two finite task-valid window pixels are excluded from SSIM aggregation."
+                ),
+                "directml_note": (
+                    "When the model device is DirectML/non-CPU/non-CUDA, SSIM local-window "
+                    "maps are computed on CPU for backend compatibility."
                 ),
             },
             "split_protocol": {
@@ -518,6 +564,22 @@ def build_data_cfg(cfg: Try80Cfg) -> Try80DataConfig:
     )
 
 
+def resolve_device(requested: Optional[str]) -> torch.device:
+    if requested is None or requested.strip().lower() == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    name = requested.strip().lower()
+    if name in {"directml", "dml"}:
+        try:
+            import torch_directml  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "DirectML requested, but torch-directml is not installed. "
+                "Install torch-directml or use --device cpu/cuda."
+            ) from exc
+        return torch_directml.device()
+    return torch.device(requested)
+
+
 def to_device(batch: Mapping[str, object], device: torch.device) -> Dict[str, object]:
     return {
         key: (value.to(device, non_blocking=True) if torch.is_tensor(value) else value)
@@ -562,39 +624,134 @@ def extract_sample_arrays(
     return targets, masks, priors, preds
 
 
+def compute_task_data_ranges(
+    hdf5_path: Path,
+    refs: Sequence[SampleRef],
+    *,
+    path_loss_no_data_mask_column: Optional[str] = None,
+    derive_no_data_from_non_ground: bool = True,
+) -> Tuple[Dict[str, float], Dict[str, Dict[str, float | int | str | None]]]:
+    """Compute SSIM dynamic ranges from valid target pixels in the evaluated split."""
+    mins = {task: math.inf for task in TASKS}
+    maxs = {task: -math.inf for task in TASKS}
+    counts = {task: 0 for task in TASKS}
+    min_refs = {task: None for task in TASKS}
+    max_refs = {task: None for task in TASKS}
+
+    with h5py.File(str(hdf5_path), "r") as handle:
+        for city, sample in refs:
+            grp = handle[city][sample]
+            topology = np.asarray(grp["topology_map"][...], dtype=np.float32)
+            ground = topology == 0.0
+            for task in TASKS:
+                target = read_field(grp, task)
+                if task == "path_loss":
+                    valid = np.isfinite(target) & (target >= PATH_LOSS_MIN_DB)
+                    if path_loss_no_data_mask_column:
+                        key = str(path_loss_no_data_mask_column).strip()
+                        if key and key in grp:
+                            valid &= ~(np.asarray(grp[key][...], dtype=np.float32) > 0.5)
+                    if derive_no_data_from_non_ground:
+                        valid &= ground
+                else:
+                    valid = ground & np.isfinite(target) & (target >= 0.0)
+                if not np.any(valid):
+                    continue
+                values = target[valid]
+                local_min = float(np.min(values))
+                local_max = float(np.max(values))
+                counts[task] += int(values.size)
+                if local_min < mins[task]:
+                    mins[task] = local_min
+                    min_refs[task] = f"{city}/{sample}"
+                if local_max > maxs[task]:
+                    maxs[task] = local_max
+                    max_refs[task] = f"{city}/{sample}"
+
+    data_ranges: Dict[str, float] = {}
+    stats: Dict[str, Dict[str, float | int | str | None]] = {}
+    for task in TASKS:
+        fallback = float(DATA_RANGES[task])
+        if counts[task] > 0 and math.isfinite(mins[task]) and math.isfinite(maxs[task]):
+            resolved = max(float(maxs[task] - mins[task]), MIN_SSIM_DATA_RANGE)
+            source = "evaluated_split_target_valid_max_minus_min"
+            task_min: Optional[float] = float(mins[task])
+            task_max: Optional[float] = float(maxs[task])
+        else:
+            resolved = fallback
+            source = "fallback_no_valid_target_pixels"
+            task_min = None
+            task_max = None
+        data_ranges[task] = float(resolved)
+        stats[task] = {
+            "source": source,
+            "min": task_min,
+            "max": task_max,
+            "data_range": float(resolved),
+            "fallback_data_range": fallback,
+            "n_valid_pixels": int(counts[task]),
+            "min_sample": min_refs[task],
+            "max_sample": max_refs[task],
+        }
+    return data_ranges, stats
+
+
 def build_torch_ssim_maps(
     batch: Mapping[str, object],
     priors_native: Mapping[str, torch.Tensor],
     preds_native: Mapping[str, torch.Tensor],
     win_size: int,
-) -> Dict[str, Dict[str, torch.Tensor]]:
-    maps: Dict[str, Dict[str, torch.Tensor]] = {"prior": {}, "model": {}, "prior_vs_model": {}}
+    data_ranges: Mapping[str, float] | None = None,
+) -> Dict[str, Dict[str, Dict[str, torch.Tensor]]]:
+    def ssim_device_tensor(tensor: torch.Tensor) -> torch.Tensor:
+        # DirectML is useful for the model forward pass, but CPU is safer for
+        # reflect padding and local-window SSIM reductions.
+        return tensor.detach().cpu() if tensor.device.type not in {"cpu", "cuda"} else tensor
+
+    resolved_ranges = DATA_RANGES if data_ranges is None else data_ranges
+    maps: Dict[str, Dict[str, Dict[str, torch.Tensor]]] = {
+        "prior": {},
+        "model": {},
+        "prior_vs_model": {},
+    }
     for task in TASKS:
-        target = torch.nan_to_num(batch[f"{task}_target"].float(), nan=0.0, posinf=0.0, neginf=0.0)
-        prior = torch.nan_to_num(priors_native[task].float(), nan=0.0, posinf=0.0, neginf=0.0)
-        pred = torch.nan_to_num(preds_native[task].float(), nan=0.0, posinf=0.0, neginf=0.0)
-        valid = batch[f"{task}_mask"].float() > 0.5
-        maps["prior"][task] = torch_ssim_map(
+        target = ssim_device_tensor(batch[f"{task}_target"]).float()
+        prior = ssim_device_tensor(priors_native[task]).float()
+        pred = ssim_device_tensor(preds_native[task]).float()
+        valid = ssim_device_tensor(batch[f"{task}_mask"]).float() > 0.5
+        prior_map = torch_ssim_map(
             target,
             prior,
             valid,
-            data_range=DATA_RANGES[task],
+            data_range=resolved_ranges[task],
             win_size=win_size,
         )
-        maps["model"][task] = torch_ssim_map(
+        model_map = torch_ssim_map(
             target,
             pred,
             valid,
-            data_range=DATA_RANGES[task],
+            data_range=resolved_ranges[task],
             win_size=win_size,
         )
-        maps["prior_vs_model"][task] = torch_ssim_map(
+        prior_vs_model_map = torch_ssim_map(
             prior,
             pred,
             valid,
-            data_range=DATA_RANGES[task],
+            data_range=resolved_ranges[task],
             win_size=win_size,
         )
+        maps["prior"][task] = {
+            scope: prior_map
+            for scope in SCOPES
+        }
+        maps["model"][task] = {
+            scope: model_map
+            for scope in SCOPES
+        }
+        maps["prior_vs_model"][task] = {
+            scope: prior_vs_model_map
+            for scope in SCOPES
+        }
     return maps
 
 
@@ -606,14 +763,14 @@ def torch_ssim_map(
     data_range: float,
     win_size: int,
 ) -> torch.Tensor:
-    target = torch.nan_to_num(target, nan=0.0, posinf=0.0, neginf=0.0)
-    pred = torch.nan_to_num(pred, nan=0.0, posinf=0.0, neginf=0.0)
-    pred_eval = torch.where(valid_mask, pred, target)
+    finite = valid_mask & torch.isfinite(target) & torch.isfinite(pred)
+    target_eval = torch.where(finite, target, torch.zeros_like(target)).float()
+    pred_eval = torch.where(finite, pred, torch.zeros_like(pred)).float()
     win = odd_win_size(win_size, target.shape[-2:])
     pad = win // 2
     kernel = torch.full(
         (1, 1, win, win),
-        fill_value=1.0 / float(win * win),
+        fill_value=1.0,
         dtype=torch.float32,
         device=target.device,
     )
@@ -621,20 +778,23 @@ def torch_ssim_map(
     def filt(x: torch.Tensor) -> torch.Tensor:
         return F.conv2d(F.pad(x.float(), (pad, pad, pad, pad), mode="reflect"), kernel)
 
-    ux = filt(target)
-    uy = filt(pred_eval)
-    uxx = filt(target * target)
-    uyy = filt(pred_eval * pred_eval)
-    uxy = filt(target * pred_eval)
-    cov_norm = float((win * win) / max(win * win - 1, 1))
-    vx = cov_norm * (uxx - ux * ux)
-    vy = cov_norm * (uyy - uy * uy)
+    count = filt(finite.float())
+    safe_count = torch.clamp(count, min=1.0)
+    ux = filt(target_eval) / safe_count
+    uy = filt(pred_eval) / safe_count
+    uxx = filt(target_eval * target_eval) / safe_count
+    uyy = filt(pred_eval * pred_eval) / safe_count
+    uxy = filt(target_eval * pred_eval) / safe_count
+    cov_norm = safe_count / torch.clamp(safe_count - 1.0, min=1.0)
+    vx = torch.clamp(cov_norm * (uxx - ux * ux), min=0.0)
+    vy = torch.clamp(cov_norm * (uyy - uy * uy), min=0.0)
     vxy = cov_norm * (uxy - ux * uy)
     c1 = (0.01 * float(data_range)) ** 2
     c2 = (0.03 * float(data_range)) ** 2
     numerator = (2.0 * ux * uy + c1) * (2.0 * vxy + c2)
     denominator = (ux * ux + uy * uy + c1) * (vx + vy + c2)
-    return numerator / torch.clamp(denominator, min=1.0e-12)
+    ssim = numerator / torch.clamp(denominator, min=1.0e-12)
+    return torch.where(finite & (count >= 2.0), ssim, torch.full_like(ssim, float("nan")))
 
 
 def masked_ssim_map(
@@ -645,22 +805,17 @@ def masked_ssim_map(
     data_range: float,
     win_size: int,
 ) -> np.ndarray:
-    target_f = finite_array(target)
-    pred_f = finite_array(pred)
-    valid = valid_mask.astype(bool, copy=False)
-    pred_eval = np.where(valid, pred_f, target_f)
-    _, ssim_map = structural_similarity(
-        target_f,
-        pred_eval,
+    target_t = torch.from_numpy(np.ascontiguousarray(target, dtype=np.float32))[None, None]
+    pred_t = torch.from_numpy(np.ascontiguousarray(pred, dtype=np.float32))[None, None]
+    valid_t = torch.from_numpy(np.ascontiguousarray(valid_mask, dtype=bool))[None, None]
+    ssim_map = torch_ssim_map(
+        target_t,
+        pred_t,
+        valid_t,
         data_range=float(data_range),
-        win_size=odd_win_size(win_size, target_f.shape),
-        full=True,
+        win_size=win_size,
     )
-    return np.asarray(ssim_map, dtype=np.float32)
-
-
-def finite_array(arr: np.ndarray) -> np.ndarray:
-    return np.nan_to_num(np.asarray(arr, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    return tensor_np(ssim_map[0, 0]).astype(np.float32, copy=False)
 
 
 def odd_win_size(requested: int, shape: Sequence[int]) -> int:
