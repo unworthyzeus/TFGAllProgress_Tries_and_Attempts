@@ -47,7 +47,7 @@ from src.model_try80 import Try80Model, Try80ModelConfig  # noqa: E402
 SCOPES = ("overall", "los", "nlos")
 KINDS = ("prior", "model", "prior_vs_model")
 DATA_RANGES = {
-    "path_loss": 180.0,
+    "path_loss": 185.0,
     "delay_spread": 400.0,
     "angular_spread": 90.0,
 }

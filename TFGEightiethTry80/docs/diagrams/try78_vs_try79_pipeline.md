@@ -22,7 +22,7 @@
 │    → regime ridge calibration    │       │  design matrix X  (23 features)  │
 │                                  │       │                                  │
 │  PL_prior = mask · LoS + ~ · NLoS│       │  ŷ_log = X · β_{regime}          │
-│  clamp [20 dB, 180 dB]           │       │  ŷ = expm1(clamp)                │
+│  clamp [20 dB, 185 dB]           │       │  ŷ = expm1(clamp)                │
 └──────────────────────────────────┘       └──────────────────────────────────┘
                  │                                           │
                  │  path_loss_prior (513×513)                │

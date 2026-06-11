@@ -201,6 +201,9 @@ class Report:
         self.global_stats = GroupStats()
         self.by_topology_class_6: Dict[str, GroupStats] = {}
         self.by_topology_class_3: Dict[str, GroupStats] = {}
+        self.by_antenna_bin: Dict[str, GroupStats] = {}
+        self.by_topology_class_6_antenna_bin: Dict[str, GroupStats] = {}
+        self.by_topology_class_3_antenna_bin: Dict[str, GroupStats] = {}
         self.by_city: Dict[str, GroupStats] = {}
 
     def update_sample(
@@ -218,6 +221,9 @@ class Report:
             self.global_stats,
             group(self.by_topology_class_6, top6),
             group(self.by_topology_class_3, top3),
+            group(self.by_antenna_bin, antenna_bin),
+            group(self.by_topology_class_6_antenna_bin, f"{top6}|{antenna_bin}"),
+            group(self.by_topology_class_3_antenna_bin, f"{top3}|{antenna_bin}"),
             group(self.by_city, city),
         ]
         updates: Dict[Tuple[str, str, str], MetricUpdate] = {}
@@ -256,6 +262,9 @@ class Report:
             "global": self.global_stats.to_json(),
             "by_topology_class_6": groups_to_json(self.by_topology_class_6),
             "by_topology_class_3": groups_to_json(self.by_topology_class_3),
+            "by_antenna_bin": groups_to_json(self.by_antenna_bin),
+            "by_topology_class_6_antenna_bin": groups_to_json(self.by_topology_class_6_antenna_bin),
+            "by_topology_class_3_antenna_bin": groups_to_json(self.by_topology_class_3_antenna_bin),
             "by_city": groups_to_json(self.by_city),
         }
 
@@ -624,6 +633,15 @@ def iter_rows(report: Report) -> Iterable[Dict[str, object]]:
     groups = [("global", "all", report.global_stats)]
     groups += [("topology_class_6", key, value) for key, value in sorted(report.by_topology_class_6.items())]
     groups += [("topology_class_3", key, value) for key, value in sorted(report.by_topology_class_3.items())]
+    groups += [("antenna_bin", key, value) for key, value in sorted(report.by_antenna_bin.items())]
+    groups += [
+        ("topology_class_6_antenna_bin", key, value)
+        for key, value in sorted(report.by_topology_class_6_antenna_bin.items())
+    ]
+    groups += [
+        ("topology_class_3_antenna_bin", key, value)
+        for key, value in sorted(report.by_topology_class_3_antenna_bin.items())
+    ]
     groups += [("city", key, value) for key, value in sorted(report.by_city.items())]
     for group_type, group_name, group_stats in groups:
         for pair in PAIRS:
@@ -672,6 +690,15 @@ def iter_model_prior_comparison_rows(report: Report) -> Iterable[Dict[str, objec
     groups = [("global", "all", report.global_stats)]
     groups += [("topology_class_6", key, value) for key, value in sorted(report.by_topology_class_6.items())]
     groups += [("topology_class_3", key, value) for key, value in sorted(report.by_topology_class_3.items())]
+    groups += [("antenna_bin", key, value) for key, value in sorted(report.by_antenna_bin.items())]
+    groups += [
+        ("topology_class_6_antenna_bin", key, value)
+        for key, value in sorted(report.by_topology_class_6_antenna_bin.items())
+    ]
+    groups += [
+        ("topology_class_3_antenna_bin", key, value)
+        for key, value in sorted(report.by_topology_class_3_antenna_bin.items())
+    ]
     groups += [("city", key, value) for key, value in sorted(report.by_city.items())]
     metric_names = (
         ("rmse_pw", "rmse"),

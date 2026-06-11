@@ -73,7 +73,7 @@ UAV-height bin, then Gaussian-smoothed in height (`σ = 10 m`).
 
 ```
 PL_LoS(i, j) = clip( FSPL(i, j) + C_2ray(i, j) + bias(h_tx),
-                     PL_min = 20 dB, PL_max = 180 dB )
+                     PL_min = 20 dB, PL_max = 185 dB )
 ```
 
 ρ, φ, bias are **linearly interpolated** in `h_tx` between adjacent
@@ -161,7 +161,7 @@ Per sample, `Try 80` builds (see
 path_loss_prior = los_mask · PL_LoS  +  nlos_mask · PL_NLoS
 ```
 
-Both components are clamped to `[20 dB, 180 dB]` and match the
+Both components are clamped to `[20 dB, 185 dB]` and match the
 `uint8 dB` convention of the CKM HDF5.
 
 ## 5. Why this formulation
