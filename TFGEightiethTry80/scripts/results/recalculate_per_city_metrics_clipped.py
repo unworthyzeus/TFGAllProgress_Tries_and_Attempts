@@ -194,7 +194,7 @@ def build_metadata(
             "active_code_sources": {
                 "path_loss": "src/priors_try80.py PATH_LOSS_MIN_DB=20 and PATH_LOSS_MAX_DB=185; src/data_utils.py normalizes path priors by 185",
                 "delay_spread": "src/priors_try80.py METRIC_SPECS['delay_spread']['clip_hi']=910 and src/data_utils.py LOG1P_DELAY_NORM=log1p(910)",
-                "angular_spread": "src/priors_try80.py caps calibrated Try79 angular prior to LoS 15 / NLoS 90; evaluated target range is kept at 0..180 for metrics",
+                "angular_spread": "src/priors_try80.py caps calibrated Try79 angular prior to the dataset range 0..180 for both LoS and NLoS",
             },
         },
         "metrics": {

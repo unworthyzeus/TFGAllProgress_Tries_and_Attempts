@@ -49,7 +49,7 @@ KINDS = ("prior", "model", "prior_vs_model")
 DATA_RANGES = {
     "path_loss": 185.0,
     "delay_spread": 400.0,
-    "angular_spread": 90.0,
+    "angular_spread": 180.0,
 }
 MIN_SSIM_DATA_RANGE = 1.0
 SampleRef = Tuple[str, str]
